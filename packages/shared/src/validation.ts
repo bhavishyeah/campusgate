@@ -13,7 +13,7 @@ export const registerSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   role: z.enum(["STUDENT"]), // Only students can self-register
   enrollmentNo: z.string().min(1, "Enrollment number is required"),
-  departmentId: z.string().cuid("Invalid department"),
+  departmentId: z.string().min(1, "Invalid department"),
   program: z.string().min(1, "Program is required"),
   semester: z.number().int().min(1).max(12),
   section: z.string().optional(),
@@ -23,7 +23,7 @@ export const registerSchema = z.object({
 
 export const createGatePassSchema = z
   .object({
-    reasonId: z.string().cuid("Invalid reason"),
+    reasonId: z.string().min(1, "Reason is required"),
     customReason: z.string().optional(),
     requestedExit: z.string().datetime("Invalid exit time"),
     expectedReturn: z.string().datetime("Invalid return time"),
@@ -37,11 +37,11 @@ export const createGatePassSchema = z
   );
 
 export const approvePassSchema = z.object({
-  passId: z.string().cuid("Invalid pass ID"),
+  passId: z.string().min(1, "Invalid pass ID"),
 });
 
 export const rejectPassSchema = z.object({
-  passId: z.string().cuid("Invalid pass ID"),
+  passId: z.string().min(1, "Invalid pass ID"),
   rejectionReason: z.string().min(1, "Rejection reason is required"),
 });
 
@@ -52,13 +52,13 @@ export const verifyQrSchema = z.object({
 });
 
 export const markExitSchema = z.object({
-  passId: z.string().cuid("Invalid pass ID"),
-  gateId: z.string().cuid("Invalid gate ID"),
+  passId: z.string().min(1, "Invalid pass ID"),
+  gateId: z.string().min(1, "Invalid gate ID"),
 });
 
 export const markReturnSchema = z.object({
-  passId: z.string().cuid("Invalid pass ID"),
-  gateId: z.string().cuid("Invalid gate ID"),
+  passId: z.string().min(1, "Invalid pass ID"),
+  gateId: z.string().min(1, "Invalid gate ID"),
 });
 
 // ─── ADMIN ───────────────────────────────────────────────────────────────────
@@ -67,12 +67,12 @@ export const createUserSchema = z.object({
   email: z.string().email("Invalid email"),
   name: z.string().min(2, "Name is required"),
   role: z.enum(["STUDENT", "HOD", "GUARD", "ADMIN"]),
-  departmentId: z.string().cuid().optional(),
+  departmentId: z.string().min(1).optional(),
   enrollmentNo: z.string().optional(),
   program: z.string().optional(),
   semester: z.number().int().min(1).max(12).optional(),
   section: z.string().optional(),
-  gateIds: z.array(z.string().cuid()).optional(),
+  gateIds: z.array(z.string().min(1)).optional(),
 });
 
 export const bulkImportStudentSchema = z.object({
