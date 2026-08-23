@@ -1,0 +1,318 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ──────────────────────────────────────────────────────────────────
+
+enum Role {
+  STUDENT
+  HOD
+  GUARD
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_APPROVAL
+}
+
+enum PassStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ACTIVE
+  OUTSIDE
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  REVOKED
+}
+
+enum GateEventType {
+  EXIT
+  RETURN
+}
+
+enum AuditAction {
+  PASS_REQUESTED
+  PASS_APPROVED
+  PASS_REJECTED
+  PASS_CANCELLED
+  PASS_REVOKED
+  PASS_EXPIRED
+  GATE_EXIT
+  GATE_RETURN
+  USER_CREATED
+  USER_UPDATED
+  USER_DEACTIVATED
+  USER_REACTIVATED
+  GATE_CREATED
+  GATE_UPDATED
+  DEPARTMENT_CREATED
+  DEPARTMENT_UPDATED
+  REASON_CREATED
+  REASON_UPDATED
+  BULK_IMPORT
+}
+
+// ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
+
+model Institution {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  domain    String?
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments Department[]
+  gates       Gate[]
+  users       User[]
+  exitReasons ExitReason[]
+
+  @@map("institutions")
+}
+
+// ─── DEPARTMENT ─────────────────────────────────────────────────────────────
+
+model Department {
+  id            String      @id @default(cuid())
+  name          String
+  code          String
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  students      StudentProfile[]
+  hods          HodProfile[]
+
+  @@unique([institutionId, code])
+  @@map("departments")
+}
+
+// ─── USER (unified auth) ────────────────────────────────────────────────────
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  passwordHash   String?
+  googleId       String?       @unique
+  role           Role
+  accountStatus  AccountStatus @default(ACTIVE)
+  institutionId  String
+  institution    Institution   @relation(fields: [institutionId], references: [id])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  lastLoginAt    DateTime?
+
+  studentProfile StudentProfile?
+  hodProfile     HodProfile?
+  guardProfile   GuardProfile?
+
+  // Audit trail
+  auditLogs      AuditLog[]    @relation("AuditActor")
+
+  @@map("users")
+}
+
+// ─── STUDENT PROFILE ────────────────────────────────────────────────────────
+
+model StudentProfile {
+  id              String     @id @default(cuid())
+  userId          String     @unique
+  user            User       @relation(fields: [userId], references: [id])
+  enrollmentNo    String     @unique
+  name            String
+  departmentId    String
+  department      Department @relation(fields: [departmentId], references: [id])
+  program         String
+  semester        Int
+  section         String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  gatePasses      GatePass[]
+
+  @@map("student_profiles")
+}
+
+// ─── HOD PROFILE ────────────────────────────────────────────────────────────
+
+model HodProfile {
+  id            String     @id @default(cuid())
+  userId        String     @unique
+  user          User       @relation(fields: [userId], references: [id])
+  name          String
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id])
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  approvedPasses GatePass[] @relation("ApprovedBy")
+
+  @@map("hod_profiles")
+}
+
+// ─── GUARD PROFILE ──────────────────────────────────────────────────────────
+
+model GuardProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignedGates GuardGateAssignment[]
+  gateEvents    GateEvent[]
+
+  @@map("guard_profiles")
+}
+
+// ─── GATE ───────────────────────────────────────────────────────────────────
+
+model Gate {
+  id            String      @id @default(cuid())
+  name          String
+  location      String?
+  isActive      Boolean     @default(true)
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  assignedGuards GuardGateAssignment[]
+  gateEvents     GateEvent[]
+
+  @@unique([institutionId, name])
+  @@map("gates")
+}
+
+// ─── GUARD ↔ GATE (many-to-many) ───────────────────────────────────────────
+
+model GuardGateAssignment {
+  id        String       @id @default(cuid())
+  guardId   String
+  guard     GuardProfile @relation(fields: [guardId], references: [id])
+  gateId    String
+  gate      Gate         @relation(fields: [gateId], references: [id])
+  createdAt DateTime     @default(now())
+
+  @@unique([guardId, gateId])
+  @@map("guard_gate_assignments")
+}
+
+// ─── EXIT REASONS (configurable) ────────────────────────────────────────────
+
+model ExitReason {
+  id            String      @id @default(cuid())
+  label         String
+  requiresNote  Boolean     @default(false)
+  isActive      Boolean     @default(true)
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  gatePasses GatePass[]
+
+  @@map("exit_reasons")
+}
+
+// ─── GATE PASS (core entity) ────────────────────────────────────────────────
+
+model GatePass {
+  id              String     @id @default(cuid())
+  passNumber      String     @unique
+  studentId       String
+  student         StudentProfile @relation(fields: [studentId], references: [id])
+  reasonId        String
+  reason          ExitReason @relation(fields: [reasonId], references: [id])
+  customReason    String?
+  requestedExit   DateTime
+  expectedReturn  DateTime
+  status          PassStatus @default(PENDING)
+
+  // Approval
+  approvedById    String?
+  approvedBy      HodProfile? @relation("ApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  rejectionReason String?
+
+  // QR token
+  qrToken         String?    @unique
+  qrExpiresAt     DateTime?
+
+  // Actual times
+  actualExit      DateTime?
+  actualReturn    DateTime?
+  overdueMinutes  Int?
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  gateEvents GateEvent[]
+
+  @@index([studentId, status])
+  @@index([status, createdAt])
+  @@map("gate_passes")
+}
+
+// ─── GATE EVENTS ────────────────────────────────────────────────────────────
+
+model GateEvent {
+  id          String        @id @default(cuid())
+  passId      String
+  pass        GatePass      @relation(fields: [passId], references: [id])
+  gateId      String
+  gate        Gate          @relation(fields: [gateId], references: [id])
+  guardId     String
+  guard       GuardProfile  @relation(fields: [guardId], references: [id])
+  eventType   GateEventType
+  timestamp   DateTime      @default(now())
+  method      String        @default("QR_SCAN")
+
+  @@index([passId, eventType])
+  @@map("gate_events")
+}
+
+// ─── AUDIT LOG ──────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  actorId   String
+  actor     User        @relation("AuditActor", fields: [actorId], references: [id])
+  action    AuditAction
+  targetId  String?
+  targetType String?
+  metadata  Json?
+  timestamp DateTime    @default(now())
+
+  @@index([actorId, timestamp])
+  @@index([action, timestamp])
+  @@map("audit_logs")
+}
+
+// ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  type      String
+  data      Json?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}

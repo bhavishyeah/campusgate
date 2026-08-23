@@ -1,0 +1,29 @@
+{
+  "name": "@campusgate/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate --schema=../../packages/db/prisma/schema.prisma && tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@campusgate/db": "*",
+    "@campusgate/shared": "*",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/jwt": "^9.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "bcrypt": "^5.1.1",
+    "fastify": "^5.2.0",
+    "nanoid": "^5.0.9",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
