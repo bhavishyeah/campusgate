@@ -51,7 +51,7 @@ export default function StudentLayout({
   return (
     <div className="min-h-screen bg-gray-50 pb-20 md:pb-0 md:pl-64">
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex md:flex-col md:fixed md:inset-y-0 md:w-64 bg-white border-r border-gray-200">
+      <aside className="hidden md:flex md:flex-col md:fixed md:inset-y-0 md:left-0 md:w-64 bg-white border-r border-gray-200">
         <div className="p-6">
           <h1 className="text-xl font-bold text-primary-800">CAMPUSGATE</h1>
           <p className="text-xs text-gray-500 mt-1">Student Portal</p>
