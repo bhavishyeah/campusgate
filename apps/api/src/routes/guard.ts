@@ -43,7 +43,8 @@ export async function guardRoutes(app: FastifyInstance) {
       });
     }
 
-    if (pass.status === "EXPIRED" || (pass.qrExpiresAt && new Date() > pass.qrExpiresAt)) {
+    // Don't expire passes in OUTSIDE status — they must always be completable for return
+    if (pass.status !== "OUTSIDE" && (pass.status === "EXPIRED" || (pass.qrExpiresAt && new Date() > pass.qrExpiresAt))) {
       return reply.send({
         valid: false,
         status: "EXPIRED",
@@ -169,12 +170,13 @@ export async function guardRoutes(app: FastifyInstance) {
           );
         }
 
-        // Update pass status
+        // Update pass status and remove QR expiration (pass must stay valid for return)
         const updatedPass = await tx.gatePass.update({
           where: { id: pass.id },
           data: {
             status: "OUTSIDE",
             actualExit: new Date(),
+            qrExpiresAt: null,
           },
         });
 
