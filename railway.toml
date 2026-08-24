@@ -3,6 +3,6 @@ builder = "nixpacks"
 buildCommand = "npm install && cd packages/shared && npx tsc && cd ../../ && npx prisma generate --schema=packages/db/prisma/schema.prisma && cd apps/api && npx tsc"
 
 [deploy]
-startCommand = "node apps/api/dist/server.js"
+startCommand = "npx prisma migrate deploy --schema=packages/db/prisma/schema.prisma && node apps/api/dist/server.js"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10

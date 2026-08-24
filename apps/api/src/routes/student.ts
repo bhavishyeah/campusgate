@@ -32,8 +32,13 @@ export async function studentRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
 
-    const summary = await AllowanceEngine.getRemainingAllowance(student.id, institutionId);
-    return reply.send(summary);
+    try {
+      const summary = await AllowanceEngine.getRemainingAllowance(student.id, institutionId);
+      return reply.send(summary);
+    } catch (err) {
+      request.log.error(err, "Failed to compute allowance");
+      return reply.status(500).send({ error: "Failed to compute allowance" });
+    }
   });
 
   // ─── GET DASHBOARD (current movement state) ────────────────────────────────
