@@ -44,7 +44,7 @@ export default function AdminLayout({
   return (
     <div className="min-h-screen bg-gray-50 md:pl-64">
       {/* Sidebar */}
-      <aside className="hidden md:flex md:flex-col md:fixed md:inset-y-0 md:w-64 bg-gray-900 text-white">
+      <aside className="hidden md:flex md:flex-col md:fixed md:inset-y-0 md:left-0 md:w-64 bg-gray-900 text-white">
         <div className="p-6">
           <h1 className="text-xl font-bold">CAMPUSGATE</h1>
           <p className="text-xs text-gray-400 mt-1">Admin Panel</p>
