@@ -85,6 +85,24 @@ export const bulkImportStudentSchema = z.object({
   section: z.string().optional(),
 });
 
+// ─── ALLOWANCE & RELIABILITY ─────────────────────────────────────────────────
+
+export const updateAllowancePolicySchema = z.object({
+  allowanceAmount: z.number().int().min(60).max(10080).optional(),
+  policyPeriod: z.enum(["DAILY", "WEEKLY", "MONTHLY", "SEMESTER"]).optional(),
+  gracePeriod: z.number().int().min(0).max(60).optional(),
+  enforcement: z.enum(["BLOCK_NEW_REQUESTS", "WARN_ONLY"]).optional(),
+  minimumSampleSize: z.number().int().min(3).max(20).optional(),
+  severityMinorMax: z.number().int().min(1).optional(),
+  severityModerateMax: z.number().int().min(2).optional(),
+  severitySignificantMax: z.number().int().min(3).optional(),
+});
+
+export const emergencyOverrideSchema = z.object({
+  passId: z.string().min(1),
+  justification: z.string().min(10),
+});
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -97,3 +115,5 @@ export type MarkExitInput = z.infer<typeof markExitSchema>;
 export type MarkReturnInput = z.infer<typeof markReturnSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type BulkImportStudentInput = z.infer<typeof bulkImportStudentSchema>;
+export type UpdateAllowancePolicyInput = z.infer<typeof updateAllowancePolicySchema>;
+export type EmergencyOverrideInput = z.infer<typeof emergencyOverrideSchema>;

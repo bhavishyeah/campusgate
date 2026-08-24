@@ -4,6 +4,8 @@ import { prisma } from "@campusgate/db";
 import { approvePassSchema, rejectPassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
 import { requireRole } from "../middleware/auth.js";
 import { notifyUser } from "../services/notifications.js";
+import { ReliabilityEngine } from "../services/reliability-engine.js";
+import { AllowanceEngine } from "../services/allowance-engine.js";
 
 export async function hodRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireRole("HOD"));
@@ -46,7 +48,7 @@ export async function hodRoutes(app: FastifyInstance) {
 
   // ─── GET SINGLE REQUEST DETAIL ─────────────────────────────────────────────
   app.get("/requests/:passId", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
     const hod = await prisma.hodProfile.findUnique({
@@ -73,7 +75,122 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
-    return reply.send(pass);
+    // Include student allowance info for HOD decision-making (Req 7.1, 7.2, 7.3)
+    const allowance = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId);
+    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+
+    // Include reliability score as advisory information (Req 9.5, 12.3)
+    const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
+
+    return reply.send({
+      ...pass,
+      allowance: { ...allowance, enforcement: policy.enforcement.toLowerCase() },
+      reliabilityScore: score.hasSufficientData ? score : null,
+    });
+  });
+
+  // ─── GET STUDENT RELIABILITY SCORE FOR A REQUEST ─────────────────────────
+  app.get("/requests/:passId/reliability", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const hod = await prisma.hodProfile.findUnique({
+      where: { userId },
+    });
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { departmentId: hod.departmentId },
+      },
+    });
+    if (!pass) {
+      return reply.status(404).send({ error: "Request not found" });
+    }
+
+    const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
+    return reply.send(score);
+  });
+
+  // ─── GET STUDENT ALLOWANCE FOR A REQUEST ─────────────────────────────────
+  app.get("/requests/:passId/allowance", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const hod = await prisma.hodProfile.findUnique({
+      where: { userId },
+    });
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { departmentId: hod.departmentId },
+      },
+    });
+    if (!pass) {
+      return reply.status(404).send({ error: "Request not found" });
+    }
+
+    const summary = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId);
+    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    return reply.send({ ...summary, enforcement: policy.enforcement.toLowerCase() });
+  });
+
+  // ─── EMERGENCY OVERRIDE ───────────────────────────────────────────────────
+  app.post("/emergency-override", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId, justification } = request.body as { passId: string; justification: string };
+
+    if (!justification || justification.length < 10) {
+      return reply.status(400).send({ error: "Justification must be at least 10 characters" });
+    }
+
+    const hod = await prisma.hodProfile.findUnique({
+      where: { userId },
+    });
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    // Verify pass belongs to HOD's department
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { departmentId: hod.departmentId },
+      },
+      include: { student: true },
+    });
+    if (!pass) {
+      return reply.status(404).send({ error: "Pass not found in your department" });
+    }
+
+    // Create override record
+    const override = await prisma.emergencyOverride.create({
+      data: {
+        gatePassId: passId,
+        overriddenById: userId,
+        justification,
+      },
+    });
+
+    // Create audit log entry (Req 5.3)
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "EMERGENCY_OVERRIDE",
+        targetId: passId,
+        targetType: "GatePass",
+        metadata: { justification, studentId: pass.studentId },
+      },
+    });
+
+    return reply.status(201).send(override);
   });
 
   // ─── APPROVE REQUEST ───────────────────────────────────────────────────────

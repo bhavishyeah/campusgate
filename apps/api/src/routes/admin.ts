@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "@campusgate/db";
 import { createUserSchema, bulkImportStudentSchema } from "@campusgate/shared";
 import { requireRole } from "../middleware/auth.js";
+import { AllowanceEngine } from "../services/allowance-engine.js";
 
 export async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireRole("ADMIN"));
@@ -411,6 +412,101 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send(reason);
+  });
+
+  // ─── ALLOWANCE POLICY ────────────────────────────────────────────────────────
+  app.get("/allowance-policy", async (request, reply) => {
+    const { institutionId } = request.user;
+    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    return reply.send(policy);
+  });
+
+  app.put("/allowance-policy", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const body = request.body as any;
+
+    // Validate bounds
+    if (body.allowanceAmount !== undefined && (body.allowanceAmount < 60 || body.allowanceAmount > 10080)) {
+      return reply.status(400).send({ error: "allowanceAmount must be between 60 and 10080" });
+    }
+    if (body.gracePeriod !== undefined && (body.gracePeriod < 0 || body.gracePeriod > 60)) {
+      return reply.status(400).send({ error: "gracePeriod must be between 0 and 60" });
+    }
+    if (body.minimumSampleSize !== undefined && (body.minimumSampleSize < 3 || body.minimumSampleSize > 20)) {
+      return reply.status(400).send({ error: "minimumSampleSize must be between 3 and 20" });
+    }
+
+    // Validate enums
+    const validPeriods = ["DAILY", "WEEKLY", "MONTHLY", "SEMESTER"];
+    if (body.policyPeriod && !validPeriods.includes(body.policyPeriod)) {
+      return reply.status(400).send({ error: "Invalid policyPeriod" });
+    }
+    const validEnforcements = ["BLOCK_NEW_REQUESTS", "WARN_ONLY"];
+    if (body.enforcement && !validEnforcements.includes(body.enforcement)) {
+      return reply.status(400).send({ error: "Invalid enforcement mode" });
+    }
+
+    // Build validated fields object
+    const validatedFields: Record<string, any> = {};
+    if (body.allowanceAmount !== undefined) validatedFields.allowanceAmount = body.allowanceAmount;
+    if (body.policyPeriod !== undefined) validatedFields.policyPeriod = body.policyPeriod;
+    if (body.gracePeriod !== undefined) validatedFields.gracePeriod = body.gracePeriod;
+    if (body.enforcement !== undefined) validatedFields.enforcement = body.enforcement;
+    if (body.minimumSampleSize !== undefined) validatedFields.minimumSampleSize = body.minimumSampleSize;
+    if (body.severityMinorMax !== undefined) validatedFields.severityMinorMax = body.severityMinorMax;
+    if (body.severityModerateMax !== undefined) validatedFields.severityModerateMax = body.severityModerateMax;
+    if (body.severitySignificantMax !== undefined) validatedFields.severitySignificantMax = body.severitySignificantMax;
+
+    // Upsert the policy
+    const policy = await prisma.allowancePolicy.upsert({
+      where: { institutionId },
+      update: validatedFields,
+      create: { institutionId, ...validatedFields },
+    });
+
+    // Audit
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "ALLOWANCE_POLICY_UPDATED",
+        targetId: policy.id,
+        targetType: "AllowancePolicy",
+        metadata: body,
+      },
+    });
+
+    return reply.send(policy);
+  });
+
+  // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────
+  app.post("/emergency-override", async (request, reply) => {
+    const { userId } = request.user;
+    const { passId, justification } = request.body as { passId: string; justification: string };
+
+    if (!justification || justification.length < 10) {
+      return reply.status(400).send({ error: "Justification must be at least 10 characters" });
+    }
+
+    const pass = await prisma.gatePass.findUnique({ where: { id: passId } });
+    if (!pass) {
+      return reply.status(404).send({ error: "Pass not found" });
+    }
+
+    const override = await prisma.emergencyOverride.create({
+      data: { gatePassId: passId, overriddenById: userId, justification },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "EMERGENCY_OVERRIDE",
+        targetId: passId,
+        targetType: "GatePass",
+        metadata: { justification, studentId: pass.studentId },
+      },
+    });
+
+    return reply.status(201).send(override);
   });
 
   // ─── AUDIT LOGS ────────────────────────────────────────────────────────────
