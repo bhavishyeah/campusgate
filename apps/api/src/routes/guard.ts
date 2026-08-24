@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { prisma } from "@campusgate/db";
 import { verifyQrSchema, markExitSchema, markReturnSchema } from "@campusgate/shared";
 import { requireRole } from "../middleware/auth.js";
+import { ReliabilityEngine } from "../services/reliability-engine.js";
 
 export async function guardRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireRole("GUARD"));
@@ -297,6 +298,42 @@ export async function guardRoutes(app: FastifyInstance) {
           metadata: { gateId: parsed.data.gateId, overdueMinutes: result.overdueMinutes },
         },
       });
+
+      // Trigger reliability snapshot computation (Req 13.1)
+      // Run async fire-and-forget so it doesn't block the response
+      (async () => {
+        try {
+          const pass = await prisma.gatePass.findUnique({
+            where: { id: parsed.data.passId },
+            include: {
+              student: { include: { user: true } },
+              emergencyOverride: true,
+            },
+          });
+
+          if (!pass) return;
+
+          // Check exclusion rules: don't record snapshot for emergency override passes (Req 11.2)
+          if (pass.emergencyOverride) return;
+
+          const institutionId = pass.student.user.institutionId;
+
+          // Compute the current score
+          const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
+
+          if (score.hasSufficientData) {
+            // Count the student's completed movements for the movementNumber
+            const movementCount = await prisma.gatePass.count({
+              where: { studentId: pass.studentId, status: "COMPLETED" },
+            });
+
+            await ReliabilityEngine.recordSnapshot(pass.studentId, score.overall, movementCount);
+          }
+        } catch (err) {
+          // Log but don't fail the request
+          app.log.error(err, "Failed to record reliability snapshot");
+        }
+      })();
 
       return reply.send({
         success: true,

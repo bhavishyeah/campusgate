@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { api } from "@/lib/api";
 import { onMessage } from "@/lib/socket";
 import Link from "next/link";
@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   MapPin,
   FileText,
+  Timer,
 } from "lucide-react";
 
 interface DashboardData {
@@ -20,6 +21,46 @@ interface DashboardData {
     name: string;
     enrollmentNo: string;
   };
+}
+
+interface AllowanceSummary {
+  totalAllowance: number;
+  consumed: number;
+  remaining: number;
+  periodType: string;
+  periodStart: string;
+  periodEnd: string;
+  isExhausted: boolean;
+  warningThreshold: boolean;
+  currentlyOutsideElapsed: number | null;
+}
+
+function formatMinutes(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${h}h ${m}m`;
+}
+
+function formatPeriodType(type: string): string {
+  switch (type) {
+    case "DAILY":
+      return "Daily";
+    case "WEEKLY":
+      return "Weekly";
+    case "MONTHLY":
+      return "Monthly";
+    case "SEMESTER":
+      return "Semester";
+    default:
+      return type;
+  }
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 const stateConfig: Record<
@@ -61,6 +102,9 @@ const stateConfig: Record<
 export default function StudentDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [allowance, setAllowance] = useState<AllowanceSummary | null>(null);
+  const [elapsedTimer, setElapsedTimer] = useState<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDashboard = async () => {
     try {
@@ -73,15 +117,50 @@ export default function StudentDashboard() {
     }
   };
 
+  const fetchAllowance = async () => {
+    try {
+      const result = await api.get<AllowanceSummary>("/api/student/allowance");
+      setAllowance(result);
+      if (result.currentlyOutsideElapsed !== null) {
+        setElapsedTimer(result.currentlyOutsideElapsed);
+      } else {
+        setElapsedTimer(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch allowance", err);
+    }
+  };
+
   useEffect(() => {
     fetchDashboard();
+    fetchAllowance();
 
     // Listen for real-time notifications to refresh
     const unsubscribe = onMessage("notification", () => {
       fetchDashboard();
+      fetchAllowance();
     });
     return unsubscribe;
   }, []);
+
+  // Real-time elapsed timer: increment every 60 seconds when outside
+  useEffect(() => {
+    if (elapsedTimer !== null) {
+      timerRef.current = setInterval(() => {
+        setElapsedTimer((prev) => (prev !== null ? prev + 1 : null));
+      }, 60000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [elapsedTimer !== null]);
 
   if (loading) {
     return (
@@ -120,6 +199,67 @@ export default function StudentDashboard() {
         </div>
         <p className="text-sm opacity-80">{state.description}</p>
       </div>
+
+      {/* Allowance Summary */}
+      {allowance && (
+        <div
+          className={`card ${
+            allowance.warningThreshold
+              ? "border-2 border-warning-500 bg-warning-50"
+              : ""
+          }`}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-gray-500">
+              Outside-Time Allowance
+            </h3>
+            {allowance.warningThreshold && (
+              <span className="flex items-center gap-1 text-xs font-medium text-warning-600 bg-warning-100 px-2 py-0.5 rounded-full">
+                <AlertTriangle className="w-3 h-3" />
+                Low
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mb-3">
+            <div>
+              <p className="text-xs text-gray-500">Remaining</p>
+              <p
+                className={`text-lg font-semibold ${
+                  allowance.warningThreshold
+                    ? "text-warning-600"
+                    : "text-gray-900"
+                }`}
+              >
+                {formatMinutes(allowance.remaining)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Consumed</p>
+              <p className="text-lg font-semibold text-gray-900">
+                {formatMinutes(allowance.consumed)}
+              </p>
+            </div>
+          </div>
+
+          {/* Period info */}
+          <div className="text-xs text-gray-500 border-t border-gray-100 pt-2">
+            <span className="font-medium">{formatPeriodType(allowance.periodType)}</span>
+            {" · "}
+            {formatDate(allowance.periodStart)} – {formatDate(allowance.periodEnd)}
+          </div>
+
+          {/* Real-time elapsed timer */}
+          {elapsedTimer !== null && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-primary-700 bg-primary-50 px-3 py-2 rounded-lg">
+              <Timer className="w-4 h-4 animate-pulse" />
+              <span>
+                Outside for <span className="font-semibold">{formatMinutes(elapsedTimer)}</span>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Active Pass Info */}
       {data.activePass && (

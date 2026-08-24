@@ -4,6 +4,8 @@ import { prisma } from "@campusgate/db";
 import { createGatePassSchema, PASS_NUMBER_PREFIX } from "@campusgate/shared";
 import { requireRole } from "../middleware/auth.js";
 import { notifyDepartmentHods } from "../services/notifications.js";
+import { ReliabilityEngine } from "../services/reliability-engine.js";
+import { AllowanceEngine } from "../services/allowance-engine.js";
 
 export async function studentRoutes(app: FastifyInstance) {
   // All student routes require STUDENT role
@@ -17,6 +19,21 @@ export async function studentRoutes(app: FastifyInstance) {
       orderBy: { label: "asc" },
     });
     return reply.send(reasons);
+  });
+
+  // ─── GET ALLOWANCE SUMMARY ─────────────────────────────────────────────────
+  app.get("/allowance", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const student = await prisma.studentProfile.findUnique({
+      where: { userId },
+    });
+    if (!student) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const summary = await AllowanceEngine.getRemainingAllowance(student.id, institutionId);
+    return reply.send(summary);
   });
 
   // ─── GET DASHBOARD (current movement state) ────────────────────────────────
@@ -112,6 +129,13 @@ export async function studentRoutes(app: FastifyInstance) {
       });
     }
 
+    // Check allowance enforcement before proceeding
+    const enforcement = await AllowanceEngine.getEnforcementDecision(student.id, request.user.institutionId);
+
+    if (enforcement.action === "block") {
+      return reply.status(403).send({ error: enforcement.message });
+    }
+
     // Validate reason
     const reason = await prisma.exitReason.findUnique({
       where: { id: parsed.data.reasonId },
@@ -139,6 +163,7 @@ export async function studentRoutes(app: FastifyInstance) {
         requestedExit: new Date(parsed.data.requestedExit),
         expectedReturn: new Date(parsed.data.expectedReturn),
         status: "PENDING",
+        allowanceWarning: enforcement.action === "warn" ? enforcement.message : null,
       },
       include: { reason: true },
     });
@@ -272,5 +297,28 @@ export async function studentRoutes(app: FastifyInstance) {
         totalPages: Math.ceil(total / limitNum),
       },
     });
+  });
+
+  // ─── GET RELIABILITY SCORE ─────────────────────────────────────────────────
+  app.get("/reliability", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const student = await prisma.studentProfile.findUnique({
+      where: { userId },
+    });
+    if (!student) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const score = await ReliabilityEngine.computeScore(student.id, institutionId);
+
+    if (!score.hasSufficientData) {
+      return reply.send({
+        ...score,
+        message: "Insufficient data to compute reliability score. Complete more gate pass movements.",
+      });
+    }
+
+    return reply.send(score);
   });
 }
