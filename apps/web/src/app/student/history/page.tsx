@@ -3,6 +3,17 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
+function formatDuration(exitIso: string | null, returnIso: string | null): string {
+  if (!exitIso || !returnIso) return "—";
+  const ms = new Date(returnIso).getTime() - new Date(exitIso).getTime();
+  if (ms <= 0) return "—";
+  const mins = Math.round(ms / 60000);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 export default function StudentHistory() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -52,7 +63,7 @@ export default function StudentHistory() {
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
                 <div>
-                  <span className="text-gray-400">Requested: </span>
+                  <span className="text-gray-400">Date: </span>
                   {new Date(pass.createdAt).toLocaleDateString()}
                 </div>
                 <div>
@@ -63,12 +74,18 @@ export default function StudentHistory() {
                   <span className="text-gray-400">Return: </span>
                   {pass.actualReturn ? new Date(pass.actualReturn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
                 </div>
-                {pass.overdueMinutes && (
-                  <div className="text-danger-600">
-                    Overdue: {pass.overdueMinutes}min
-                  </div>
-                )}
+                <div>
+                  <span className="text-gray-400">Duration: </span>
+                  <span className="font-medium text-gray-900">
+                    {formatDuration(pass.actualExit, pass.actualReturn)}
+                  </span>
+                </div>
               </div>
+              {pass.overdueMinutes && pass.overdueMinutes > 0 && (
+                <div className="mt-2 text-xs text-danger-600 bg-danger-50 px-2 py-1 rounded inline-block">
+                  Overdue by {pass.overdueMinutes}m
+                </div>
+              )}
             </div>
           ))}
         </div>
