@@ -1,5 +1,6 @@
 import { execSync } from "child_process";
-import { Client } from "pg";
+import pg from "pg";
+const { Client } = pg;
 import { readFileSync } from "fs";
 
 const DATABASE_URL =

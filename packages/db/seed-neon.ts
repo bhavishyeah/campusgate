@@ -1,4 +1,5 @@
-import { Client } from "pg";
+import pg from "pg";
+const { Client } = pg;
 import bcrypt from "bcrypt";
 
 const DATABASE_URL =
