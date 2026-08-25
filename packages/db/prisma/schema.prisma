@@ -154,12 +154,16 @@ model StudentProfile {
   userId       String     @unique
   user         User       @relation(fields: [userId], references: [id])
   enrollmentNo String     @unique
+  rollNumber   String?
   name         String
   departmentId String
   department   Department @relation(fields: [departmentId], references: [id])
   program      String
   semester     Int
   section      String?
+  dob          String?
+  phone        String?
+  address      String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 

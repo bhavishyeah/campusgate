@@ -165,10 +165,14 @@ export default function StudentProfile() {
         <div className="divide-y divide-gray-100">
           {[
             { label: "Enrollment Number", value: student?.enrollmentNo },
+            { label: "Roll Number", value: student?.rollNumber || "—" },
             { label: "Program", value: student?.program },
             { label: "Department", value: student?.department?.name },
             { label: "Semester", value: student?.semester },
             { label: "Section", value: student?.section || "—" },
+            { label: "Date of Birth", value: student?.dob || "—" },
+            { label: "Phone", value: student?.phone || "—" },
+            { label: "Address", value: student?.address || "—" },
             { label: "Account Status", value: profile.accountStatus },
             { label: "Institution", value: profile.institution?.name },
           ].map((item) => (

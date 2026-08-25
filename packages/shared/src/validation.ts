@@ -79,10 +79,14 @@ export const bulkImportStudentSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
   enrollmentNo: z.string().min(1),
+  rollNumber: z.string().optional(),
   departmentCode: z.string().min(1),
   program: z.string().min(1),
   semester: z.number().int().min(1).max(12),
   section: z.string().optional(),
+  dob: z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
 });
 
 // ─── ALLOWANCE & RELIABILITY ─────────────────────────────────────────────────

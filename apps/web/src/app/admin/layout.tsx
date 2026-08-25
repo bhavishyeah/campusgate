@@ -12,6 +12,7 @@ import {
   Building,
   FileText,
   Shield,
+  Upload,
   LogOut,
 } from "lucide-react";
 import Link from "next/link";
@@ -20,6 +21,7 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { href: "/admin", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/admin/users", icon: Users, label: "Users" },
+  { href: "/admin/import", icon: Upload, label: "CSV Import" },
   { href: "/admin/departments", icon: Building, label: "Departments" },
   { href: "/admin/gates", icon: DoorOpen, label: "Gates" },
   { href: "/admin/reasons", icon: FileText, label: "Exit Reasons" },
