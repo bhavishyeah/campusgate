@@ -22,7 +22,7 @@ const navItems = [
   { href: "/admin", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/admin/users", icon: Users, label: "Users" },
   { href: "/admin/import", icon: Upload, label: "CSV Import" },
-  { href: "/admin/departments", icon: Building, label: "Departments" },
+  { href: "/admin/departments", icon: Building, label: "Courses" },
   { href: "/admin/gates", icon: DoorOpen, label: "Gates" },
   { href: "/admin/reasons", icon: FileText, label: "Exit Reasons" },
   { href: "/admin/audit", icon: Shield, label: "Audit Log" },

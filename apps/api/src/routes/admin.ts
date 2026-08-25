@@ -258,12 +258,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
       const data = parsed.data;
 
-      // Find department by code
+      // Find course by code
       const dept = await prisma.department.findFirst({
-        where: { code: data.departmentCode, institutionId },
+        where: { code: data.courseCode, institutionId },
       });
       if (!dept) {
-        results.errors.push(`${data.enrollmentNo}: Department '${data.departmentCode}' not found`);
+        results.errors.push(`${data.enrollmentNo}: Course '${data.courseCode}' not found`);
         results.skipped++;
         continue;
       }

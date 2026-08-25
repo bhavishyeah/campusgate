@@ -24,20 +24,30 @@ async function main() {
 
   console.log("  ✓ Institution created");
 
-  // Create departments
-  const bca = await prisma.department.upsert({
-    where: { institutionId_code: { institutionId: institution.id, code: "BCA" } },
-    update: {},
-    create: { name: "Bachelor of Computer Applications", code: "BCA", institutionId: institution.id },
-  });
+  // Create courses
+  const courses = [
+    { name: "B.Com/B.Com (Hons)", code: "110" },
+    { name: "B.Tech (Computer Science & Engineering)", code: "501" },
+    { name: "B.Tech (Electronics & Computer Engineering)", code: "502" },
+    { name: "B.Tech (Electrical Engineering)", code: "504" },
+    { name: "Bachelor of Business Administration (BBA)", code: "510" },
+    { name: "Bachelor of Computer Applications (BCA)", code: "512" },
+    { name: "Bachelor of Hotel Management (BHM)", code: "513" },
+    { name: "B.Sc Animation", code: "601" },
+    { name: "B.Sc IT", code: "602" },
+  ];
 
-  const bba = await prisma.department.upsert({
-    where: { institutionId_code: { institutionId: institution.id, code: "BBA" } },
-    update: {},
-    create: { name: "Bachelor of Business Administration", code: "BBA", institutionId: institution.id },
-  });
+  let bca: any;
+  for (const c of courses) {
+    const created = await prisma.department.upsert({
+      where: { institutionId_code: { institutionId: institution.id, code: c.code } },
+      update: {},
+      create: { name: c.name, code: c.code, institutionId: institution.id },
+    });
+    if (c.code === "512") bca = created;
+  }
 
-  console.log("  ✓ Departments created");
+  console.log("  ✓ Courses created (9)");
 
   // Create gates
   const mainGate = await prisma.gate.upsert({

@@ -420,7 +420,7 @@ function CreateUserModal({
 
           {(form.role === "STUDENT" || form.role === "HOD") && (
             <div>
-              <label htmlFor="cu-dept" className="label">Department</label>
+              <label htmlFor="cu-dept" className="label">Course</label>
               <select
                 id="cu-dept"
                 className="input"
@@ -428,7 +428,7 @@ function CreateUserModal({
                 onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
                 required
               >
-                <option value="">Select department</option>
+                <option value="">Select course</option>
                 {departments.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name} ({d.code})

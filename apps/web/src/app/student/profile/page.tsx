@@ -167,7 +167,7 @@ export default function StudentProfile() {
             { label: "Enrollment Number", value: student?.enrollmentNo },
             { label: "Roll Number", value: student?.rollNumber || "—" },
             { label: "Program", value: student?.program },
-            { label: "Department", value: student?.department?.name },
+            { label: "Course", value: student?.department?.name },
             { label: "Semester", value: student?.semester },
             { label: "Section", value: student?.section || "—" },
             { label: "Date of Birth", value: student?.dob || "—" },

@@ -24,18 +24,27 @@ async function main() {
   const instId = instRes.rows[0].id;
   console.log("  ✓ Institution");
 
-  // Departments
-  await client.query(`
-    INSERT INTO "departments" ("id", "name", "code", "institutionId")
-    VALUES ('dept_bca', 'Bachelor of Computer Applications', 'BCA', $1)
-    ON CONFLICT ("institutionId", "code") DO NOTHING
-  `, [instId]);
-  await client.query(`
-    INSERT INTO "departments" ("id", "name", "code", "institutionId")
-    VALUES ('dept_bba', 'Bachelor of Business Administration', 'BBA', $1)
-    ON CONFLICT ("institutionId", "code") DO NOTHING
-  `, [instId]);
-  console.log("  ✓ Departments");
+  // Courses
+  const coursesToCreate = [
+    { id: "course_110", name: "B.Com/B.Com (Hons)", code: "110" },
+    { id: "course_501", name: "B.Tech (Computer Science & Engineering)", code: "501" },
+    { id: "course_502", name: "B.Tech (Electronics & Computer Engineering)", code: "502" },
+    { id: "course_504", name: "B.Tech (Electrical Engineering)", code: "504" },
+    { id: "course_510", name: "Bachelor of Business Administration (BBA)", code: "510" },
+    { id: "course_512", name: "Bachelor of Computer Applications (BCA)", code: "512" },
+    { id: "course_513", name: "Bachelor of Hotel Management (BHM)", code: "513" },
+    { id: "course_601", name: "B.Sc Animation", code: "601" },
+    { id: "course_602", name: "B.Sc IT", code: "602" },
+  ];
+
+  for (const c of coursesToCreate) {
+    await client.query(`
+      INSERT INTO "departments" ("id", "name", "code", "institutionId")
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT ("institutionId", "code") DO NOTHING
+    `, [c.id, c.name, c.code, instId]);
+  }
+  console.log("  ✓ Courses (9 created)");
 
   // Gates
   await client.query(`
@@ -90,7 +99,7 @@ async function main() {
   `, [hodPw, instId]);
   await client.query(`
     INSERT INTO "hod_profiles" ("id", "userId", "name", "departmentId")
-    VALUES ('hod_bca', 'user_hod', 'Dr. Sharma', 'dept_bca')
+    VALUES ('hod_bca', 'user_hod', 'Dr. Sharma', 'course_512')
     ON CONFLICT ("userId") DO NOTHING
   `);
   console.log("  ✓ HOD (hod.bca@demo.edu / hod123)");
@@ -121,7 +130,7 @@ async function main() {
   `, [studentPw, instId]);
   await client.query(`
     INSERT INTO "student_profiles" ("id", "userId", "enrollmentNo", "name", "departmentId", "program", "semester", "section")
-    VALUES ('student_1', 'user_student', 'BCA2024001', 'Bhavishya Verma', 'dept_bca', 'BCA', 4, 'A')
+    VALUES ('student_1', 'user_student', 'BCA2024001', 'Bhavishya Verma', 'course_512', 'BCA', 4, 'A')
     ON CONFLICT ("userId") DO NOTHING
   `);
   console.log("  ✓ Student (bhavishya@demo.edu / student123)");

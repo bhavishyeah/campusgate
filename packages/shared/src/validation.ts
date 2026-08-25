@@ -13,7 +13,7 @@ export const registerSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   role: z.enum(["STUDENT"]), // Only students can self-register
   enrollmentNo: z.string().min(1, "Enrollment number is required"),
-  departmentId: z.string().min(1, "Invalid department"),
+  departmentId: z.string().min(1, "Invalid course"),
   program: z.string().min(1, "Program is required"),
   semester: z.number().int().min(1).max(12),
   section: z.string().optional(),
@@ -80,7 +80,7 @@ export const bulkImportStudentSchema = z.object({
   name: z.string().min(1),
   enrollmentNo: z.string().min(1),
   rollNumber: z.string().optional(),
-  departmentCode: z.string().min(1),
+  courseCode: z.string().min(1),
   program: z.string().min(1),
   semester: z.number().int().min(1).max(12),
   section: z.string().optional(),

@@ -34,7 +34,7 @@ export default function RegisterPage() {
     api
       .get<Department[]>("/api/auth/departments")
       .then(setDepartments)
-      .catch(() => setError("Could not load departments. Please try again later."));
+      .catch(() => setError("Could not load courses. Please try again later."));
   }, []);
 
   const update = (field: keyof typeof form) => (
@@ -44,7 +44,7 @@ export default function RegisterPage() {
   const validate = () => {
     if (form.password.length < 8) return "Password must be at least 8 characters";
     if (form.password !== form.confirmPassword) return "Passwords do not match";
-    if (!form.departmentId) return "Please select your department";
+    if (!form.departmentId) return "Please select your course";
     const sem = parseInt(form.semester);
     if (isNaN(sem) || sem < 1 || sem > 12) return "Semester must be between 1 and 12";
     return null;
@@ -166,7 +166,7 @@ export default function RegisterPage() {
 
             <div>
               <label htmlFor="departmentId" className="label">
-                Department
+                Course
               </label>
               <select
                 id="departmentId"
@@ -175,7 +175,7 @@ export default function RegisterPage() {
                 onChange={update("departmentId")}
                 required
               >
-                <option value="">Select your department</option>
+                <option value="">Select your course</option>
                 {departments.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name} ({d.code})
