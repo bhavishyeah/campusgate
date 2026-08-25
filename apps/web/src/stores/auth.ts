@@ -12,8 +12,10 @@ interface UserInfo {
 interface AuthState {
   token: string | null;
   user: UserInfo | null;
+  hydrated: boolean;
   setAuth: (token: string, user: UserInfo) => void;
   logout: () => void;
+  setHydrated: () => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -21,11 +23,16 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       token: null,
       user: null,
+      hydrated: false,
       setAuth: (token, user) => set({ token, user }),
       logout: () => set({ token: null, user: null }),
+      setHydrated: () => set({ hydrated: true }),
     }),
     {
       name: "campusgate-auth",
+      onRehydrateStorage: () => (state) => {
+        state?.setHydrated();
+      },
     }
   )
 );

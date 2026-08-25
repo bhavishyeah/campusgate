@@ -6,9 +6,11 @@ import { useAuthStore } from "@/stores/auth";
 
 export default function Home() {
   const router = useRouter();
-  const { token, user } = useAuthStore();
+  const { token, user, hydrated } = useAuthStore();
 
   useEffect(() => {
+    if (!hydrated) return;
+
     if (!token || !user) {
       router.replace("/login");
       return;
@@ -31,7 +33,7 @@ export default function Home() {
       default:
         router.replace("/login");
     }
-  }, [token, user, router]);
+  }, [token, user, router, hydrated]);
 
   return (
     <div className="min-h-screen flex items-center justify-center">

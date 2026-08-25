@@ -276,7 +276,7 @@ export async function adminRoutes(app: FastifyInstance) {
         continue;
       }
 
-      const tempPassword = Math.random().toString(36).slice(-10);
+      const tempPassword = data.enrollmentNo;
       const passwordHash = await bcrypt.hash(tempPassword, 12);
 
       try {

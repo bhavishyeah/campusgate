@@ -29,20 +29,18 @@ export default function StudentLayout({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, token, logout } = useAuthStore();
+  const { user, token, logout, hydrated } = useAuthStore();
 
   useEffect(() => {
+    if (!hydrated) return;
     if (!token || !user || user.role !== "STUDENT") {
       router.replace("/login");
       return;
     }
     connectSocket();
-    return () => {
-      // Don't disconnect on Strict Mode remount in dev
-    };
-  }, [token, user, router]);
+  }, [token, user, router, hydrated]);
 
-  if (!token || !user) return null;
+  if (!hydrated || !token || !user) return null;
 
   const handleLogout = () => {
     logout();

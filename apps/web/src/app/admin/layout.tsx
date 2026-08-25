@@ -35,17 +35,18 @@ export default function AdminLayout({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, token, logout } = useAuthStore();
+  const { user, token, logout, hydrated } = useAuthStore();
 
   useEffect(() => {
+    if (!hydrated) return;
     if (!token || !user || user.role !== "ADMIN") {
       router.replace("/login");
       return;
     }
     connectSocket();
-  }, [token, user, router]);
+  }, [token, user, router, hydrated]);
 
-  if (!token || !user) return null;
+  if (!hydrated || !token || !user) return null;
 
   return (
     <div className="min-h-screen bg-gray-50 md:pl-64">
