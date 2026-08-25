@@ -7,6 +7,7 @@ import { studentRoutes } from "./routes/student.js";
 import { hodRoutes } from "./routes/hod.js";
 import { guardRoutes } from "./routes/guard.js";
 import { adminRoutes } from "./routes/admin.js";
+import { notificationRoutes } from "./routes/notifications.js";
 import { wsRoutes } from "./routes/ws.js";
 
 const app = Fastify({
@@ -34,6 +35,7 @@ await app.register(studentRoutes, { prefix: "/api/student" });
 await app.register(hodRoutes, { prefix: "/api/hod" });
 await app.register(guardRoutes, { prefix: "/api/guard" });
 await app.register(adminRoutes, { prefix: "/api/admin" });
+await app.register(notificationRoutes, { prefix: "/api/notifications" });
 await app.register(wsRoutes, { prefix: "/ws" });
 
 // Health check

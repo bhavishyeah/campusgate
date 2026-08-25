@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
+import { NotificationBell } from "@/components/NotificationBell";
 import { Scan, Activity, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -61,6 +62,7 @@ export default function GuardLayout({
               </Link>
             );
           })}
+          <NotificationBell variant="dark" />
           <button
             onClick={() => {
               logout();

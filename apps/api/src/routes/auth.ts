@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "@campusgate/db";
 import { loginSchema, registerSchema } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
+import { notifyInstitutionAdmins } from "../services/notifications.js";
 
 export async function authRoutes(app: FastifyInstance) {
   // ─── PUBLIC DEPARTMENTS (for registration form) ────────────────────────────
@@ -122,6 +123,14 @@ export async function authRoutes(app: FastifyInstance) {
         },
       },
       include: { studentProfile: true },
+    });
+
+    // Let admins know there is a registration waiting for approval
+    await notifyInstitutionAdmins(department.institutionId, {
+      title: "New Student Registration",
+      body: `${name} (${enrollmentNo}) registered and is awaiting approval.`,
+      type: "REGISTRATION_PENDING",
+      data: { userId: user.id },
     });
 
     return reply.status(201).send({

@@ -34,6 +34,20 @@ export async function notifyUser(userId: string, payload: NotificationPayload) {
   return notification;
 }
 
+export async function notifyInstitutionAdmins(
+  institutionId: string,
+  payload: NotificationPayload
+) {
+  const admins = await prisma.user.findMany({
+    where: { institutionId, role: "ADMIN", accountStatus: "ACTIVE" },
+    select: { id: true },
+  });
+
+  for (const admin of admins) {
+    await notifyUser(admin.id, payload);
+  }
+}
+
 export async function notifyDepartmentHods(
   departmentId: string,
   payload: NotificationPayload

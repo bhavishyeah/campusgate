@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
+import { NotificationBell } from "@/components/NotificationBell";
 import { Inbox, CheckSquare, Clock, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -112,6 +113,15 @@ export default function HodLayout({
           })}
         </div>
       </nav>
+
+      {/* Top bar */}
+      <header className="sticky top-0 z-40 bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
+        <span className="md:hidden font-bold text-primary-800">CAMPUSGATE</span>
+        <span className="hidden md:block text-sm text-gray-500">
+          {user.profile?.name || user.email}
+        </span>
+        <NotificationBell />
+      </header>
 
       <main className="p-4 md:p-8">{children}</main>
     </div>
