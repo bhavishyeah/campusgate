@@ -5,6 +5,15 @@ import { loginSchema, registerSchema } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 
 export async function authRoutes(app: FastifyInstance) {
+  // ─── PUBLIC DEPARTMENTS (for registration form) ────────────────────────────
+  app.get("/departments", async (_request, reply) => {
+    const departments = await prisma.department.findMany({
+      select: { id: true, name: true, code: true },
+      orderBy: { name: "asc" },
+    });
+    return reply.send(departments);
+  });
+
   // ─── LOGIN ──────────────────────────────────────────────────────────────────
   app.post("/login", async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
