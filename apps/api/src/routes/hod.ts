@@ -2,22 +2,21 @@ import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma } from "@campusgate/db";
 import { approvePassSchema, rejectPassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
-import { requireRole } from "../middleware/auth.js";
+import { requireTenantRole } from "../middleware/auth.js";
 import { notifyUser } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
+import { getHodInTenant } from "../services/authz.js";
 
 export async function hodRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", requireRole("HOD"));
+  app.addHook("preHandler", requireTenantRole("HOD"));
 
   // ─── GET PENDING REQUESTS (for HOD's department) ───────────────────────────
   app.get("/requests", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { status = "PENDING" } = request.query as { status?: string };
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -26,7 +25,10 @@ export async function hodRoutes(app: FastifyInstance) {
     const statusFilter = validStatuses.includes(status) ? status : "PENDING";
 
     const where: any = {
-      student: { departmentId: hod.departmentId },
+      student: {
+        departmentId: hod.departmentId,
+        user: { institutionId },
+      },
     };
 
     if (statusFilter !== "ALL") {
@@ -51,9 +53,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -61,7 +61,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const pass = await prisma.gatePass.findFirst({
       where: {
         id: passId,
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
       include: {
         student: { include: { department: true } },
@@ -94,9 +94,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -104,7 +102,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const pass = await prisma.gatePass.findFirst({
       where: {
         id: passId,
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
     });
     if (!pass) {
@@ -120,9 +118,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -130,7 +126,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const pass = await prisma.gatePass.findFirst({
       where: {
         id: passId,
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
     });
     if (!pass) {
@@ -151,9 +147,7 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Justification must be at least 10 characters" });
     }
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -162,7 +156,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const pass = await prisma.gatePass.findFirst({
       where: {
         id: passId,
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
       include: { student: true },
     });
@@ -195,16 +189,14 @@ export async function hodRoutes(app: FastifyInstance) {
 
   // ─── APPROVE REQUEST ───────────────────────────────────────────────────────
   app.post("/approve", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
     const parsed = approvePassSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -214,7 +206,7 @@ export async function hodRoutes(app: FastifyInstance) {
       where: {
         id: parsed.data.passId,
         status: "PENDING",
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
       include: { student: true },
     });
@@ -267,16 +259,14 @@ export async function hodRoutes(app: FastifyInstance) {
 
   // ─── REJECT REQUEST ────────────────────────────────────────────────────────
   app.post("/reject", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
     const parsed = rejectPassSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -285,7 +275,7 @@ export async function hodRoutes(app: FastifyInstance) {
       where: {
         id: parsed.data.passId,
         status: "PENDING",
-        student: { departmentId: hod.departmentId },
+        student: { departmentId: hod.departmentId, user: { institutionId } },
       },
       include: { student: true },
     });
@@ -329,11 +319,9 @@ export async function hodRoutes(app: FastifyInstance) {
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
   app.get("/stats", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
-    const hod = await prisma.hodProfile.findUnique({
-      where: { userId },
-    });
+    const hod = await getHodInTenant(userId, institutionId);
     if (!hod) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
@@ -343,27 +331,27 @@ export async function hodRoutes(app: FastifyInstance) {
         prisma.gatePass.count({
           where: {
             status: "PENDING",
-            student: { departmentId: hod.departmentId },
+            student: { departmentId: hod.departmentId, user: { institutionId } },
           },
         }),
         prisma.gatePass.count({
           where: {
             status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED"] },
             approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-            student: { departmentId: hod.departmentId },
+            student: { departmentId: hod.departmentId, user: { institutionId } },
           },
         }),
         prisma.gatePass.count({
           where: {
             status: "REJECTED",
             approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-            student: { departmentId: hod.departmentId },
+            student: { departmentId: hod.departmentId, user: { institutionId } },
           },
         }),
         prisma.gatePass.count({
           where: {
             status: "OUTSIDE",
-            student: { departmentId: hod.departmentId },
+            student: { departmentId: hod.departmentId, user: { institutionId } },
           },
         }),
       ]);

@@ -2,8 +2,11 @@ import pg from "pg";
 const { Client } = pg;
 import bcrypt from "bcrypt";
 
-const DATABASE_URL =
-  "postgresql://neondb_owner:npg_3WVXghnMNCD6@ep-misty-pond-azqx1rtc-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb";
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL is required");
+}
 
 async function main() {
   const client = new Client({
@@ -16,9 +19,9 @@ async function main() {
 
   // Institution
   const instRes = await client.query(`
-    INSERT INTO "institutions" ("id", "name", "code", "domain", "settings")
-    VALUES ('inst_demo', 'Demo University', 'DEMO', 'demo.edu', '{}')
-    ON CONFLICT ("code") DO UPDATE SET "name" = EXCLUDED."name"
+    INSERT INTO "institutions" ("id", "name", "code", "domain", "settings", "updatedAt")
+    VALUES ('inst_demo', 'Demo University', 'DEMO', 'demo.edu', '{}', NOW())
+    ON CONFLICT ("code") DO UPDATE SET "name" = EXCLUDED."name", "updatedAt" = NOW()
     RETURNING "id"
   `);
   const instId = instRes.rows[0].id;
@@ -39,8 +42,8 @@ async function main() {
 
   for (const c of coursesToCreate) {
     await client.query(`
-      INSERT INTO "departments" ("id", "name", "code", "institutionId")
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO "departments" ("id", "name", "code", "institutionId", "updatedAt")
+      VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT ("institutionId", "code") DO NOTHING
     `, [c.id, c.name, c.code, instId]);
   }
@@ -48,13 +51,13 @@ async function main() {
 
   // Gates
   await client.query(`
-    INSERT INTO "gates" ("id", "name", "location", "institutionId")
-    VALUES ('gate_main', 'Main Gate', 'Front Entrance', $1)
+    INSERT INTO "gates" ("id", "name", "location", "institutionId", "updatedAt")
+    VALUES ('gate_main', 'Main Gate', 'Front Entrance', $1, NOW())
     ON CONFLICT ("institutionId", "name") DO NOTHING
   `, [instId]);
   await client.query(`
-    INSERT INTO "gates" ("id", "name", "location", "institutionId")
-    VALUES ('gate_side', 'Side Gate', 'Parking Side', $1)
+    INSERT INTO "gates" ("id", "name", "location", "institutionId", "updatedAt")
+    VALUES ('gate_side', 'Side Gate', 'Parking Side', $1, NOW())
     ON CONFLICT ("institutionId", "name") DO NOTHING
   `, [instId]);
   console.log("  ✓ Gates");
@@ -70,8 +73,8 @@ async function main() {
   ];
   for (const r of reasons) {
     await client.query(`
-      INSERT INTO "exit_reasons" ("id", "label", "requiresNote", "institutionId")
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO "exit_reasons" ("id", "label", "requiresNote", "institutionId", "updatedAt")
+      VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT DO NOTHING
     `, [r.id, r.label, r.requiresNote, instId]);
   }
@@ -85,34 +88,47 @@ async function main() {
 
   // Admin
   await client.query(`
-    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId")
-    VALUES ('user_admin', 'admin@demo.edu', $1, 'ADMIN', 'ACTIVE', $2)
+    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
+    VALUES ('user_admin', 'admin@demo.edu', $1, 'ADMIN', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
   `, [adminPw, instId]);
+
+  // Super admin (platform scope)
+  const superPw = await bcrypt.hash("superadmin123", 12);
+  await client.query(`
+    INSERT INTO "institutions" ("id", "name", "code", "domain", "status", "settings", "updatedAt")
+    VALUES ('inst_platform', 'CAMPUSGATE Platform', 'PLATFORM', 'platform.local', 'ACTIVE', '{}', NOW())
+    ON CONFLICT ("code") DO NOTHING
+  `);
+  await client.query(`
+    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
+    VALUES ('user_superadmin', 'superadmin@campusgate.local', $1, 'SUPER_ADMIN', 'ACTIVE', 'inst_platform', NOW())
+    ON CONFLICT ("email") DO NOTHING
+  `, [superPw]);
   console.log("  ✓ Admin (admin@demo.edu / admin123)");
 
   // HOD
   await client.query(`
-    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId")
-    VALUES ('user_hod', 'hod.bca@demo.edu', $1, 'HOD', 'ACTIVE', $2)
+    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
+    VALUES ('user_hod', 'hod.bca@demo.edu', $1, 'HOD', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
   `, [hodPw, instId]);
   await client.query(`
-    INSERT INTO "hod_profiles" ("id", "userId", "name", "departmentId")
-    VALUES ('hod_bca', 'user_hod', 'Dr. Sharma', 'course_512')
+    INSERT INTO "hod_profiles" ("id", "userId", "name", "departmentId", "updatedAt")
+    VALUES ('hod_bca', 'user_hod', 'Dr. Sharma', 'course_512', NOW())
     ON CONFLICT ("userId") DO NOTHING
   `);
   console.log("  ✓ HOD (hod.bca@demo.edu / hod123)");
 
   // Guard
   await client.query(`
-    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId")
-    VALUES ('user_guard', 'guard@demo.edu', $1, 'GUARD', 'ACTIVE', $2)
+    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
+    VALUES ('user_guard', 'guard@demo.edu', $1, 'GUARD', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
   `, [guardPw, instId]);
   await client.query(`
-    INSERT INTO "guard_profiles" ("id", "userId", "name")
-    VALUES ('guard_main', 'user_guard', 'Rajesh Kumar')
+    INSERT INTO "guard_profiles" ("id", "userId", "name", "updatedAt")
+    VALUES ('guard_main', 'user_guard', 'Rajesh Kumar', NOW())
     ON CONFLICT ("userId") DO NOTHING
   `);
   await client.query(`
@@ -124,13 +140,13 @@ async function main() {
 
   // Student
   await client.query(`
-    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId")
-    VALUES ('user_student', 'bhavishya@demo.edu', $1, 'STUDENT', 'ACTIVE', $2)
+    INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
+    VALUES ('user_student', 'bhavishya@demo.edu', $1, 'STUDENT', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
   `, [studentPw, instId]);
   await client.query(`
-    INSERT INTO "student_profiles" ("id", "userId", "enrollmentNo", "name", "departmentId", "program", "semester", "section")
-    VALUES ('student_1', 'user_student', 'BCA2024001', 'Bhavishya Verma', 'course_512', 'BCA', 4, 'A')
+    INSERT INTO "student_profiles" ("id", "userId", "enrollmentNo", "name", "departmentId", "program", "semester", "section", "updatedAt")
+    VALUES ('student_1', 'user_student', 'BCA2024001', 'Bhavishya Verma', 'course_512', 'BCA', 4, 'A', NOW())
     ON CONFLICT ("userId") DO NOTHING
   `);
   console.log("  ✓ Student (bhavishya@demo.edu / student123)");

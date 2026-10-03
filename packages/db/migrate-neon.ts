@@ -1,10 +1,11 @@
-import { execSync } from "child_process";
 import pg from "pg";
 const { Client } = pg;
-import { readFileSync } from "fs";
 
-const DATABASE_URL =
-  "postgresql://neondb_owner:npg_3WVXghnMNCD6@ep-misty-pond-azqx1rtc-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb";
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL is required");
+}
 
 async function main() {
   console.log("🔗 Connecting to Neon...");
@@ -22,7 +23,7 @@ async function main() {
   const sql = `
     -- Enums
     DO $$ BEGIN
-      CREATE TYPE "Role" AS ENUM ('STUDENT', 'HOD', 'GUARD', 'ADMIN');
+      CREATE TYPE "Role" AS ENUM ('STUDENT', 'HOD', 'GUARD', 'ADMIN', 'SUPER_ADMIN');
     EXCEPTION WHEN duplicate_object THEN null; END $$;
 
     DO $$ BEGIN
@@ -41,18 +42,24 @@ async function main() {
       CREATE TYPE "AuditAction" AS ENUM ('PASS_REQUESTED', 'PASS_APPROVED', 'PASS_REJECTED', 'PASS_CANCELLED', 'PASS_REVOKED', 'PASS_EXPIRED', 'GATE_EXIT', 'GATE_RETURN', 'USER_CREATED', 'USER_UPDATED', 'USER_DEACTIVATED', 'USER_REACTIVATED', 'GATE_CREATED', 'GATE_UPDATED', 'DEPARTMENT_CREATED', 'DEPARTMENT_UPDATED', 'REASON_CREATED', 'REASON_UPDATED', 'BULK_IMPORT');
     EXCEPTION WHEN duplicate_object THEN null; END $$;
 
+    DO $$ BEGIN
+      CREATE TYPE "InstitutionStatus" AS ENUM ('ACTIVE', 'SUSPENDED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+
     -- Tables
     CREATE TABLE IF NOT EXISTS "institutions" (
       "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
       "name" TEXT NOT NULL,
       "code" TEXT NOT NULL,
       "domain" TEXT,
+      "status" "InstitutionStatus" NOT NULL DEFAULT 'ACTIVE',
       "settings" JSONB NOT NULL DEFAULT '{}',
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT "institutions_pkey" PRIMARY KEY ("id")
     );
     CREATE UNIQUE INDEX IF NOT EXISTS "institutions_code_key" ON "institutions"("code");
+    ALTER TABLE "institutions" ADD COLUMN IF NOT EXISTS "status" "InstitutionStatus" NOT NULL DEFAULT 'ACTIVE';
 
     CREATE TABLE IF NOT EXISTS "departments" (
       "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,

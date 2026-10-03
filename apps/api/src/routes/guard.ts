@@ -1,14 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@campusgate/db";
 import { verifyQrSchema, markExitSchema, markReturnSchema } from "@campusgate/shared";
-import { requireRole } from "../middleware/auth.js";
+import { requireTenantRole } from "../middleware/auth.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
+import { getGuardInTenant } from "../services/authz.js";
 
 export async function guardRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", requireRole("GUARD"));
+  app.addHook("preHandler", requireTenantRole("GUARD"));
 
   // ─── VERIFY QR TOKEN ───────────────────────────────────────────────────────
   app.post("/verify", async (request, reply) => {
+    const { institutionId } = request.user;
+
     const parsed = verifyQrSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
@@ -16,8 +19,11 @@ export async function guardRoutes(app: FastifyInstance) {
 
     const { qrToken } = parsed.data;
 
-    const pass = await prisma.gatePass.findUnique({
-      where: { qrToken },
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        qrToken,
+        student: { user: { institutionId } },
+      },
       include: {
         student: { include: { department: true } },
         reason: true,
@@ -130,16 +136,14 @@ export async function guardRoutes(app: FastifyInstance) {
 
   // ─── MARK EXIT ─────────────────────────────────────────────────────────────
   app.post("/mark-exit", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
     const parsed = markExitSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const guard = await prisma.guardProfile.findUnique({
-      where: { userId },
-    });
+    const guard = await getGuardInTenant(userId, institutionId);
     if (!guard) {
       return reply.status(404).send({ error: "Guard profile not found" });
     }
@@ -156,8 +160,11 @@ export async function guardRoutes(app: FastifyInstance) {
     // Using a transaction to prevent concurrent duplicate exits
     try {
       const result = await prisma.$transaction(async (tx) => {
-        const pass = await tx.gatePass.findUnique({
-          where: { id: parsed.data.passId },
+        const pass = await tx.gatePass.findFirst({
+          where: {
+            id: parsed.data.passId,
+            student: { user: { institutionId } },
+          },
         });
 
         if (!pass) {
@@ -220,16 +227,14 @@ export async function guardRoutes(app: FastifyInstance) {
 
   // ─── MARK RETURN ───────────────────────────────────────────────────────────
   app.post("/mark-return", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
     const parsed = markReturnSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const guard = await prisma.guardProfile.findUnique({
-      where: { userId },
-    });
+    const guard = await getGuardInTenant(userId, institutionId);
     if (!guard) {
       return reply.status(404).send({ error: "Guard profile not found" });
     }
@@ -245,8 +250,11 @@ export async function guardRoutes(app: FastifyInstance) {
     // Atomic state transition: OUTSIDE → COMPLETED
     try {
       const result = await prisma.$transaction(async (tx) => {
-        const pass = await tx.gatePass.findUnique({
-          where: { id: parsed.data.passId },
+        const pass = await tx.gatePass.findFirst({
+          where: {
+            id: parsed.data.passId,
+            student: { user: { institutionId } },
+          },
         });
 
         if (!pass) {
@@ -305,8 +313,11 @@ export async function guardRoutes(app: FastifyInstance) {
       // Run async fire-and-forget so it doesn't block the response
       (async () => {
         try {
-          const pass = await prisma.gatePass.findUnique({
-            where: { id: parsed.data.passId },
+          const pass = await prisma.gatePass.findFirst({
+            where: {
+              id: parsed.data.passId,
+              student: { user: { institutionId } },
+            },
             include: {
               student: { include: { user: true } },
               emergencyOverride: true,
@@ -318,10 +329,10 @@ export async function guardRoutes(app: FastifyInstance) {
           // Check exclusion rules: don't record snapshot for emergency override passes (Req 11.2)
           if (pass.emergencyOverride) return;
 
-          const institutionId = pass.student.user.institutionId;
+          const passInstitutionId = pass.student.user.institutionId;
 
           // Compute the current score
-          const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
+          const score = await ReliabilityEngine.computeScore(pass.studentId, passInstitutionId);
 
           if (score.hasSufficientData) {
             // Count the student's completed movements for the movementNumber
@@ -352,6 +363,7 @@ export async function guardRoutes(app: FastifyInstance) {
 
   // ─── MANUAL LOOKUP ─────────────────────────────────────────────────────────
   app.get("/lookup", async (request, reply) => {
+    const { institutionId } = request.user;
     const { query } = request.query as { query?: string };
 
     if (!query || query.length < 2) {
@@ -366,6 +378,7 @@ export async function guardRoutes(app: FastifyInstance) {
           { student: { enrollmentNo: { equals: query, mode: "insensitive" } } },
         ],
         status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
+        student: { user: { institutionId } },
       },
       include: {
         student: { include: { department: true } },
@@ -384,11 +397,9 @@ export async function guardRoutes(app: FastifyInstance) {
 
   // ─── GUARD ACTIVITY (today) ────────────────────────────────────────────────
   app.get("/activity", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
-    const guard = await prisma.guardProfile.findUnique({
-      where: { userId },
-    });
+    const guard = await getGuardInTenant(userId, institutionId);
     if (!guard) {
       return reply.status(404).send({ error: "Guard profile not found" });
     }

@@ -15,6 +15,7 @@ enum Role {
   HOD
   GUARD
   ADMIN
+  SUPER_ADMIN
 }
 
 enum AccountStatus {
@@ -83,16 +84,22 @@ enum SeverityLevel {
   SEVERE
 }
 
+enum InstitutionStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 // ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
 
 model Institution {
-  id        String   @id @default(cuid())
+  id        String            @id @default(cuid())
   name      String
-  code      String   @unique
+  code      String            @unique
   domain    String?
-  settings  Json     @default("{}")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status    InstitutionStatus @default(ACTIVE)
+  settings  Json              @default("{}")
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
 
   departments     Department[]
   gates           Gate[]

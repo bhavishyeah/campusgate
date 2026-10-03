@@ -9,8 +9,14 @@ export async function authRoutes(app: FastifyInstance) {
   // ─── PUBLIC DEPARTMENTS (for registration form) ────────────────────────────
   app.get("/departments", async (_request, reply) => {
     const departments = await prisma.department.findMany({
-      select: { id: true, name: true, code: true },
-      orderBy: { name: "asc" },
+      where: { institution: { status: "ACTIVE" } },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        institution: { select: { id: true, name: true, code: true } },
+      },
+      orderBy: [{ institution: { name: "asc" } }, { name: "asc" }],
     });
     return reply.send(departments);
   });
@@ -30,15 +36,29 @@ export async function authRoutes(app: FastifyInstance) {
         studentProfile: true,
         hodProfile: true,
         guardProfile: true,
+        institution: { select: { status: true } },
       },
     });
 
-    if (!user || !user.passwordHash) {
+    if (!user) {
+      return reply.status(401).send({ error: "Invalid email or password" });
+    }
+
+    if (!user.passwordHash) {
+      if (user.role === "STUDENT") {
+        return reply.status(403).send({
+          error: "Account not activated. Please complete first-time registration to set your password.",
+        });
+      }
       return reply.status(401).send({ error: "Invalid email or password" });
     }
 
     if (user.accountStatus !== "ACTIVE") {
       return reply.status(403).send({ error: "Account is not active" });
+    }
+
+    if (user.institution.status !== "ACTIVE") {
+      return reply.status(403).send({ error: "Institution is suspended" });
     }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
@@ -70,7 +90,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
-  // ─── REGISTER (student self-registration) ──────────────────────────────────
+  // ─── REGISTER / FIRST-TIME ACTIVATION (student) ───────────────────────────
   app.post("/register", async (request, reply) => {
     const parsed = registerSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -80,12 +100,83 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, password, name, enrollmentNo, departmentId, program, semester, section } =
       parsed.data;
 
-    // Check existing
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      return reply.status(409).send({ error: "Email already registered" });
+    // Get the department's institution
+    const department = await prisma.department.findUnique({
+      where: { id: departmentId },
+      include: { institution: { select: { status: true } } },
+    });
+    if (!department) {
+      return reply.status(400).send({ error: "Invalid department" });
     }
 
+    if (department.institution.status !== "ACTIVE") {
+      return reply.status(403).send({ error: "Institution is suspended" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // If a user already exists with this email, attempt first-time activation flow
+    const existingByEmail = await prisma.user.findUnique({
+      where: { email },
+      include: { studentProfile: true },
+    });
+
+    if (existingByEmail) {
+      if (existingByEmail.role !== "STUDENT" || !existingByEmail.studentProfile) {
+        return reply.status(409).send({ error: "Email already registered" });
+      }
+
+      const profile = existingByEmail.studentProfile;
+      if (profile.enrollmentNo !== enrollmentNo) {
+        return reply.status(409).send({ error: "Enrollment number does not match imported record" });
+      }
+
+      if (existingByEmail.institutionId !== department.institutionId) {
+        return reply.status(409).send({ error: "Email belongs to a different institution" });
+      }
+
+      const canActivateWithoutPassword = !existingByEmail.passwordHash;
+      const canActivateWithLegacyDefault =
+        !!existingByEmail.passwordHash &&
+        (await bcrypt.compare(enrollmentNo, existingByEmail.passwordHash));
+
+      if (!canActivateWithoutPassword && !canActivateWithLegacyDefault) {
+        return reply.status(409).send({
+          error: "Account already activated. Please sign in instead.",
+        });
+      }
+
+      const activated = await prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          passwordHash,
+          accountStatus: "ACTIVE",
+          studentProfile: {
+            update: {
+              name,
+              departmentId,
+              program,
+              semester,
+              section,
+            },
+          },
+        },
+        include: { studentProfile: true },
+      });
+
+      return reply.send({
+        activation: true,
+        message: "Account activated successfully. You can now sign in.",
+        user: {
+          id: activated.id,
+          email: activated.email,
+          role: activated.role,
+          accountStatus: activated.accountStatus,
+        },
+      });
+    }
+
+    // Check enrollment collision for new self-registration
     const existingEnrollment = await prisma.studentProfile.findUnique({
       where: { enrollmentNo },
     });
@@ -93,23 +184,13 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Enrollment number already registered" });
     }
 
-    // Get the department's institution
-    const department = await prisma.department.findUnique({
-      where: { id: departmentId },
-    });
-    if (!department) {
-      return reply.status(400).send({ error: "Invalid department" });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 12);
-
-    // Create user + student profile in transaction
+    // Create user + student profile (awaiting admin approval)
     const user = await prisma.user.create({
       data: {
         email,
         passwordHash,
         role: "STUDENT",
-        accountStatus: "PENDING_APPROVAL", // Admin must approve
+        accountStatus: "PENDING_APPROVAL",
         institutionId: department.institutionId,
         studentProfile: {
           create: {
@@ -134,6 +215,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send({
+      activation: false,
       message: "Registration submitted. Awaiting admin approval.",
       user: {
         id: user.id,

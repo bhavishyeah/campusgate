@@ -4,7 +4,7 @@ import { persist } from "zustand/middleware";
 interface UserInfo {
   id: string;
   email: string;
-  role: "STUDENT" | "HOD" | "GUARD" | "ADMIN";
+  role: "STUDENT" | "HOD" | "GUARD" | "ADMIN" | "SUPER_ADMIN";
   accountStatus: string;
   profile?: any;
 }

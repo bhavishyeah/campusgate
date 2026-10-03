@@ -1,12 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import bcrypt from "bcrypt";
+import { randomBytes } from "crypto";
+import ExcelJS from "exceljs";
 import { prisma } from "@campusgate/db";
 import { createUserSchema, bulkImportStudentSchema } from "@campusgate/shared";
-import { requireRole } from "../middleware/auth.js";
+import { requireTenantRole } from "../middleware/auth.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 
 export async function adminRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", requireRole("ADMIN"));
+  app.addHook("preHandler", requireTenantRole("ADMIN"));
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
   app.get("/stats", async (request, reply) => {
@@ -29,10 +31,26 @@ export async function adminRoutes(app: FastifyInstance) {
       prisma.user.count({ where: { institutionId, role: "HOD", accountStatus: "ACTIVE" } }),
       prisma.user.count({ where: { institutionId, role: "GUARD", accountStatus: "ACTIVE" } }),
       prisma.gate.count({ where: { institutionId, isActive: true } }),
-      prisma.gateEvent.count({ where: { eventType: "EXIT", timestamp: { gte: today } } }),
-      prisma.gateEvent.count({ where: { eventType: "RETURN", timestamp: { gte: today } } }),
-      prisma.gatePass.count({ where: { status: "OUTSIDE" } }),
-      prisma.gatePass.count({ where: { status: "PENDING" } }),
+      prisma.gateEvent.count({
+        where: {
+          eventType: "EXIT",
+          timestamp: { gte: today },
+          pass: { student: { user: { institutionId } } },
+        },
+      }),
+      prisma.gateEvent.count({
+        where: {
+          eventType: "RETURN",
+          timestamp: { gte: today },
+          pass: { student: { user: { institutionId } } },
+        },
+      }),
+      prisma.gatePass.count({
+        where: { status: "OUTSIDE", student: { user: { institutionId } } },
+      }),
+      prisma.gatePass.count({
+        where: { status: "PENDING", student: { user: { institutionId } } },
+      }),
       prisma.user.count({ where: { institutionId, accountStatus: "PENDING_APPROVAL" } }),
     ]);
 
@@ -100,7 +118,7 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     // Generate a temporary password
-    const tempPassword = Math.random().toString(36).slice(-10);
+    const tempPassword = randomBytes(9).toString("base64url");
     const passwordHash = await bcrypt.hash(tempPassword, 12);
 
     const user = await prisma.$transaction(async (tx) => {
@@ -163,16 +181,18 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ─── APPROVE PENDING REGISTRATION ─────────────────────────────────────────
   app.post("/users/:id/approve", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
-    const user = await prisma.user.findUnique({ where: { id } });
-    if (!user || user.accountStatus !== "PENDING_APPROVAL") {
+    const user = await prisma.user.findFirst({
+      where: { id, institutionId, accountStatus: "PENDING_APPROVAL" },
+    });
+    if (!user) {
       return reply.status(404).send({ error: "No pending user found" });
     }
 
     await prisma.user.update({
-      where: { id },
+      where: { id: user.id },
       data: { accountStatus: "ACTIVE" },
     });
 
@@ -191,11 +211,16 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ─── DEACTIVATE USER ───────────────────────────────────────────────────────
   app.post("/users/:id/deactivate", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
+    const target = await prisma.user.findFirst({ where: { id, institutionId } });
+    if (!target) {
+      return reply.status(404).send({ error: "User not found" });
+    }
+
     await prisma.user.update({
-      where: { id },
+      where: { id: target.id },
       data: { accountStatus: "INACTIVE" },
     });
 
@@ -213,11 +238,16 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ─── REACTIVATE USER ──────────────────────────────────────────────────────
   app.post("/users/:id/reactivate", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
+    const target = await prisma.user.findFirst({ where: { id, institutionId } });
+    if (!target) {
+      return reply.status(404).send({ error: "User not found" });
+    }
+
     await prisma.user.update({
-      where: { id },
+      where: { id: target.id },
       data: { accountStatus: "ACTIVE" },
     });
 
@@ -276,14 +306,11 @@ export async function adminRoutes(app: FastifyInstance) {
         continue;
       }
 
-      const tempPassword = data.enrollmentNo;
-      const passwordHash = await bcrypt.hash(tempPassword, 12);
-
       try {
         await prisma.user.create({
           data: {
             email: data.email,
-            passwordHash,
+            passwordHash: null,
             role: "STUDENT",
             accountStatus: "ACTIVE",
             institutionId,
@@ -320,6 +347,150 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return reply.send(results);
+  });
+
+  // ─── EXPORT STUDENTS (CSV) ────────────────────────────────────────────────
+  app.get("/students/export", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const students = await prisma.user.findMany({
+      where: { institutionId, role: "STUDENT" },
+      include: {
+        studentProfile: { include: { department: true } },
+      },
+      orderBy: [{ createdAt: "asc" }],
+    });
+
+    const headers = [
+      "userId",
+      "email",
+      "accountStatus",
+      "name",
+      "enrollmentNo",
+      "rollNumber",
+      "courseCode",
+      "courseName",
+      "program",
+      "semester",
+      "section",
+      "dob",
+      "phone",
+      "address",
+      "createdAt",
+      "lastLoginAt",
+    ];
+
+    const escapeCsv = (value: unknown) => {
+      if (value === null || value === undefined) return "";
+      const str = String(value);
+      const escaped = str.replace(/"/g, '""');
+      return /[",\n\r]/.test(escaped) ? `"${escaped}"` : escaped;
+    };
+
+    const rows = students.map((u) => {
+      const s = u.studentProfile;
+      return [
+        u.id,
+        u.email,
+        u.accountStatus,
+        s?.name,
+        s?.enrollmentNo,
+        s?.rollNumber,
+        s?.department?.code,
+        s?.department?.name,
+        s?.program,
+        s?.semester,
+        s?.section,
+        s?.dob,
+        s?.phone,
+        s?.address,
+        u.createdAt.toISOString(),
+        u.lastLoginAt ? u.lastLoginAt.toISOString() : "",
+      ]
+        .map(escapeCsv)
+        .join(",");
+    });
+
+    const csv = [headers.join(","), ...rows].join("\n");
+    const filename = `students-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    return reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${filename}"`)
+      .send(`\uFEFF${csv}`);
+  });
+
+  // ─── EXPORT STUDENTS (XLSX) ────────────────────────────────────────────────
+  app.get("/students/export.xlsx", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const students = await prisma.user.findMany({
+      where: { institutionId, role: "STUDENT" },
+      include: {
+        studentProfile: { include: { department: true } },
+      },
+      orderBy: [{ createdAt: "asc" }],
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Students");
+
+    const columns = [
+      { header: "User ID", key: "userId", width: 22 },
+      { header: "Email", key: "email", width: 28 },
+      { header: "Account Status", key: "accountStatus", width: 18 },
+      { header: "Name", key: "name", width: 24 },
+      { header: "Enrollment No", key: "enrollmentNo", width: 18 },
+      { header: "Roll Number", key: "rollNumber", width: 16 },
+      { header: "Course Code", key: "courseCode", width: 14 },
+      { header: "Course Name", key: "courseName", width: 36 },
+      { header: "Program", key: "program", width: 14 },
+      { header: "Semester", key: "semester", width: 10 },
+      { header: "Section", key: "section", width: 10 },
+      { header: "DOB", key: "dob", width: 14 },
+      { header: "Phone", key: "phone", width: 16 },
+      { header: "Address", key: "address", width: 30 },
+      { header: "Created At", key: "createdAt", width: 24 },
+      { header: "Last Login At", key: "lastLoginAt", width: 24 },
+    ];
+
+    sheet.columns = columns;
+
+    for (const u of students) {
+      const s = u.studentProfile;
+      sheet.addRow({
+        userId: u.id,
+        email: u.email,
+        accountStatus: u.accountStatus,
+        name: s?.name ?? "",
+        enrollmentNo: s?.enrollmentNo ?? "",
+        rollNumber: s?.rollNumber ?? "",
+        courseCode: s?.department?.code ?? "",
+        courseName: s?.department?.name ?? "",
+        program: s?.program ?? "",
+        semester: s?.semester ?? "",
+        section: s?.section ?? "",
+        dob: s?.dob ?? "",
+        phone: s?.phone ?? "",
+        address: s?.address ?? "",
+        createdAt: u.createdAt.toISOString(),
+        lastLoginAt: u.lastLoginAt ? u.lastLoginAt.toISOString() : "",
+      });
+    }
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true };
+
+    const filename = `students-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    return reply
+      .header(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      )
+      .header("Content-Disposition", `attachment; filename="${filename}"`)
+      .send(Buffer.from(buffer));
   });
 
   // ─── DEPARTMENTS ───────────────────────────────────────────────────────────
@@ -422,7 +593,17 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/allowance-policy", async (request, reply) => {
     const { institutionId } = request.user;
     const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
-    return reply.send(policy);
+
+    return reply.send({
+      allowanceAmount: policy.allowanceAmount,
+      policyPeriod: policy.policyPeriod,
+      gracePeriod: policy.gracePeriod,
+      enforcement: policy.enforcement,
+      minimumSampleSize: policy.minimumSampleSize,
+      severityMinorMax: policy.severityThresholds.minorMax,
+      severityModerateMax: policy.severityThresholds.moderateMax,
+      severitySignificantMax: policy.severityThresholds.significantMax,
+    });
   });
 
   app.put("/allowance-policy", async (request, reply) => {
@@ -484,14 +665,19 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────
   app.post("/emergency-override", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { passId, justification } = request.body as { passId: string; justification: string };
 
     if (!justification || justification.length < 10) {
       return reply.status(400).send({ error: "Justification must be at least 10 characters" });
     }
 
-    const pass = await prisma.gatePass.findUnique({ where: { id: passId } });
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { user: { institutionId } },
+      },
+    });
     if (!pass) {
       return reply.status(404).send({ error: "Pass not found" });
     }
@@ -515,12 +701,15 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ─── AUDIT LOGS ────────────────────────────────────────────────────────────
   app.get("/audit-logs", async (request, reply) => {
+    const { institutionId } = request.user;
     const { page = "1", limit = "50", action } = request.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
 
-    const where: any = {};
+    const where: any = {
+      actor: { institutionId },
+    };
     if (action) where.action = action;
 
     const [logs, total] = await Promise.all([

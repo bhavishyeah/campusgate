@@ -6,6 +6,18 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("🌱 Seeding CAMPUSGATE database...");
 
+  // Create platform institution for SUPER_ADMIN scope
+  const platformInstitution = await prisma.institution.upsert({
+    where: { code: "PLATFORM" },
+    update: {},
+    create: {
+      name: "CAMPUSGATE Platform",
+      code: "PLATFORM",
+      domain: "platform.local",
+      settings: {},
+    },
+  });
+
   // Create institution
   const institution = await prisma.institution.upsert({
     where: { code: "DEMO" },
@@ -82,6 +94,21 @@ async function main() {
     });
   }
   console.log("  ✓ Exit reasons created");
+
+  // Create super admin user
+  const superAdminPassword = await bcrypt.hash("superadmin123", 12);
+  await prisma.user.upsert({
+    where: { email: "superadmin@campusgate.local" },
+    update: {},
+    create: {
+      email: "superadmin@campusgate.local",
+      passwordHash: superAdminPassword,
+      role: "SUPER_ADMIN",
+      accountStatus: "ACTIVE",
+      institutionId: platformInstitution.id,
+    },
+  });
+  console.log("  ✓ Super admin user created (superadmin@campusgate.local / superadmin123)");
 
   // Create admin user
   const adminPassword = await bcrypt.hash("admin123", 12);
@@ -170,6 +197,7 @@ async function main() {
   console.log("   HOD:     hod.bca@demo.edu / hod123");
   console.log("   Guard:   guard@demo.edu / guard123");
   console.log("   Student: bhavishya@demo.edu / student123");
+  console.log("   Super:   superadmin@campusgate.local / superadmin123");
 }
 
 main()

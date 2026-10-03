@@ -1,8 +1,11 @@
 import pg from "pg";
 const { Client } = pg;
 
-const DATABASE_URL =
-  "postgresql://neondb_owner:npg_3WVXghnMNCD6@ep-misty-pond-azqx1rtc-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb";
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL is required");
+}
 
 async function main() {
   const client = new Client({

@@ -17,6 +17,9 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState(
+    "Your account is awaiting administrator approval. You will be able to sign in once it has been approved."
+  );
 
   const [form, setForm] = useState({
     name: "",
@@ -62,7 +65,7 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      await api.post("/api/auth/register", {
+      const res = await api.post<{ activation: boolean; message: string }>("/api/auth/register", {
         name: form.name,
         email: form.email,
         password: form.password,
@@ -73,6 +76,7 @@ export default function RegisterPage() {
         semester: parseInt(form.semester),
         section: form.section || undefined,
       });
+      setSuccessMessage(res.message || successMessage);
       setSuccess(true);
     } catch (err: any) {
       setError(err.message || "Registration failed");
@@ -86,13 +90,8 @@ export default function RegisterPage() {
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-900 via-primary-800 to-primary-950 p-4">
         <div className="w-full max-w-md card text-center">
           <CheckCircle className="w-14 h-14 text-success-500 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">
-            Registration Submitted
-          </h2>
-          <p className="text-sm text-gray-600 mb-6">
-            Your account is awaiting administrator approval. You will be able to
-            sign in once it has been approved.
-          </p>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Success</h2>
+          <p className="text-sm text-gray-600 mb-6">{successMessage}</p>
           <button
             className="btn-primary w-full"
             onClick={() => router.push("/login")}

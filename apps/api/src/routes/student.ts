@@ -2,14 +2,15 @@ import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma } from "@campusgate/db";
 import { createGatePassSchema, PASS_NUMBER_PREFIX } from "@campusgate/shared";
-import { requireRole } from "../middleware/auth.js";
+import { requireTenantRole } from "../middleware/auth.js";
 import { notifyDepartmentHods } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
+import { getStudentInTenant } from "../services/authz.js";
 
 export async function studentRoutes(app: FastifyInstance) {
   // All student routes require STUDENT role
-  app.addHook("preHandler", requireRole("STUDENT"));
+  app.addHook("preHandler", requireTenantRole("STUDENT"));
 
   // ─── GET EXIT REASONS ────────────────────────────────────────────────────────
   app.get("/reasons", async (request, reply) => {
@@ -25,9 +26,7 @@ export async function studentRoutes(app: FastifyInstance) {
   app.get("/allowance", async (request, reply) => {
     const { userId, institutionId } = request.user;
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
@@ -43,11 +42,9 @@ export async function studentRoutes(app: FastifyInstance) {
 
   // ─── GET DASHBOARD (current movement state) ────────────────────────────────
   app.get("/dashboard", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
 
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
@@ -105,16 +102,14 @@ export async function studentRoutes(app: FastifyInstance) {
 
   // ─── CREATE GATE PASS REQUEST ──────────────────────────────────────────────
   app.post("/gate-pass", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
     const parsed = createGatePassSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
@@ -142,8 +137,11 @@ export async function studentRoutes(app: FastifyInstance) {
     }
 
     // Validate reason
-    const reason = await prisma.exitReason.findUnique({
-      where: { id: parsed.data.reasonId },
+    const reason = await prisma.exitReason.findFirst({
+      where: {
+        id: parsed.data.reasonId,
+        institutionId: request.user.institutionId,
+      },
     });
     if (!reason || !reason.isActive) {
       return reply.status(400).send({ error: "Invalid exit reason" });
@@ -197,11 +195,9 @@ export async function studentRoutes(app: FastifyInstance) {
 
   // ─── GET ACTIVE PASS (with QR) ────────────────────────────────────────────
   app.get("/active-pass", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
@@ -227,12 +223,10 @@ export async function studentRoutes(app: FastifyInstance) {
 
   // ─── CANCEL PENDING REQUEST ────────────────────────────────────────────────
   app.post("/gate-pass/:passId/cancel", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
@@ -264,12 +258,10 @@ export async function studentRoutes(app: FastifyInstance) {
 
   // ─── PASS HISTORY ──────────────────────────────────────────────────────────
   app.get("/history", async (request, reply) => {
-    const { userId } = request.user;
+    const { userId, institutionId } = request.user;
     const { page = "1", limit = "10" } = request.query as Record<string, string>;
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }
@@ -308,9 +300,7 @@ export async function studentRoutes(app: FastifyInstance) {
   app.get("/reliability", async (request, reply) => {
     const { userId, institutionId } = request.user;
 
-    const student = await prisma.studentProfile.findUnique({
-      where: { userId },
-    });
+    const student = await getStudentInTenant(userId, institutionId);
     if (!student) {
       return reply.status(404).send({ error: "Student profile not found" });
     }

@@ -19,7 +19,7 @@ export const PASS_NUMBER_PREFIX = "CG";
 export const QR_TOKEN_VALIDITY_MINUTES = 480; // 8 hours
 
 // Roles
-export const ROLES = ["STUDENT", "HOD", "GUARD", "ADMIN"] as const;
+export const ROLES = ["STUDENT", "HOD", "GUARD", "ADMIN", "SUPER_ADMIN"] as const;
 export type RoleType = (typeof ROLES)[number];
 
 // Account statuses

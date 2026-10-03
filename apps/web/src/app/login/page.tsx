@@ -40,6 +40,9 @@ export default function LoginPage() {
         case "ADMIN":
           router.push("/admin");
           break;
+        case "SUPER_ADMIN":
+          router.push("/platform");
+          break;
       }
     } catch (err: any) {
       setError(err.message || "Login failed");

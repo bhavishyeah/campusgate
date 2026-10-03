@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "@fastify/websocket";
+import { prisma } from "@campusgate/db";
 
 // Global map of userId → WebSocket connection
 export const wsConnections = new Map<string, WebSocket>();
 
 export async function wsRoutes(app: FastifyInstance) {
-  app.get("/connect", { websocket: true }, (socket, request) => {
+  app.get("/connect", { websocket: true }, async (socket, request) => {
     // Authenticate via query param token
     const url = new URL(request.url, `http://${request.headers.host}`);
     const token = url.searchParams.get("token");
@@ -24,6 +25,21 @@ export async function wsRoutes(app: FastifyInstance) {
 
       const userId = decoded.userId;
 
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          role: true,
+          accountStatus: true,
+          institution: { select: { status: true } },
+        },
+      });
+
+      if (!user || user.accountStatus !== "ACTIVE" || user.institution.status !== "ACTIVE") {
+        socket.close(4003, "Unauthorized");
+        return;
+      }
+
       // Register connection
       wsConnections.set(userId, socket);
 
@@ -33,7 +49,7 @@ export async function wsRoutes(app: FastifyInstance) {
       socket.send(
         JSON.stringify({
           type: "connected",
-          data: { userId, role: decoded.role },
+          data: { userId, role: user.role },
         })
       );
 

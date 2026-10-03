@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Users, Shield, DoorOpen, Activity, Settings } from "lucide-react";
+import { useAuthStore } from "@/stores/auth";
+import { Users, Shield, DoorOpen, Activity, Settings, Download } from "lucide-react";
 
 interface PolicyConfig {
   allowanceAmount: number;
@@ -82,6 +83,9 @@ export default function AdminDashboard() {
   const [policySaving, setPolicySaving] = useState(false);
   const [policyMessage, setPolicyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
+  const [downloadingStudentsCsv, setDownloadingStudentsCsv] = useState(false);
+  const [downloadingStudentsXlsx, setDownloadingStudentsXlsx] = useState(false);
+  const token = useAuthStore((s) => s.token);
 
   useEffect(() => {
     api
@@ -144,6 +148,65 @@ export default function AdminDashboard() {
     }
   };
 
+  const downloadStudents = async (format: "csv" | "xlsx") => {
+    if (!token) return;
+
+    if (format === "csv") {
+      setDownloadingStudentsCsv(true);
+    } else {
+      setDownloadingStudentsXlsx(true);
+    }
+    setPolicyMessage(null);
+
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+      const endpoint =
+        format === "xlsx"
+          ? "/api/admin/students/export.xlsx"
+          : "/api/admin/students/export";
+
+      const response = await fetch(`${apiBase}${endpoint}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to export students");
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") || "";
+      const match = disposition.match(/filename="?([^\"]+)"?/i);
+      const fallback = format === "xlsx" ? "students.xlsx" : "students.csv";
+      const filename = match?.[1] || fallback;
+
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+
+      setPolicyMessage({
+        type: "success",
+        text:
+          format === "xlsx"
+            ? "Student .xlsx export downloaded successfully"
+            : "Student CSV export downloaded successfully",
+      });
+    } catch (err: any) {
+      setPolicyMessage({ type: "error", text: err.message || "Failed to export students" });
+    } finally {
+      if (format === "csv") {
+        setDownloadingStudentsCsv(false);
+      } else {
+        setDownloadingStudentsXlsx(false);
+      }
+    }
+  };
+
   if (loading) {
     return <div className="animate-pulse text-gray-500 text-center py-12">Loading...</div>;
   }
@@ -180,9 +243,29 @@ export default function AdminDashboard() {
 
       {/* Allowance Policy Configuration */}
       <div className="mt-10">
-        <div className="flex items-center gap-2 mb-4">
-          <Settings className="w-5 h-5 text-gray-700" />
-          <h2 className="text-xl font-bold text-gray-900">Allowance Policy Configuration</h2>
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Settings className="w-5 h-5 text-gray-700" />
+            <h2 className="text-xl font-bold text-gray-900">Allowance Policy Configuration</h2>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              className="btn-secondary flex items-center gap-2"
+              onClick={() => downloadStudents("xlsx")}
+              disabled={downloadingStudentsXlsx || downloadingStudentsCsv}
+            >
+              <Download className="w-4 h-4" />
+              {downloadingStudentsXlsx ? "Preparing..." : "Download Students (.xlsx)"}
+            </button>
+            <button
+              className="btn-secondary flex items-center gap-2"
+              onClick={() => downloadStudents("csv")}
+              disabled={downloadingStudentsXlsx || downloadingStudentsCsv}
+            >
+              <Download className="w-4 h-4" />
+              {downloadingStudentsCsv ? "Preparing..." : "Download Students (CSV)"}
+            </button>
+          </div>
         </div>
 
         {policyLoading ? (

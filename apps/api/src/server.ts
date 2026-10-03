@@ -9,6 +9,7 @@ import { guardRoutes } from "./routes/guard.js";
 import { adminRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { wsRoutes } from "./routes/ws.js";
+import { platformRoutes } from "./routes/platform.js";
 
 const app = Fastify({
   logger: {
@@ -22,8 +23,13 @@ await app.register(cors, {
   credentials: true,
 });
 
+const jwtSecret = process.env.JWT_SECRET || "campusgate-dev-secret-change-in-production";
+if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET must be set in production");
+}
+
 await app.register(jwt, {
-  secret: process.env.JWT_SECRET || "campusgate-dev-secret-change-in-production",
+  secret: jwtSecret,
   sign: { expiresIn: "24h" },
 });
 
@@ -35,6 +41,7 @@ await app.register(studentRoutes, { prefix: "/api/student" });
 await app.register(hodRoutes, { prefix: "/api/hod" });
 await app.register(guardRoutes, { prefix: "/api/guard" });
 await app.register(adminRoutes, { prefix: "/api/admin" });
+await app.register(platformRoutes, { prefix: "/api/platform" });
 await app.register(notificationRoutes, { prefix: "/api/notifications" });
 await app.register(wsRoutes, { prefix: "/ws" });
 
