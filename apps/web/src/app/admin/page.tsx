@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
-import { Users, Shield, DoorOpen, Activity, Settings, Download } from "lucide-react";
+import { Users, Shield, DoorOpen, Activity, Settings, Download, CalendarDays, Building2 } from "lucide-react";
 
 interface PolicyConfig {
   allowanceAmount: number;
@@ -14,6 +14,20 @@ interface PolicyConfig {
   severityMinorMax: number;
   severityModerateMax: number;
   severitySignificantMax: number;
+}
+
+interface InstitutionConfig {
+  timezone: string;
+  weekStartDay: string;
+  workingDaysOfWeek: number[];
+  lowAllowanceThresholdMinutes: number;
+}
+
+interface AcademicCalendarDay {
+  id: string;
+  date: string;
+  dayType: string;
+  note?: string | null;
 }
 
 const POLICY_PERIODS = [
@@ -28,6 +42,28 @@ const ENFORCEMENT_MODES = [
   { value: "WARN_ONLY", label: "Warn Only" },
 ];
 
+const WEEK_START_DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+
+const DAY_TYPES = [
+  "WORKING_DAY",
+  "HOLIDAY",
+  "WEEKEND",
+  "EXAM_DAY",
+  "VACATION",
+  "SPECIAL_WORKING_DAY",
+  "INSTITUTION_EVENT",
+];
+
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+];
+
 const DEFAULT_POLICY: PolicyConfig = {
   allowanceAmount: 1440,
   policyPeriod: "WEEKLY",
@@ -37,6 +73,13 @@ const DEFAULT_POLICY: PolicyConfig = {
   severityMinorMax: 15,
   severityModerateMax: 60,
   severitySignificantMax: 180,
+};
+
+const DEFAULT_CONFIG: InstitutionConfig = {
+  timezone: "Asia/Kolkata",
+  weekStartDay: "MONDAY",
+  workingDaysOfWeek: [1, 2, 3, 4, 5, 6],
+  lowAllowanceThresholdMinutes: 60,
 };
 
 interface ValidationErrors {
@@ -77,40 +120,105 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Policy config state
   const [policy, setPolicy] = useState<PolicyConfig>(DEFAULT_POLICY);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [policySaving, setPolicySaving] = useState(false);
   const [policyMessage, setPolicyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
+
+  const [institutionConfig, setInstitutionConfig] = useState<InstitutionConfig>(DEFAULT_CONFIG);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [configSaving, setConfigSaving] = useState(false);
+
+  const [calendarDays, setCalendarDays] = useState<AcademicCalendarDay[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarSaving, setCalendarSaving] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [calendarForm, setCalendarForm] = useState({
+    date: new Date().toISOString().slice(0, 10),
+    dayType: "HOLIDAY",
+    note: "",
+  });
+
   const [downloadingStudentsCsv, setDownloadingStudentsCsv] = useState(false);
   const [downloadingStudentsXlsx, setDownloadingStudentsXlsx] = useState(false);
   const token = useAuthStore((s) => s.token);
 
-  useEffect(() => {
-    api
-      .get("/api/admin/stats")
-      .then(setStats)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+  const loadCalendar = async (monthValue: string) => {
+    const [yearStr, monthStr] = monthValue.split("-");
+    const year = Number(yearStr);
+    const month = Number(monthStr);
 
-    api
-      .get<PolicyConfig>("/api/admin/allowance-policy")
-      .then((data) => {
+    const startDate = new Date(year, month - 1, 1, 0, 0, 0, 0).toISOString();
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999).toISOString();
+
+    const days = await api.get<AcademicCalendarDay[]>(
+      `/api/admin/academic-calendar?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`
+    );
+    setCalendarDays(days);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [statsData, policyData, configData] = await Promise.all([
+          api.get<any>("/api/admin/stats"),
+          api.get<PolicyConfig>("/api/admin/allowance-policy"),
+          api.get<InstitutionConfig>("/api/admin/institution-config"),
+        ]);
+
+        setStats(statsData);
         setPolicy({
-          allowanceAmount: data.allowanceAmount ?? DEFAULT_POLICY.allowanceAmount,
-          policyPeriod: data.policyPeriod ?? DEFAULT_POLICY.policyPeriod,
-          gracePeriod: data.gracePeriod ?? DEFAULT_POLICY.gracePeriod,
-          enforcement: data.enforcement ?? DEFAULT_POLICY.enforcement,
-          minimumSampleSize: data.minimumSampleSize ?? DEFAULT_POLICY.minimumSampleSize,
-          severityMinorMax: data.severityMinorMax ?? DEFAULT_POLICY.severityMinorMax,
-          severityModerateMax: data.severityModerateMax ?? DEFAULT_POLICY.severityModerateMax,
-          severitySignificantMax: data.severitySignificantMax ?? DEFAULT_POLICY.severitySignificantMax,
+          allowanceAmount: policyData.allowanceAmount ?? DEFAULT_POLICY.allowanceAmount,
+          policyPeriod: policyData.policyPeriod ?? DEFAULT_POLICY.policyPeriod,
+          gracePeriod: policyData.gracePeriod ?? DEFAULT_POLICY.gracePeriod,
+          enforcement: policyData.enforcement ?? DEFAULT_POLICY.enforcement,
+          minimumSampleSize: policyData.minimumSampleSize ?? DEFAULT_POLICY.minimumSampleSize,
+          severityMinorMax: policyData.severityMinorMax ?? DEFAULT_POLICY.severityMinorMax,
+          severityModerateMax: policyData.severityModerateMax ?? DEFAULT_POLICY.severityModerateMax,
+          severitySignificantMax: policyData.severitySignificantMax ?? DEFAULT_POLICY.severitySignificantMax,
         });
-      })
-      .catch(console.error)
-      .finally(() => setPolicyLoading(false));
+        setInstitutionConfig({
+          timezone: configData.timezone ?? DEFAULT_CONFIG.timezone,
+          weekStartDay: configData.weekStartDay ?? DEFAULT_CONFIG.weekStartDay,
+          workingDaysOfWeek:
+            Array.isArray(configData.workingDaysOfWeek) && configData.workingDaysOfWeek.length > 0
+              ? configData.workingDaysOfWeek
+              : DEFAULT_CONFIG.workingDaysOfWeek,
+          lowAllowanceThresholdMinutes:
+            configData.lowAllowanceThresholdMinutes ?? DEFAULT_CONFIG.lowAllowanceThresholdMinutes,
+        });
+
+        await loadCalendar(calendarMonth);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+        setPolicyLoading(false);
+        setConfigLoading(false);
+        setCalendarLoading(false);
+      }
+    })();
   }, []);
+
+  const shiftCalendarMonth = async (delta: number) => {
+    const [yearStr, monthStr] = calendarMonth.split("-");
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const date = new Date(year, month - 1 + delta, 1);
+    const next = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+    setCalendarMonth(next);
+    setCalendarLoading(true);
+    try {
+      await loadCalendar(next);
+    } finally {
+      setCalendarLoading(false);
+    }
+  };
 
   const handlePolicyChange = (field: keyof PolicyConfig, value: string | number) => {
     setPolicy((prev) => ({ ...prev, [field]: value }));
@@ -148,22 +256,72 @@ export default function AdminDashboard() {
     }
   };
 
+  const toggleWorkingDay = (day: number) => {
+    setInstitutionConfig((prev) => {
+      const has = prev.workingDaysOfWeek.includes(day);
+      const next = has
+        ? prev.workingDaysOfWeek.filter((d) => d !== day)
+        : [...prev.workingDaysOfWeek, day];
+      return { ...prev, workingDaysOfWeek: next.sort((a, b) => a - b) };
+    });
+  };
+
+  const saveInstitutionConfig = async () => {
+    if (institutionConfig.workingDaysOfWeek.length === 0) {
+      setPolicyMessage({ type: "error", text: "Select at least one working weekday" });
+      return;
+    }
+
+    setConfigSaving(true);
+    try {
+      await api.put("/api/admin/institution-config", institutionConfig);
+      setPolicyMessage({ type: "success", text: "Institution configuration saved" });
+    } catch (err: any) {
+      setPolicyMessage({ type: "error", text: err.message || "Failed to save institution config" });
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const upsertCalendarDay = async () => {
+    setCalendarSaving(true);
+    try {
+      await api.put("/api/admin/academic-calendar/day", {
+        date: calendarForm.date,
+        dayType: calendarForm.dayType,
+        note: calendarForm.note || undefined,
+      });
+      await loadCalendar(calendarMonth);
+      setPolicyMessage({ type: "success", text: "Academic calendar day saved" });
+    } catch (err: any) {
+      setPolicyMessage({ type: "error", text: err.message || "Failed to save calendar day" });
+    } finally {
+      setCalendarSaving(false);
+    }
+  };
+
+  const deleteCalendarDay = async (date: string) => {
+    try {
+      const dateOnly = new Date(date).toISOString().slice(0, 10);
+      await api.delete(`/api/admin/academic-calendar/day/${dateOnly}`);
+      await loadCalendar(calendarMonth);
+      setPolicyMessage({ type: "success", text: "Calendar day deleted" });
+    } catch (err: any) {
+      setPolicyMessage({ type: "error", text: err.message || "Failed to delete calendar day" });
+    }
+  };
+
   const downloadStudents = async (format: "csv" | "xlsx") => {
     if (!token) return;
 
-    if (format === "csv") {
-      setDownloadingStudentsCsv(true);
-    } else {
-      setDownloadingStudentsXlsx(true);
-    }
+    if (format === "csv") setDownloadingStudentsCsv(true);
+    else setDownloadingStudentsXlsx(true);
+
     setPolicyMessage(null);
 
     try {
       const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const endpoint =
-        format === "xlsx"
-          ? "/api/admin/students/export.xlsx"
-          : "/api/admin/students/export";
+      const endpoint = format === "xlsx" ? "/api/admin/students/export.xlsx" : "/api/admin/students/export";
 
       const response = await fetch(`${apiBase}${endpoint}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -191,19 +349,13 @@ export default function AdminDashboard() {
 
       setPolicyMessage({
         type: "success",
-        text:
-          format === "xlsx"
-            ? "Student .xlsx export downloaded successfully"
-            : "Student CSV export downloaded successfully",
+        text: format === "xlsx" ? "Student .xlsx export downloaded successfully" : "Student CSV export downloaded successfully",
       });
     } catch (err: any) {
       setPolicyMessage({ type: "error", text: err.message || "Failed to export students" });
     } finally {
-      if (format === "csv") {
-        setDownloadingStudentsCsv(false);
-      } else {
-        setDownloadingStudentsXlsx(false);
-      }
+      if (format === "csv") setDownloadingStudentsCsv(false);
+      else setDownloadingStudentsXlsx(false);
     }
   };
 
@@ -241,29 +393,20 @@ export default function AdminDashboard() {
         ))}
       </div>
 
-      {/* Allowance Policy Configuration */}
       <div className="mt-10">
         <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
           <div className="flex items-center gap-2">
             <Settings className="w-5 h-5 text-gray-700" />
-            <h2 className="text-xl font-bold text-gray-900">Allowance Policy Configuration</h2>
+            <h2 className="text-xl font-bold text-gray-900">Policy & Institution Settings</h2>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              className="btn-secondary flex items-center gap-2"
-              onClick={() => downloadStudents("xlsx")}
-              disabled={downloadingStudentsXlsx || downloadingStudentsCsv}
-            >
+            <button className="btn-secondary flex items-center gap-2" onClick={() => downloadStudents("xlsx")} disabled={downloadingStudentsXlsx || downloadingStudentsCsv}>
               <Download className="w-4 h-4" />
-              {downloadingStudentsXlsx ? "Preparing..." : "Download Students (.xlsx)"}
+              {downloadingStudentsXlsx ? "Preparing..." : "Download .xlsx"}
             </button>
-            <button
-              className="btn-secondary flex items-center gap-2"
-              onClick={() => downloadStudents("csv")}
-              disabled={downloadingStudentsXlsx || downloadingStudentsCsv}
-            >
+            <button className="btn-secondary flex items-center gap-2" onClick={() => downloadStudents("csv")} disabled={downloadingStudentsXlsx || downloadingStudentsCsv}>
               <Download className="w-4 h-4" />
-              {downloadingStudentsCsv ? "Preparing..." : "Download Students (CSV)"}
+              {downloadingStudentsCsv ? "Preparing..." : "Download CSV"}
             </button>
           </div>
         </div>
@@ -272,203 +415,210 @@ export default function AdminDashboard() {
           <div className="card animate-pulse text-gray-500 text-center py-8">Loading policy...</div>
         ) : (
           <div className="card space-y-6">
-            {/* Time Allowance Section */}
             <div>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Time Allowance
-              </h3>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Outside-Time Policy</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label htmlFor="allowanceAmount" className="label">
-                    Allowance Amount (minutes)
-                  </label>
-                  <input
-                    id="allowanceAmount"
-                    type="number"
-                    className="input"
-                    min={60}
-                    max={10080}
-                    value={policy.allowanceAmount}
-                    onChange={(e) => handlePolicyChange("allowanceAmount", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Range: 60–10080 min (1 hour to 1 week)</p>
-                  {validationErrors.allowanceAmount && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.allowanceAmount}</p>
-                  )}
+                  <label htmlFor="allowanceAmount" className="label">Allowance Amount (minutes)</label>
+                  <input id="allowanceAmount" type="number" className="input" min={60} max={10080} value={policy.allowanceAmount} onChange={(e) => handlePolicyChange("allowanceAmount", parseInt(e.target.value) || 0)} />
+                  {validationErrors.allowanceAmount && <p className="text-xs text-danger-600 mt-1">{validationErrors.allowanceAmount}</p>}
                 </div>
-
                 <div>
-                  <label htmlFor="policyPeriod" className="label">
-                    Policy Period
-                  </label>
-                  <select
-                    id="policyPeriod"
-                    className="input"
-                    value={policy.policyPeriod}
-                    onChange={(e) => handlePolicyChange("policyPeriod", e.target.value)}
-                  >
-                    {POLICY_PERIODS.map((p) => (
-                      <option key={p.value} value={p.value}>
-                        {p.label}
-                      </option>
-                    ))}
+                  <label htmlFor="policyPeriod" className="label">Policy Period</label>
+                  <select id="policyPeriod" className="input" value={policy.policyPeriod} onChange={(e) => handlePolicyChange("policyPeriod", e.target.value)}>
+                    {POLICY_PERIODS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                   </select>
                 </div>
-
                 <div>
-                  <label htmlFor="gracePeriod" className="label">
-                    Grace Period (minutes)
-                  </label>
-                  <input
-                    id="gracePeriod"
-                    type="number"
-                    className="input"
-                    min={0}
-                    max={60}
-                    value={policy.gracePeriod}
-                    onChange={(e) => handlePolicyChange("gracePeriod", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Range: 0–60 min</p>
-                  {validationErrors.gracePeriod && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.gracePeriod}</p>
-                  )}
+                  <label htmlFor="gracePeriod" className="label">Grace Period (minutes)</label>
+                  <input id="gracePeriod" type="number" className="input" min={0} max={60} value={policy.gracePeriod} onChange={(e) => handlePolicyChange("gracePeriod", parseInt(e.target.value) || 0)} />
+                  {validationErrors.gracePeriod && <p className="text-xs text-danger-600 mt-1">{validationErrors.gracePeriod}</p>}
                 </div>
-
                 <div>
-                  <label htmlFor="enforcement" className="label">
-                    Enforcement Mode
-                  </label>
-                  <select
-                    id="enforcement"
-                    className="input"
-                    value={policy.enforcement}
-                    onChange={(e) => handlePolicyChange("enforcement", e.target.value)}
-                  >
-                    {ENFORCEMENT_MODES.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
+                  <label htmlFor="enforcement" className="label">Enforcement Mode</label>
+                  <select id="enforcement" className="input" value={policy.enforcement} onChange={(e) => handlePolicyChange("enforcement", e.target.value)}>
+                    {ENFORCEMENT_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                   </select>
                 </div>
               </div>
             </div>
 
-            {/* Reliability Settings Section */}
             <div>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Reliability Settings
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Reliability Thresholds</h3>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div>
-                  <label htmlFor="minimumSampleSize" className="label">
-                    Minimum Sample Size
-                  </label>
-                  <input
-                    id="minimumSampleSize"
-                    type="number"
-                    className="input"
-                    min={3}
-                    max={20}
-                    value={policy.minimumSampleSize}
-                    onChange={(e) => handlePolicyChange("minimumSampleSize", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Movements required before score is shown (3–20)</p>
-                  {validationErrors.minimumSampleSize && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.minimumSampleSize}</p>
-                  )}
+                  <label htmlFor="minimumSampleSize" className="label">Min Sample Size</label>
+                  <input id="minimumSampleSize" type="number" className="input" min={3} max={20} value={policy.minimumSampleSize} onChange={(e) => handlePolicyChange("minimumSampleSize", parseInt(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label htmlFor="severityMinorMax" className="label">Minor Max</label>
+                  <input id="severityMinorMax" type="number" className="input" min={1} value={policy.severityMinorMax} onChange={(e) => handlePolicyChange("severityMinorMax", parseInt(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label htmlFor="severityModerateMax" className="label">Moderate Max</label>
+                  <input id="severityModerateMax" type="number" className="input" min={2} value={policy.severityModerateMax} onChange={(e) => handlePolicyChange("severityModerateMax", parseInt(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label htmlFor="severitySignificantMax" className="label">Significant Max</label>
+                  <input id="severitySignificantMax" type="number" className="input" min={3} value={policy.severitySignificantMax} onChange={(e) => handlePolicyChange("severitySignificantMax", parseInt(e.target.value) || 0)} />
                 </div>
               </div>
             </div>
 
-            {/* Severity Thresholds Section */}
-            <div>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Late Return Severity Thresholds (minutes past grace)
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label htmlFor="severityMinorMax" className="label">
-                    Minor Max
-                  </label>
-                  <input
-                    id="severityMinorMax"
-                    type="number"
-                    className="input"
-                    min={1}
-                    value={policy.severityMinorMax}
-                    onChange={(e) => handlePolicyChange("severityMinorMax", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">1 to this value = minor</p>
-                  {validationErrors.severityMinorMax && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.severityMinorMax}</p>
-                  )}
-                </div>
-
-                <div>
-                  <label htmlFor="severityModerateMax" className="label">
-                    Moderate Max
-                  </label>
-                  <input
-                    id="severityModerateMax"
-                    type="number"
-                    className="input"
-                    min={2}
-                    value={policy.severityModerateMax}
-                    onChange={(e) => handlePolicyChange("severityModerateMax", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">{policy.severityMinorMax + 1} to this value = moderate</p>
-                  {validationErrors.severityModerateMax && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.severityModerateMax}</p>
-                  )}
-                </div>
-
-                <div>
-                  <label htmlFor="severitySignificantMax" className="label">
-                    Significant Max
-                  </label>
-                  <input
-                    id="severitySignificantMax"
-                    type="number"
-                    className="input"
-                    min={3}
-                    value={policy.severitySignificantMax}
-                    onChange={(e) => handlePolicyChange("severitySignificantMax", parseInt(e.target.value) || 0)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">{policy.severityModerateMax + 1} to this value = significant, above = severe</p>
-                  {validationErrors.severitySignificantMax && (
-                    <p className="text-xs text-danger-600 mt-1">{validationErrors.severitySignificantMax}</p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Save status messages */}
-            {policyMessage && (
-              <div
-                className={`px-4 py-3 rounded-lg text-sm ${
-                  policyMessage.type === "success"
-                    ? "bg-green-50 text-green-700"
-                    : "bg-danger-50 text-danger-700"
-                }`}
-              >
-                {policyMessage.text}
-              </div>
-            )}
-
-            {/* Save button */}
             <div className="flex justify-end">
-              <button
-                className="btn-primary"
-                onClick={handlePolicySave}
-                disabled={policySaving}
-              >
+              <button className="btn-primary" onClick={handlePolicySave} disabled={policySaving}>
                 {policySaving ? "Saving..." : "Save Policy"}
               </button>
             </div>
           </div>
         )}
       </div>
+
+      <div className="mt-8 card">
+        <div className="flex items-center gap-2 mb-4">
+          <Building2 className="w-5 h-5 text-gray-700" />
+          <h2 className="text-lg font-bold">Institution Configuration</h2>
+        </div>
+
+        {configLoading ? (
+          <div className="animate-pulse text-gray-500 py-6">Loading institution config...</div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="label">Timezone</label>
+                <input className="input" value={institutionConfig.timezone} onChange={(e) => setInstitutionConfig((prev) => ({ ...prev, timezone: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label">Week Start Day</label>
+                <select className="input" value={institutionConfig.weekStartDay} onChange={(e) => setInstitutionConfig((prev) => ({ ...prev, weekStartDay: e.target.value }))}>
+                  {WEEK_START_DAYS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Low Allowance Threshold (minutes)</label>
+                <input className="input" type="number" min={0} max={10080} value={institutionConfig.lowAllowanceThresholdMinutes} onChange={(e) => setInstitutionConfig((prev) => ({ ...prev, lowAllowanceThresholdMinutes: parseInt(e.target.value) || 0 }))} />
+              </div>
+            </div>
+
+            <div>
+              <p className="label mb-2">Working Days of Week</p>
+              <div className="flex flex-wrap gap-3">
+                {WEEKDAY_OPTIONS.map((w) => (
+                  <label key={w.value} className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={institutionConfig.workingDaysOfWeek.includes(w.value)}
+                      onChange={() => toggleWorkingDay(w.value)}
+                    />
+                    {w.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button className="btn-primary" onClick={saveInstitutionConfig} disabled={configSaving}>
+                {configSaving ? "Saving..." : "Save Institution Config"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 card">
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <CalendarDays className="w-5 h-5 text-gray-700" />
+            <h2 className="text-lg font-bold">Academic Calendar</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="btn-secondary" onClick={() => shiftCalendarMonth(-1)}>
+              Prev
+            </button>
+            <input
+              type="month"
+              className="input"
+              value={calendarMonth}
+              onChange={async (e) => {
+                const next = e.target.value;
+                setCalendarMonth(next);
+                setCalendarLoading(true);
+                try {
+                  await loadCalendar(next);
+                } finally {
+                  setCalendarLoading(false);
+                }
+              }}
+            />
+            <button className="btn-secondary" onClick={() => shiftCalendarMonth(1)}>
+              Next
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+          <div>
+            <label className="label">Date</label>
+            <input type="date" className="input" value={calendarForm.date} onChange={(e) => setCalendarForm((prev) => ({ ...prev, date: e.target.value }))} />
+          </div>
+          <div>
+            <label className="label">Day Type</label>
+            <select className="input" value={calendarForm.dayType} onChange={(e) => setCalendarForm((prev) => ({ ...prev, dayType: e.target.value }))}>
+              {DAY_TYPES.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="label">Note (optional)</label>
+            <input className="input" value={calendarForm.note} onChange={(e) => setCalendarForm((prev) => ({ ...prev, note: e.target.value }))} />
+          </div>
+        </div>
+
+        <div className="flex justify-end mb-4">
+          <button className="btn-primary" onClick={upsertCalendarDay} disabled={calendarSaving}>
+            {calendarSaving ? "Saving..." : "Save Calendar Day"}
+          </button>
+        </div>
+
+        {calendarLoading ? (
+          <div className="animate-pulse text-gray-500 py-4">Loading calendar...</div>
+        ) : calendarDays.length === 0 ? (
+          <p className="text-sm text-gray-500">No calendar overrides saved for selected month.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2">Date</th>
+                  <th className="py-2">Type</th>
+                  <th className="py-2">Note</th>
+                  <th className="py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calendarDays.map((d) => (
+                  <tr key={d.id} className="border-b">
+                    <td className="py-2">{new Date(d.date).toLocaleDateString()}</td>
+                    <td className="py-2">{d.dayType}</td>
+                    <td className="py-2">{d.note || "-"}</td>
+                    <td className="py-2">
+                      <button className="btn-secondary" onClick={() => deleteCalendarDay(d.date)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {policyMessage && (
+        <div className={`mt-6 px-4 py-3 rounded-lg text-sm ${policyMessage.type === "success" ? "bg-green-50 text-green-700" : "bg-danger-50 text-danger-700"}`}>
+          {policyMessage.text}
+        </div>
+      )}
     </div>
   );
 }

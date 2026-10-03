@@ -107,6 +107,29 @@ export const emergencyOverrideSchema = z.object({
   justification: z.string().min(10),
 });
 
+export const updateInstitutionConfigSchema = z.object({
+  timezone: z.string().min(1).optional(),
+  weekStartDay: z
+    .enum(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"])
+    .optional(),
+  workingDaysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
+  lowAllowanceThresholdMinutes: z.number().int().min(0).max(10080).optional(),
+});
+
+export const upsertAcademicCalendarDaySchema = z.object({
+  date: z.string().min(1),
+  dayType: z.enum([
+    "WORKING_DAY",
+    "HOLIDAY",
+    "WEEKEND",
+    "EXAM_DAY",
+    "VACATION",
+    "SPECIAL_WORKING_DAY",
+    "INSTITUTION_EVENT",
+  ]),
+  note: z.string().max(500).optional(),
+});
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -121,3 +144,5 @@ export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type BulkImportStudentInput = z.infer<typeof bulkImportStudentSchema>;
 export type UpdateAllowancePolicyInput = z.infer<typeof updateAllowancePolicySchema>;
 export type EmergencyOverrideInput = z.infer<typeof emergencyOverrideSchema>;
+export type UpdateInstitutionConfigInput = z.infer<typeof updateInstitutionConfigSchema>;
+export type UpsertAcademicCalendarDayInput = z.infer<typeof upsertAcademicCalendarDaySchema>;

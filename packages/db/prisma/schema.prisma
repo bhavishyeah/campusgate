@@ -63,6 +63,8 @@ enum AuditAction {
   BULK_IMPORT
   EMERGENCY_OVERRIDE
   ALLOWANCE_POLICY_UPDATED
+  INSTITUTION_CONFIG_UPDATED
+  ACADEMIC_CALENDAR_UPDATED
 }
 
 enum PolicyPeriod {
@@ -89,6 +91,26 @@ enum InstitutionStatus {
   SUSPENDED
 }
 
+enum WeekStartDay {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum AcademicDayType {
+  WORKING_DAY
+  HOLIDAY
+  WEEKEND
+  EXAM_DAY
+  VACATION
+  SPECIAL_WORKING_DAY
+  INSTITUTION_EVENT
+}
+
 // ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
 
 model Institution {
@@ -101,11 +123,13 @@ model Institution {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  departments     Department[]
-  gates           Gate[]
-  users           User[]
-  exitReasons     ExitReason[]
-  allowancePolicy AllowancePolicy?
+  departments        Department[]
+  gates              Gate[]
+  users              User[]
+  exitReasons        ExitReason[]
+  allowancePolicy    AllowancePolicy?
+  institutionConfig  InstitutionConfig?
+  academicCalendarDays AcademicCalendarDay[]
 
   @@map("institutions")
 }
@@ -358,6 +382,35 @@ model Notification {
 }
 
 // ─── ALLOWANCE POLICY ───────────────────────────────────────────────────────
+
+model InstitutionConfig {
+  id                           String       @id @default(cuid())
+  institutionId                String       @unique
+  institution                  Institution  @relation(fields: [institutionId], references: [id])
+  timezone                     String       @default("Asia/Kolkata")
+  weekStartDay                 WeekStartDay @default(MONDAY)
+  workingDaysOfWeek            Json         @default("[1,2,3,4,5,6]")
+  lowAllowanceThresholdMinutes Int          @default(60)
+  createdAt                    DateTime     @default(now())
+  updatedAt                    DateTime     @updatedAt
+
+  @@map("institution_configs")
+}
+
+model AcademicCalendarDay {
+  id            String          @id @default(cuid())
+  institutionId String
+  institution   Institution     @relation(fields: [institutionId], references: [id])
+  date          DateTime
+  dayType       AcademicDayType
+  note          String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([institutionId, date])
+  @@index([institutionId, date])
+  @@map("academic_calendar_days")
+}
 
 model AllowancePolicy {
   id                     String          @id @default(cuid())

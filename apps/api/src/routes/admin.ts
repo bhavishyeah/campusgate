@@ -3,7 +3,12 @@ import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
 import ExcelJS from "exceljs";
 import { prisma } from "@campusgate/db";
-import { createUserSchema, bulkImportStudentSchema } from "@campusgate/shared";
+import {
+  createUserSchema,
+  bulkImportStudentSchema,
+  updateInstitutionConfigSchema,
+  upsertAcademicCalendarDaySchema,
+} from "@campusgate/shared";
 import { requireTenantRole } from "../middleware/auth.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 
@@ -661,6 +666,178 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return reply.send(policy);
+  });
+
+  // ─── INSTITUTION CONFIG ───────────────────────────────────────────────────
+  app.get("/institution-config", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const config = await AllowanceEngine.getOrCreateInstitutionConfig(institutionId);
+    return reply.send(config);
+  });
+
+  app.put("/institution-config", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = updateInstitutionConfigSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const payload = parsed.data;
+
+    const normalizedWorkingDays = payload.workingDaysOfWeek
+      ? Array.from(new Set(payload.workingDaysOfWeek)).sort((a, b) => a - b)
+      : undefined;
+
+    const config = await prisma.institutionConfig.upsert({
+      where: { institutionId },
+      update: {
+        ...(payload.timezone !== undefined ? { timezone: payload.timezone } : {}),
+        ...(payload.weekStartDay !== undefined ? { weekStartDay: payload.weekStartDay } : {}),
+        ...(normalizedWorkingDays !== undefined ? { workingDaysOfWeek: normalizedWorkingDays } : {}),
+        ...(payload.lowAllowanceThresholdMinutes !== undefined
+          ? { lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes }
+          : {}),
+      },
+      create: {
+        institutionId,
+        timezone: payload.timezone ?? "Asia/Kolkata",
+        weekStartDay: payload.weekStartDay ?? "MONDAY",
+        workingDaysOfWeek: normalizedWorkingDays ?? [1, 2, 3, 4, 5, 6],
+        lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes ?? 60,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "INSTITUTION_CONFIG_UPDATED",
+        targetId: config.id,
+        targetType: "InstitutionConfig",
+        metadata: payload,
+      },
+    });
+
+    return reply.send(config);
+  });
+
+  // ─── ACADEMIC CALENDAR ────────────────────────────────────────────────────
+  app.get("/academic-calendar", async (request, reply) => {
+    const { institutionId } = request.user;
+    const { startDate, endDate } = request.query as { startDate?: string; endDate?: string };
+
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const start = startDate ? new Date(startDate) : defaultStart;
+    const end = endDate ? new Date(endDate) : defaultEnd;
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return reply.status(400).send({ error: "Invalid date range" });
+    }
+
+    const days = await prisma.academicCalendarDay.findMany({
+      where: {
+        institutionId,
+        date: { gte: start, lte: end },
+      },
+      orderBy: { date: "asc" },
+    });
+
+    return reply.send(days);
+  });
+
+  app.put("/academic-calendar/day", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = upsertAcademicCalendarDaySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const { date, dayType, note } = parsed.data;
+    const parts = date.split("-").map((v) => Number(v));
+    if (parts.length !== 3 || parts.some((p) => Number.isNaN(p))) {
+      return reply.status(400).send({ error: "Invalid date" });
+    }
+
+    const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+
+    const day = await prisma.academicCalendarDay.upsert({
+      where: {
+        institutionId_date: {
+          institutionId,
+          date: normalizedDate,
+        },
+      },
+      update: { dayType, note },
+      create: {
+        institutionId,
+        date: normalizedDate,
+        dayType,
+        note,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "ACADEMIC_CALENDAR_UPDATED",
+        targetId: day.id,
+        targetType: "AcademicCalendarDay",
+        metadata: { date: day.date, dayType: day.dayType },
+      },
+    });
+
+    return reply.send(day);
+  });
+
+  app.delete("/academic-calendar/day/:date", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { date } = request.params as { date: string };
+
+    const parts = date.split("-").map((v) => Number(v));
+    if (parts.length !== 3 || parts.some((p) => Number.isNaN(p))) {
+      return reply.status(400).send({ error: "Invalid date" });
+    }
+
+    const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+
+    const existing = await prisma.academicCalendarDay.findUnique({
+      where: {
+        institutionId_date: {
+          institutionId,
+          date: normalizedDate,
+        },
+      },
+    });
+
+    if (!existing) {
+      return reply.status(404).send({ error: "Calendar day not found" });
+    }
+
+    await prisma.academicCalendarDay.delete({
+      where: {
+        institutionId_date: {
+          institutionId,
+          date: normalizedDate,
+        },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "ACADEMIC_CALENDAR_UPDATED",
+        targetId: existing.id,
+        targetType: "AcademicCalendarDay",
+        metadata: { deleted: true, date: normalizedDate },
+      },
+    });
+
+    return reply.send({ success: true });
   });
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────

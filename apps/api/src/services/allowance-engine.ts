@@ -1,4 +1,4 @@
-import { prisma, PolicyPeriod, EnforcementMode } from "@campusgate/db";
+import { prisma, PolicyPeriod, EnforcementMode, WeekStartDay, AcademicDayType } from "@campusgate/db";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -15,6 +15,13 @@ export interface PolicyConfig {
   enforcement: EnforcementMode;
   minimumSampleSize: number;
   severityThresholds: SeverityThresholds;
+}
+
+export interface InstitutionConfig {
+  timezone: string;
+  weekStartDay: WeekStartDay;
+  workingDaysOfWeek: number[];
+  lowAllowanceThresholdMinutes: number;
 }
 
 export interface AllowanceSummary {
@@ -35,16 +42,25 @@ export interface EnforcementDecision {
   remainingAllowance: number;
 }
 
+const WORKING_DAY_TYPES = new Set<AcademicDayType>([
+  "WORKING_DAY",
+  "SPECIAL_WORKING_DAY",
+  "EXAM_DAY",
+  "INSTITUTION_EVENT",
+]);
+
+const NON_WORKING_DAY_TYPES = new Set<AcademicDayType>([
+  "HOLIDAY",
+  "WEEKEND",
+  "VACATION",
+]);
+
 // ─── AllowanceEngine ────────────────────────────────────────────────────────
 
 export class AllowanceEngine {
   /**
    * Computes actual duration in minutes for a completed gate pass
    * by deriving from EXIT and RETURN GateEvent timestamps.
-   *
-   * Returns null if the pass has no matching EXIT or RETURN event.
-   *
-   * Requirements: 1.1, 1.2, 1.3
    */
   static async computeActualDuration(passId: string): Promise<number | null> {
     const gateEvents = await prisma.gateEvent.findMany({
@@ -56,7 +72,6 @@ export class AllowanceEngine {
     const returnEvent = gateEvents.find((e) => e.eventType === "RETURN");
 
     if (!exitEvent || !returnEvent) {
-      // Req 1.3: exclude passes with missing events, log warning
       console.warn(
         `[AllowanceEngine] Pass ${passId} missing EXIT or RETURN GateEvent — excluded from duration calculation`
       );
@@ -64,22 +79,10 @@ export class AllowanceEngine {
     }
 
     return Math.floor(
-      (returnEvent.timestamp.getTime() - exitEvent.timestamp.getTime()) /
-        (1000 * 60)
+      (returnEvent.timestamp.getTime() - exitEvent.timestamp.getTime()) / (1000 * 60)
     );
   }
 
-  /**
-   * Computes period start and end dates for a given PolicyPeriod type
-   * relative to a reference date.
-   *
-   * - DAILY: midnight to end of day (23:59:59.999)
-   * - WEEKLY: Monday 00:00:00.000 to Sunday 23:59:59.999
-   * - MONTHLY: 1st of month to last day of month (23:59:59.999)
-   * - SEMESTER: Jan 1–Jun 30 or Jul 1–Dec 31
-   *
-   * Requirements: 2.4, 6.4
-   */
   static getPeriodBounds(
     periodType: PolicyPeriod,
     referenceDate: Date
@@ -88,30 +91,13 @@ export class AllowanceEngine {
 
     switch (periodType) {
       case "DAILY": {
-        const dayStart = new Date(
-          ref.getFullYear(),
-          ref.getMonth(),
-          ref.getDate(),
-          0,
-          0,
-          0,
-          0
-        );
-        const dayEnd = new Date(
-          ref.getFullYear(),
-          ref.getMonth(),
-          ref.getDate(),
-          23,
-          59,
-          59,
-          999
-        );
+        const dayStart = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), 0, 0, 0, 0);
+        const dayEnd = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), 23, 59, 59, 999);
         return { start: dayStart, end: dayEnd };
       }
 
       case "WEEKLY": {
-        const dayOfWeek = ref.getDay(); // 0 = Sunday, 1 = Monday, ...
-        // Compute offset to Monday (week start)
+        const dayOfWeek = ref.getDay();
         const offsetToMonday = (dayOfWeek + 6) % 7;
         const monday = new Date(
           ref.getFullYear(),
@@ -135,57 +121,82 @@ export class AllowanceEngine {
       }
 
       case "MONTHLY": {
-        const monthStart = new Date(
-          ref.getFullYear(),
-          ref.getMonth(),
-          1,
-          0,
-          0,
-          0,
-          0
-        );
-        // Day 0 of next month = last day of current month
-        const monthEnd = new Date(
-          ref.getFullYear(),
-          ref.getMonth() + 1,
-          0,
-          23,
-          59,
-          59,
-          999
-        );
+        const monthStart = new Date(ref.getFullYear(), ref.getMonth(), 1, 0, 0, 0, 0);
+        const monthEnd = new Date(ref.getFullYear(), ref.getMonth() + 1, 0, 23, 59, 59, 999);
         return { start: monthStart, end: monthEnd };
       }
 
       case "SEMESTER": {
-        // Semesters: Jan–Jun (months 0–5) and Jul–Dec (months 6–11)
         if (ref.getMonth() < 6) {
           const semStart = new Date(ref.getFullYear(), 0, 1, 0, 0, 0, 0);
           const semEnd = new Date(ref.getFullYear(), 5, 30, 23, 59, 59, 999);
           return { start: semStart, end: semEnd };
-        } else {
-          const semStart = new Date(ref.getFullYear(), 6, 1, 0, 0, 0, 0);
-          const semEnd = new Date(ref.getFullYear(), 11, 31, 23, 59, 59, 999);
-          return { start: semStart, end: semEnd };
         }
+
+        const semStart = new Date(ref.getFullYear(), 6, 1, 0, 0, 0, 0);
+        const semEnd = new Date(ref.getFullYear(), 11, 31, 23, 59, 59, 999);
+        return { start: semStart, end: semEnd };
       }
     }
   }
 
-  /**
-   * Returns the existing AllowancePolicy for an institution,
-   * or creates one with default values if none exists.
-   *
-   * Defaults (Req 3.5):
-   * - allowanceAmount: 1440 (24 hours)
-   * - policyPeriod: WEEKLY
-   * - gracePeriod: 10 minutes
-   * - enforcement: WARN_ONLY
-   * - minimumSampleSize: 5
-   * - severityMinorMax: 15, severityModerateMax: 60, severitySignificantMax: 180
-   *
-   * Requirements: 3.5
-   */
+  private static getWeekStartOffset(day: WeekStartDay): number {
+    switch (day) {
+      case "SUNDAY":
+        return 0;
+      case "MONDAY":
+        return 1;
+      case "TUESDAY":
+        return 2;
+      case "WEDNESDAY":
+        return 3;
+      case "THURSDAY":
+        return 4;
+      case "FRIDAY":
+        return 5;
+      case "SATURDAY":
+        return 6;
+    }
+  }
+
+  private static getWeeklyPeriodBounds(
+    weekStartDay: WeekStartDay,
+    referenceDate: Date
+  ): { start: Date; end: Date } {
+    const ref = new Date(referenceDate);
+    const startDow = AllowanceEngine.getWeekStartOffset(weekStartDay);
+    const dow = ref.getDay();
+    const delta = (dow - startDow + 7) % 7;
+
+    const start = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - delta, 0, 0, 0, 0);
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6, 23, 59, 59, 999);
+
+    return { start, end };
+  }
+
+  private static normalizeDateKey(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  private static isWorkingDay(
+    date: Date,
+    calendarMap: Map<string, AcademicDayType>,
+    workingDaysOfWeek: Set<number>
+  ): boolean {
+    const key = AllowanceEngine.normalizeDateKey(date);
+    const explicit = calendarMap.get(key);
+
+    if (explicit) {
+      if (WORKING_DAY_TYPES.has(explicit)) return true;
+      if (NON_WORKING_DAY_TYPES.has(explicit)) return false;
+    }
+
+    return workingDaysOfWeek.has(date.getDay());
+  }
+
   static async getOrCreatePolicy(institutionId: string): Promise<PolicyConfig> {
     let policy = await prisma.allowancePolicy.findUnique({
       where: { institutionId },
@@ -221,69 +232,101 @@ export class AllowanceEngine {
     };
   }
 
-  /**
-   * Computes the remaining allowance for a student in the current policy period.
-   *
-   * Algorithm:
-   * 1. Get policy for institution
-   * 2. Compute period boundaries from policy period type
-   * 3. Query all COMPLETED gate passes where a RETURN GateEvent falls within period
-   * 4. For each pass, find EXIT/RETURN events and sum durations (skip if either missing)
-   * 5. Check if student is currently OUTSIDE — if so, add elapsed time since EXIT
-   * 6. remaining = max(0, allowanceAmount - consumed)
-   * 7. Return AllowanceSummary
-   *
-   * Requirements: 2.1, 2.2, 2.3, 2.4
-   */
+  static async getOrCreateInstitutionConfig(institutionId: string): Promise<InstitutionConfig> {
+    let config = await prisma.institutionConfig.findUnique({
+      where: { institutionId },
+    });
+
+    if (!config) {
+      config = await prisma.institutionConfig.create({
+        data: {
+          institutionId,
+          timezone: "Asia/Kolkata",
+          weekStartDay: "MONDAY",
+          workingDaysOfWeek: [1, 2, 3, 4, 5, 6],
+          lowAllowanceThresholdMinutes: 60,
+        },
+      });
+    }
+
+    const weekdays = Array.isArray(config.workingDaysOfWeek)
+      ? config.workingDaysOfWeek
+          .map((d) => Number(d))
+          .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+      : [1, 2, 3, 4, 5, 6];
+
+    return {
+      timezone: config.timezone,
+      weekStartDay: config.weekStartDay,
+      workingDaysOfWeek: weekdays.length > 0 ? weekdays : [1, 2, 3, 4, 5, 6],
+      lowAllowanceThresholdMinutes: config.lowAllowanceThresholdMinutes,
+    };
+  }
+
   static async getRemainingAllowance(
     studentId: string,
     institutionId: string
   ): Promise<AllowanceSummary> {
-    // 1. Get policy for institution
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    const [policy, institutionConfig] = await Promise.all([
+      AllowanceEngine.getOrCreatePolicy(institutionId),
+      AllowanceEngine.getOrCreateInstitutionConfig(institutionId),
+    ]);
 
-    // 2. Compute period boundaries
-    const { start, end } = AllowanceEngine.getPeriodBounds(
-      policy.policyPeriod,
-      new Date()
-    );
+    const now = new Date();
+    const { start, end } =
+      policy.policyPeriod === "WEEKLY"
+        ? AllowanceEngine.getWeeklyPeriodBounds(institutionConfig.weekStartDay, now)
+        : AllowanceEngine.getPeriodBounds(policy.policyPeriod, now);
 
-    // 3. Query all COMPLETED passes for student where a RETURN event falls within period
-    const completedPasses = await prisma.gatePass.findMany({
-      where: {
-        studentId,
-        status: "COMPLETED",
-        gateEvents: {
-          some: {
-            eventType: "RETURN",
-            timestamp: { gte: start, lte: end },
+    const [completedPasses, calendarDays] = await Promise.all([
+      prisma.gatePass.findMany({
+        where: {
+          studentId,
+          status: "COMPLETED",
+          gateEvents: {
+            some: {
+              eventType: "RETURN",
+              timestamp: { gte: start, lte: end },
+            },
           },
         },
-      },
-      include: { gateEvents: true },
-    });
+        include: { gateEvents: true },
+      }),
+      prisma.academicCalendarDay.findMany({
+        where: {
+          institutionId,
+          date: { gte: start, lte: end },
+        },
+      }),
+    ]);
 
-    // 4. Sum actual durations from GateEvent pairs
+    const calendarMap = new Map<string, AcademicDayType>(
+      calendarDays.map((d) => [AllowanceEngine.normalizeDateKey(d.date), d.dayType])
+    );
+    const workingWeekdays = new Set<number>(institutionConfig.workingDaysOfWeek);
+
     let consumed = 0;
     for (const pass of completedPasses) {
       const exitEvent = pass.gateEvents.find((e) => e.eventType === "EXIT");
       const returnEvent = pass.gateEvents.find((e) => e.eventType === "RETURN");
 
-      if (exitEvent && returnEvent) {
-        const duration = Math.floor(
-          (returnEvent.timestamp.getTime() - exitEvent.timestamp.getTime()) /
-            (1000 * 60)
-        );
-        consumed += duration;
-      } else {
-        // Req 1.3: exclude passes with missing events, log warning
+      if (!exitEvent || !returnEvent) {
         console.warn(
           `[AllowanceEngine] Pass ${pass.id} missing EXIT or RETURN GateEvent — excluded from allowance calculation`
         );
+        continue;
       }
+
+      if (!AllowanceEngine.isWorkingDay(returnEvent.timestamp, calendarMap, workingWeekdays)) {
+        continue;
+      }
+
+      const duration = Math.floor(
+        (returnEvent.timestamp.getTime() - exitEvent.timestamp.getTime()) / (1000 * 60)
+      );
+      consumed += duration;
     }
 
-    // 5. Include in-progress elapsed time if student is currently OUTSIDE
     let currentlyOutsideElapsed: number | null = null;
     const outsidePass = await prisma.gatePass.findFirst({
       where: { studentId, status: "OUTSIDE" },
@@ -291,9 +334,7 @@ export class AllowanceEngine {
     });
 
     if (outsidePass) {
-      const exitEvent = outsidePass.gateEvents.find(
-        (e) => e.eventType === "EXIT"
-      );
+      const exitEvent = outsidePass.gateEvents.find((e) => e.eventType === "EXIT");
       if (exitEvent) {
         currentlyOutsideElapsed = Math.floor(
           (Date.now() - exitEvent.timestamp.getTime()) / (1000 * 60)
@@ -302,10 +343,8 @@ export class AllowanceEngine {
       }
     }
 
-    // 6. remaining = max(0, allowanceAmount - consumed)
     const remaining = Math.max(0, policy.allowanceAmount - consumed);
 
-    // 7. Return AllowanceSummary
     return {
       totalAllowance: policy.allowanceAmount,
       consumed,
@@ -314,40 +353,23 @@ export class AllowanceEngine {
       periodStart: start,
       periodEnd: end,
       isExhausted: remaining <= 0,
-      warningThreshold: remaining < policy.allowanceAmount * 0.2,
+      warningThreshold: remaining <= institutionConfig.lowAllowanceThresholdMinutes,
       currentlyOutsideElapsed,
     };
   }
 
-  /**
-   * Determines enforcement action based on remaining allowance and policy mode.
-   *
-   * Decision logic:
-   * - If remaining > 0: allow (no restrictions)
-   * - If remaining <= 0 and enforcement is BLOCK_NEW_REQUESTS: block
-   * - If remaining <= 0 and enforcement is WARN_ONLY: warn
-   *
-   * Requirements: 4.1, 4.2, 4.3
-   */
   static async getEnforcementDecision(
     studentId: string,
     institutionId: string
   ): Promise<EnforcementDecision> {
-    // 1. Get the allowance summary
-    const summary = await AllowanceEngine.getRemainingAllowance(
-      studentId,
-      institutionId
-    );
+    const summary = await AllowanceEngine.getRemainingAllowance(studentId, institutionId);
 
-    // 2. If remaining > 0: allow
     if (summary.remaining > 0) {
       return { action: "allow", remainingAllowance: summary.remaining };
     }
 
-    // 3. Get the policy to check enforcement mode
     const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
 
-    // 4. If remaining <= 0 and enforcement is BLOCK_NEW_REQUESTS: block
     if (policy.enforcement === "BLOCK_NEW_REQUESTS") {
       return {
         action: "block",
@@ -357,11 +379,9 @@ export class AllowanceEngine {
       };
     }
 
-    // 5. If remaining <= 0 and enforcement is WARN_ONLY: warn
     return {
       action: "warn",
-      message:
-        "Student has exhausted their outside-time allowance for this period.",
+      message: "Student has exhausted their outside-time allowance for this period.",
       remainingAllowance: summary.remaining,
     };
   }

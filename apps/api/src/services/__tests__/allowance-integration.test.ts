@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@campusgate/db', () => ({
   prisma: {
     allowancePolicy: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
+    institutionConfig: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
+    academicCalendarDay: { findMany: vi.fn() },
     gatePass: { findMany: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn() },
     gateEvent: { findMany: vi.fn() },
     emergencyOverride: { create: vi.fn() },
@@ -11,6 +13,8 @@ vi.mock('@campusgate/db', () => ({
   },
   PolicyPeriod: { DAILY: 'DAILY', WEEKLY: 'WEEKLY', MONTHLY: 'MONTHLY', SEMESTER: 'SEMESTER' },
   EnforcementMode: { BLOCK_NEW_REQUESTS: 'BLOCK_NEW_REQUESTS', WARN_ONLY: 'WARN_ONLY' },
+  WeekStartDay: { MONDAY: 'MONDAY' },
+  AcademicDayType: { WORKING_DAY: 'WORKING_DAY' },
 }));
 
 import { AllowanceEngine } from '../allowance-engine.js';
@@ -23,6 +27,12 @@ const mockedPrisma = prisma as unknown as {
     create: ReturnType<typeof vi.fn>;
     upsert: ReturnType<typeof vi.fn>;
   };
+  institutionConfig: {
+    findUnique: ReturnType<typeof vi.fn>;
+    create: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn>;
+  };
+  academicCalendarDay: { findMany: ReturnType<typeof vi.fn> };
   gatePass: {
     findMany: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
@@ -40,6 +50,15 @@ describe('Allowance Integration Tests', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedPrisma.institutionConfig.findUnique.mockResolvedValue({
+      id: 'cfg-1',
+      institutionId: INSTITUTION_ID,
+      timezone: 'Asia/Kolkata',
+      weekStartDay: 'MONDAY',
+      workingDaysOfWeek: [1, 2, 3, 4, 5, 6],
+      lowAllowanceThresholdMinutes: 60,
+    });
+    mockedPrisma.academicCalendarDay.findMany.mockResolvedValue([]);
   });
 
   // ─── Full Gate Pass Lifecycle with Allowance Tracking ───────────────────────
