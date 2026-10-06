@@ -1,6 +1,11 @@
 import { useAuthStore } from "@/stores/auth";
 
-const WS_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+// Prefer an explicit WebSocket URL when provided; otherwise derive it from the
+// API URL by swapping the http(s) scheme for ws(s).
+const WS_URL =
+  process.env.NEXT_PUBLIC_WS_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://localhost:4000";
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
