@@ -45,6 +45,11 @@ export const rejectPassSchema = z.object({
   rejectionReason: z.string().min(1, "Rejection reason is required"),
 });
 
+export const revokePassSchema = z.object({
+  passId: z.string().min(1, "Invalid pass ID"),
+  reason: z.string().min(3, "Revocation reason is required"),
+});
+
 // ─── GATE EVENTS ─────────────────────────────────────────────────────────────
 
 export const verifyQrSchema = z.object({
@@ -59,6 +64,14 @@ export const markExitSchema = z.object({
 export const markReturnSchema = z.object({
   passId: z.string().min(1, "Invalid pass ID"),
   gateId: z.string().min(1, "Invalid gate ID"),
+});
+
+export const startGuardShiftSchema = z.object({
+  shiftId: z.string().min(1, "Invalid shift ID"),
+});
+
+export const endGuardShiftSchema = z.object({
+  shiftId: z.string().min(1, "Invalid shift ID"),
 });
 
 // ─── ADMIN ───────────────────────────────────────────────────────────────────
@@ -88,6 +101,19 @@ export const bulkImportStudentSchema = z.object({
   phone: z.string().optional(),
   address: z.string().optional(),
 });
+
+export const createGuardShiftSchema = z
+  .object({
+    guardId: z.string().min(1, "Invalid guard ID"),
+    gateId: z.string().min(1, "Invalid gate ID"),
+    scheduledStartAt: z.string().datetime("Invalid start time"),
+    scheduledEndAt: z.string().datetime("Invalid end time"),
+    note: z.string().max(500).optional(),
+  })
+  .refine((data) => new Date(data.scheduledEndAt) > new Date(data.scheduledStartAt), {
+    message: "Shift end time must be after start time",
+    path: ["scheduledEndAt"],
+  });
 
 // ─── ALLOWANCE & RELIABILITY ─────────────────────────────────────────────────
 
@@ -130,6 +156,17 @@ export const upsertAcademicCalendarDaySchema = z.object({
   note: z.string().max(500).optional(),
 });
 
+export const declareEmergencySchema = z.object({
+  type: z.enum(["FIRE", "EARTHQUAKE", "MEDICAL", "SECURITY", "EVACUATION", "OTHER"]),
+  title: z.string().min(3).max(120),
+  message: z.string().min(10).max(2000),
+  affectedArea: z.string().max(200).optional(),
+});
+
+export const resolveEmergencySchema = z.object({
+  resolutionNote: z.string().max(500).optional(),
+});
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -137,12 +174,18 @@ export type RegisterInput = z.infer<typeof registerSchema>;
 export type CreateGatePassInput = z.infer<typeof createGatePassSchema>;
 export type ApprovePassInput = z.infer<typeof approvePassSchema>;
 export type RejectPassInput = z.infer<typeof rejectPassSchema>;
+export type RevokePassInput = z.infer<typeof revokePassSchema>;
 export type VerifyQrInput = z.infer<typeof verifyQrSchema>;
 export type MarkExitInput = z.infer<typeof markExitSchema>;
 export type MarkReturnInput = z.infer<typeof markReturnSchema>;
+export type StartGuardShiftInput = z.infer<typeof startGuardShiftSchema>;
+export type EndGuardShiftInput = z.infer<typeof endGuardShiftSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type BulkImportStudentInput = z.infer<typeof bulkImportStudentSchema>;
+export type CreateGuardShiftInput = z.infer<typeof createGuardShiftSchema>;
 export type UpdateAllowancePolicyInput = z.infer<typeof updateAllowancePolicySchema>;
 export type EmergencyOverrideInput = z.infer<typeof emergencyOverrideSchema>;
+export type DeclareEmergencyInput = z.infer<typeof declareEmergencySchema>;
+export type ResolveEmergencyInput = z.infer<typeof resolveEmergencySchema>;
 export type UpdateInstitutionConfigInput = z.infer<typeof updateInstitutionConfigSchema>;
 export type UpsertAcademicCalendarDayInput = z.infer<typeof upsertAcademicCalendarDaySchema>;

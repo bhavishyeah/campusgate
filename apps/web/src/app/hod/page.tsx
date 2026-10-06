@@ -62,6 +62,15 @@ interface EmergencyOverrideResponse {
   createdAt: string;
 }
 
+interface EmergencyAlert {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  affectedArea?: string | null;
+  declaredAt: string;
+}
+
 function formatMinutes(minutes: number): string {
   const hrs = Math.floor(minutes / 60);
   const mins = minutes % 60;
@@ -86,6 +95,7 @@ export default function HodDashboard() {
     id: string;
     passNumber: string;
   } | null>(null);
+  const [emergency, setEmergency] = useState<EmergencyAlert | null>(null);
 
   // Allowance and reliability info per request (keyed by pass ID)
   const [allowanceMap, setAllowanceMap] = useState<
@@ -97,10 +107,14 @@ export default function HodDashboard() {
 
   const fetchData = async () => {
     try {
-      const [reqs, statsData] = await Promise.all([
+      const [reqs, statsData, emergencyData] = await Promise.all([
         api.get<GatePassRequest[]>("/api/hod/requests?status=PENDING"),
         api.get<any>("/api/hod/stats"),
+        api.get<EmergencyAlert | null>("/api/hod/emergency/active"),
       ]);
+       setRequests(reqs);
+       setStats(statsData);
++      setEmergency(emergencyData);
       setRequests(reqs);
       setStats(statsData);
 
@@ -204,6 +218,18 @@ export default function HodDashboard() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
+      {emergency && (
+        <div className="card border-2 border-danger-500 bg-danger-50 text-danger-800">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle className="w-5 h-5" />
+            <p className="font-semibold">Emergency Alert · {emergency.type}</p>
+          </div>
+          <p className="text-sm font-medium">{emergency.title}</p>
+          <p className="text-sm mt-1 whitespace-pre-wrap">{emergency.message}</p>
+          {emergency.affectedArea && <p className="text-xs mt-2">Area: {emergency.affectedArea}</p>}
+        </div>
+      )}
+
       {/* Stats */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

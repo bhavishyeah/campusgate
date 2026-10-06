@@ -6,6 +6,9 @@ import { prisma } from "@campusgate/db";
 import {
   createUserSchema,
   bulkImportStudentSchema,
+  createGuardShiftSchema,
+  declareEmergencySchema,
+  resolveEmergencySchema,
   updateInstitutionConfigSchema,
   upsertAcademicCalendarDaySchema,
 } from "@campusgate/shared";
@@ -70,6 +73,416 @@ export async function adminRoutes(app: FastifyInstance) {
       pendingApprovals,
       pendingRegistrations,
     });
+  });
+
+  // ─── MOVEMENT ANALYTICS ───────────────────────────────────────────────────
+  app.get("/analytics", async (request, reply) => {
+    const { institutionId } = request.user;
+    const { from, to } = request.query as { from?: string; to?: string };
+
+    const end = to ? new Date(to) : new Date();
+    const start = from ? new Date(from) : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return reply.status(400).send({ error: "Invalid date range" });
+    }
+
+    const now = new Date();
+
+    const basePassWhere = {
+      createdAt: { gte: start, lte: end },
+      student: { user: { institutionId } },
+    };
+
+    const [
+      totalRequests,
+      approvedRequests,
+      rejectedRequests,
+      revokedRequests,
+      revokedWhileOutside,
+      completedMovements,
+      currentlyOutside,
+      overdueStudents,
+      passes,
+      movementPasses,
+      gateEvents,
+      emergencyAlerts,
+      activeEmergency,
+    ] = await Promise.all([
+      prisma.gatePass.count({ where: basePassWhere }),
+      prisma.gatePass.count({
+        where: {
+          ...basePassWhere,
+          status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED", "REVOKED", "EXPIRED"] },
+        },
+      }),
+      prisma.gatePass.count({ where: { ...basePassWhere, status: "REJECTED" } }),
+      prisma.gatePass.count({ where: { ...basePassWhere, status: "REVOKED" } }),
+      prisma.gatePass.count({
+        where: {
+          ...basePassWhere,
+          status: "REVOKED",
+          actualExit: { not: null },
+          actualReturn: null,
+        },
+      }),
+      prisma.gatePass.count({ where: { ...basePassWhere, status: "COMPLETED" } }),
+      prisma.gatePass.count({ where: { status: "OUTSIDE", student: { user: { institutionId } } } }),
+      prisma.gatePass.count({
+        where: {
+          status: "OUTSIDE",
+          expectedReturn: { lt: now },
+          student: { user: { institutionId } },
+        },
+      }),
+      prisma.gatePass.findMany({
+        where: basePassWhere,
+        select: {
+          id: true,
+          createdAt: true,
+          status: true,
+          reason: { select: { label: true } },
+          student: { select: { department: { select: { name: true } } } },
+        },
+      }),
+      prisma.gatePass.findMany({
+        where: {
+          status: "COMPLETED",
+          actualExit: { gte: start, lte: end },
+          actualReturn: { not: null },
+          student: { user: { institutionId } },
+        },
+        select: {
+          actualExit: true,
+          actualReturn: true,
+          student: { select: { department: { select: { name: true } } } },
+          reason: { select: { label: true } },
+        },
+      }),
+      prisma.gateEvent.findMany({
+        where: {
+          timestamp: { gte: start, lte: end },
+          pass: { student: { user: { institutionId } } },
+        },
+        select: {
+          eventType: true,
+          timestamp: true,
+          gate: { select: { name: true } },
+        },
+      }),
+      prisma.emergencyAlert.findMany({
+        where: {
+          institutionId,
+          declaredAt: { gte: start, lte: end },
+        },
+        select: {
+          declaredAt: true,
+          resolvedAt: true,
+          type: true,
+          status: true,
+        },
+      }),
+      prisma.emergencyAlert.findFirst({
+        where: { institutionId, status: "ACTIVE" },
+        select: { id: true, declaredAt: true, type: true, title: true },
+      }),
+    ]);
+
+    const departmentMap = new Map<string, { requests: number; approved: number; rejected: number }>();
+    const reasonMap = new Map<string, number>();
+
+    for (const pass of passes) {
+      const dept = pass.student.department.name;
+      const existing = departmentMap.get(dept) ?? { requests: 0, approved: 0, rejected: 0 };
+      existing.requests += 1;
+      if (["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED", "REVOKED", "EXPIRED"].includes(pass.status)) {
+        existing.approved += 1;
+      }
+      if (pass.status === "REJECTED") {
+        existing.rejected += 1;
+      }
+      departmentMap.set(dept, existing);
+
+      const reason = pass.reason.label;
+      reasonMap.set(reason, (reasonMap.get(reason) ?? 0) + 1);
+    }
+
+    const movementDurationByDept = new Map<string, { totalMinutes: number; completed: number }>();
+    let totalOutsideMinutes = 0;
+
+    for (const m of movementPasses) {
+      if (!m.actualExit || !m.actualReturn) continue;
+      const mins = Math.max(0, Math.round((m.actualReturn.getTime() - m.actualExit.getTime()) / 60000));
+      totalOutsideMinutes += mins;
+
+      const dept = m.student.department.name;
+      const existing = movementDurationByDept.get(dept) ?? { totalMinutes: 0, completed: 0 };
+      existing.totalMinutes += mins;
+      existing.completed += 1;
+      movementDurationByDept.set(dept, existing);
+    }
+
+    const departmentStats = Array.from(departmentMap.entries())
+      .map(([department, values]) => {
+        const duration = movementDurationByDept.get(department);
+        return {
+          department,
+          requests: values.requests,
+          approved: values.approved,
+          rejected: values.rejected,
+          avgOutsideMinutes:
+            duration && duration.completed > 0 ? Math.round(duration.totalMinutes / duration.completed) : 0,
+        };
+      })
+      .sort((a, b) => b.requests - a.requests);
+
+    const reasonStats = Array.from(reasonMap.entries())
+      .map(([reason, count]) => ({
+        reason,
+        count,
+        percentage: totalRequests > 0 ? Math.round((count / totalRequests) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const gateMap = new Map<string, { exits: number; returns: number }>();
+    const hourlyMap = new Map<number, number>();
+    const dailyMap = new Map<string, { requests: number; exits: number; returns: number }>();
+
+    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+
+    for (const pass of passes) {
+      const k = dayKey(pass.createdAt);
+      const ex = dailyMap.get(k) ?? { requests: 0, exits: 0, returns: 0 };
+      ex.requests += 1;
+      dailyMap.set(k, ex);
+    }
+
+    for (const event of gateEvents) {
+      const gateName = event.gate.name;
+      const gate = gateMap.get(gateName) ?? { exits: 0, returns: 0 };
+      if (event.eventType === "EXIT") gate.exits += 1;
+      if (event.eventType === "RETURN") gate.returns += 1;
+      gateMap.set(gateName, gate);
+
+      const k = dayKey(event.timestamp);
+      const ex = dailyMap.get(k) ?? { requests: 0, exits: 0, returns: 0 };
+      if (event.eventType === "EXIT") ex.exits += 1;
+      if (event.eventType === "RETURN") ex.returns += 1;
+      dailyMap.set(k, ex);
+
+      if (event.eventType === "EXIT") {
+        const h = event.timestamp.getHours();
+        hourlyMap.set(h, (hourlyMap.get(h) ?? 0) + 1);
+      }
+    }
+
+    const gateStats = Array.from(gateMap.entries())
+      .map(([gate, v]) => ({ gate, exits: v.exits, returns: v.returns, total: v.exits + v.returns }))
+      .sort((a, b) => b.total - a.total);
+
+    const emergencyByTypeMap = new Map<string, number>();
+    const emergencyDailyMap = new Map<string, { declared: number; resolved: number }>();
+    let totalResolutionMinutes = 0;
+    let resolvedCount = 0;
+
+    for (const alert of emergencyAlerts) {
+      emergencyByTypeMap.set(alert.type, (emergencyByTypeMap.get(alert.type) ?? 0) + 1);
+
+      const d = dayKey(alert.declaredAt);
+      const daily = emergencyDailyMap.get(d) ?? { declared: 0, resolved: 0 };
+      daily.declared += 1;
+      emergencyDailyMap.set(d, daily);
+
+      if (alert.resolvedAt) {
+        const rd = dayKey(alert.resolvedAt);
+        const resolvedDaily = emergencyDailyMap.get(rd) ?? { declared: 0, resolved: 0 };
+        resolvedDaily.resolved += 1;
+        emergencyDailyMap.set(rd, resolvedDaily);
+
+        const mins = Math.max(0, Math.round((alert.resolvedAt.getTime() - alert.declaredAt.getTime()) / 60000));
+        totalResolutionMinutes += mins;
+        resolvedCount += 1;
+      }
+    }
+
+    const emergencyByType = Array.from(emergencyByTypeMap.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const emergencyDailyTrend = Array.from(emergencyDailyMap.entries())
+      .map(([date, v]) => ({ date, declared: v.declared, resolved: v.resolved }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const hourlyExitDistribution = Array.from({ length: 24 }).map((_, hour) => ({
+      hour,
+      label: `${hour.toString().padStart(2, "0")}:00`,
+      count: hourlyMap.get(hour) ?? 0,
+    }));
+
+    const dailyTrend = Array.from(dailyMap.entries())
+      .map(([date, v]) => ({ date, requests: v.requests, exits: v.exits, returns: v.returns }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    return reply.send({
+      range: { from: start.toISOString(), to: end.toISOString() },
+      overview: {
+        totalRequests,
+        approvedRequests,
+        rejectedRequests,
+        revokedRequests,
+        revokedWhileOutside,
+        completedMovements,
+        currentlyOutside,
+        overdueStudents,
+        avgOutsideMinutes: movementPasses.length > 0 ? Math.round(totalOutsideMinutes / movementPasses.length) : 0,
+        totalOutsideMinutes,
+      },
+      departmentStats,
+      reasonStats,
+      gateStats,
+      hourlyExitDistribution,
+      dailyTrend,
+      emergencyOverview: {
+        declaredCount: emergencyAlerts.length,
+        resolvedCount,
+        activeNow: !!activeEmergency,
+        avgResolutionMinutes: resolvedCount > 0 ? Math.round(totalResolutionMinutes / resolvedCount) : 0,
+        activeAlert: activeEmergency,
+      },
+      emergencyByType,
+      emergencyDailyTrend,
+    });
+  });
+
+  // ─── EMERGENCY ALERTS ─────────────────────────────────────────────────────
+  app.get("/emergency/active", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const active = await prisma.emergencyAlert.findFirst({
+      where: { institutionId, status: "ACTIVE" },
+      orderBy: { declaredAt: "desc" },
+      include: {
+        declaredBy: { select: { id: true, email: true } },
+      },
+    });
+
+    return reply.send(active);
+  });
+
+  app.get("/emergency", async (request, reply) => {
+    const { institutionId } = request.user;
+    const { limit = "20" } = request.query as { limit?: string };
+    const take = Math.min(100, Math.max(1, parseInt(limit || "20", 10) || 20));
+
+    const alerts = await prisma.emergencyAlert.findMany({
+      where: { institutionId },
+      orderBy: { declaredAt: "desc" },
+      take,
+      include: {
+        declaredBy: { select: { id: true, email: true } },
+        resolvedBy: { select: { id: true, email: true } },
+      },
+    });
+
+    return reply.send(alerts);
+  });
+
+  app.post("/emergency/declare", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = declareEmergencySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const existingActive = await prisma.emergencyAlert.findFirst({
+      where: { institutionId, status: "ACTIVE" },
+      orderBy: { declaredAt: "desc" },
+    });
+
+    if (existingActive) {
+      return reply.status(409).send({ error: "An emergency is already active. Resolve it first." });
+    }
+
+    const alert = await prisma.emergencyAlert.create({
+      data: {
+        institutionId,
+        type: parsed.data.type,
+        title: parsed.data.title,
+        message: parsed.data.message,
+        affectedArea: parsed.data.affectedArea,
+        declaredById: userId,
+      },
+      include: {
+        declaredBy: { select: { id: true, email: true } },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "EMERGENCY_DECLARED",
+        targetId: alert.id,
+        targetType: "EmergencyAlert",
+        metadata: {
+          type: alert.type,
+          title: alert.title,
+          affectedArea: alert.affectedArea,
+        },
+      },
+    });
+
+    return reply.status(201).send(alert);
+  });
+
+  app.post("/emergency/:id/resolve", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const parsed = resolveEmergencySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const existing = await prisma.emergencyAlert.findFirst({
+      where: { id, institutionId },
+    });
+
+    if (!existing) {
+      return reply.status(404).send({ error: "Emergency alert not found" });
+    }
+
+    if (existing.status !== "ACTIVE") {
+      return reply.status(409).send({ error: "Emergency alert is already resolved" });
+    }
+
+    const resolved = await prisma.emergencyAlert.update({
+      where: { id: existing.id },
+      data: {
+        status: "RESOLVED",
+        resolvedById: userId,
+        resolvedAt: new Date(),
+        resolutionNote: parsed.data.resolutionNote,
+      },
+      include: {
+        declaredBy: { select: { id: true, email: true } },
+        resolvedBy: { select: { id: true, email: true } },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "EMERGENCY_RESOLVED",
+        targetId: resolved.id,
+        targetType: "EmergencyAlert",
+        metadata: {
+          resolutionNote: parsed.data.resolutionNote,
+        },
+      },
+    });
+
+    return reply.send(resolved);
   });
 
   // ─── LIST USERS ────────────────────────────────────────────────────────────
@@ -539,6 +952,149 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(gates);
   });
 
+  // ─── GATE HEALTH MONITORING ───────────────────────────────────────────────
+  app.get("/gates/health", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const now = Date.now();
+    const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+
+    const gates = await prisma.gate.findMany({
+      where: { institutionId },
+      include: {
+        assignedGuards: { include: { guard: true } },
+        gateEvents: {
+          orderBy: { timestamp: "desc" },
+          take: 1,
+          include: { guard: true },
+        },
+      },
+      orderBy: { name: "asc" },
+    });
+
+    const rows = await Promise.all(
+      gates.map(async (gate) => {
+        const [todayExits, todayReturns] = await Promise.all([
+          prisma.gateEvent.count({
+            where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
+          }),
+          prisma.gateEvent.count({
+            where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
+          }),
+        ]);
+
+        const lastEvent = gate.gateEvents[0] ?? null;
+        const lastActivityAt = lastEvent?.timestamp ?? null;
+        const minutesSinceLastActivity = lastActivityAt
+          ? Math.floor((now - lastActivityAt.getTime()) / 60000)
+          : null;
+
+        let status: "OPERATIONAL" | "WARNING" | "OFFLINE" | "CLOSED";
+        if (!gate.isActive) {
+          status = "CLOSED";
+        } else if (!lastActivityAt) {
+          status = "WARNING";
+        } else if ((minutesSinceLastActivity ?? 0) > 120) {
+          status = "OFFLINE";
+        } else if ((minutesSinceLastActivity ?? 0) > 30) {
+          status = "WARNING";
+        } else {
+          status = "OPERATIONAL";
+        }
+
+        return {
+          gateId: gate.id,
+          gateName: gate.name,
+          location: gate.location,
+          status,
+          isActive: gate.isActive,
+          assignedGuards: gate.assignedGuards.map((a) => ({ id: a.guard.id, name: a.guard.name })),
+          lastActivityAt,
+          lastGuardName: lastEvent?.guard?.name ?? null,
+          minutesSinceLastActivity,
+          todayExits,
+          todayReturns,
+        };
+      })
+    );
+
+    return reply.send(rows);
+  });
+
+  app.get("/gates/:gateId/health", async (request, reply) => {
+    const { institutionId } = request.user;
+    const { gateId } = request.params as { gateId: string };
+
+    const now = Date.now();
+    const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+
+    const gate = await prisma.gate.findFirst({
+      where: { id: gateId, institutionId },
+      include: {
+        assignedGuards: { include: { guard: true } },
+        gateEvents: {
+          orderBy: { timestamp: "desc" },
+          take: 20,
+          include: { guard: true, pass: { include: { student: true } } },
+        },
+      },
+    });
+
+    if (!gate) {
+      return reply.status(404).send({ error: "Gate not found" });
+    }
+
+    const [todayExits, todayReturns] = await Promise.all([
+      prisma.gateEvent.count({
+        where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
+      }),
+      prisma.gateEvent.count({
+        where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
+      }),
+    ]);
+
+    const lastEvent = gate.gateEvents[0] ?? null;
+    const lastActivityAt = lastEvent?.timestamp ?? null;
+    const minutesSinceLastActivity = lastActivityAt
+      ? Math.floor((now - lastActivityAt.getTime()) / 60000)
+      : null;
+
+    let status: "OPERATIONAL" | "WARNING" | "OFFLINE" | "CLOSED";
+    if (!gate.isActive) {
+      status = "CLOSED";
+    } else if (!lastActivityAt) {
+      status = "WARNING";
+    } else if ((minutesSinceLastActivity ?? 0) > 120) {
+      status = "OFFLINE";
+    } else if ((minutesSinceLastActivity ?? 0) > 30) {
+      status = "WARNING";
+    } else {
+      status = "OPERATIONAL";
+    }
+
+    return reply.send({
+      gateId: gate.id,
+      gateName: gate.name,
+      location: gate.location,
+      status,
+      isActive: gate.isActive,
+      assignedGuards: gate.assignedGuards.map((a) => ({ id: a.guard.id, name: a.guard.name })),
+      lastActivityAt,
+      minutesSinceLastActivity,
+      todayExits,
+      todayReturns,
+      recentEvents: gate.gateEvents.map((e) => ({
+        id: e.id,
+        type: e.eventType,
+        timestamp: e.timestamp,
+        guardName: e.guard.name,
+        passNumber: e.pass.passNumber,
+        studentName: e.pass.student.name,
+        enrollmentNo: e.pass.student.enrollmentNo,
+      })),
+    });
+  });
+
   app.post("/gates", async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { name, location } = request.body as { name: string; location?: string };
@@ -561,6 +1117,126 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send(gate);
+  });
+
+  // ─── GUARD SHIFTS ──────────────────────────────────────────────────────────
+  app.get("/guard-shifts", async (request, reply) => {
+    const { institutionId } = request.user;
+    const { from, to } = request.query as { from?: string; to?: string };
+
+    let fromDate: Date | undefined;
+    let toDate: Date | undefined;
+
+    if (from) {
+      fromDate = new Date(from);
+      if (Number.isNaN(fromDate.getTime())) {
+        return reply.status(400).send({ error: "Invalid from date" });
+      }
+    }
+
+    if (to) {
+      toDate = new Date(to);
+      if (Number.isNaN(toDate.getTime())) {
+        return reply.status(400).send({ error: "Invalid to date" });
+      }
+    }
+
+    const shifts = await prisma.guardShift.findMany({
+      where: {
+        institutionId,
+        ...(fromDate || toDate
+          ? {
+              scheduledStartAt: {
+                ...(fromDate ? { gte: fromDate } : {}),
+                ...(toDate ? { lte: toDate } : {}),
+              },
+            }
+          : {}),
+      },
+      include: {
+        guard: { select: { id: true, name: true } },
+        gate: { select: { id: true, name: true, location: true } },
+      },
+      orderBy: { scheduledStartAt: "asc" },
+    });
+
+    return reply.send(shifts);
+  });
+
+  app.post("/guard-shifts", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = createGuardShiftSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const { guardId, gateId, scheduledStartAt, scheduledEndAt, note } = parsed.data;
+    const shiftStart = new Date(scheduledStartAt);
+    const shiftEnd = new Date(scheduledEndAt);
+
+    const [guard, gate] = await Promise.all([
+      prisma.guardProfile.findFirst({ where: { id: guardId, user: { institutionId } } }),
+      prisma.gate.findFirst({ where: { id: gateId, institutionId } }),
+    ]);
+
+    if (!guard) {
+      return reply.status(404).send({ error: "Guard not found in your institution" });
+    }
+
+    if (!gate) {
+      return reply.status(404).send({ error: "Gate not found in your institution" });
+    }
+
+    const assignment = await prisma.guardGateAssignment.findUnique({
+      where: { guardId_gateId: { guardId: guard.id, gateId: gate.id } },
+    });
+
+    if (!assignment) {
+      return reply.status(400).send({ error: "Guard is not assigned to this gate" });
+    }
+
+    const overlap = await prisma.guardShift.findFirst({
+      where: {
+        institutionId,
+        guardId: guard.id,
+        status: { in: ["SCHEDULED", "ACTIVE"] },
+        scheduledStartAt: { lt: shiftEnd },
+        scheduledEndAt: { gt: shiftStart },
+      },
+    });
+
+    if (overlap) {
+      return reply.status(409).send({ error: "Guard already has an overlapping shift" });
+    }
+
+    const shift = await prisma.guardShift.create({
+      data: {
+        institutionId,
+        guardId: guard.id,
+        gateId: gate.id,
+        scheduledStartAt: shiftStart,
+        scheduledEndAt: shiftEnd,
+        note,
+        createdById: userId,
+      },
+      include: {
+        guard: { select: { id: true, name: true } },
+        gate: { select: { id: true, name: true, location: true } },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "SHIFT_CREATED",
+        targetId: shift.id,
+        targetType: "GuardShift",
+        metadata: { guardId, gateId, scheduledStartAt, scheduledEndAt },
+      },
+    });
+
+    return reply.status(201).send(shift);
   });
 
   // ─── EXIT REASONS ──────────────────────────────────────────────────────────
@@ -838,6 +1514,70 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return reply.send({ success: true });
+  });
+
+  // ─── ADMIN PASS REVOCATION ────────────────────────────────────────────────
+  app.post("/passes/:passId/revoke", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+    const { reason } = request.body as { reason?: string };
+
+    if (!reason || reason.trim().length < 3) {
+      return reply.status(400).send({ error: "Revocation reason is required" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { user: { institutionId } },
+        status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
+    }
+
+    const previousStatus = pass.status;
+
+    const transitioned = await prisma.gatePass.updateMany({
+      where: {
+        id: pass.id,
+        status: previousStatus,
+      },
+      data: {
+        status: "REVOKED",
+        qrToken: null,
+        qrExpiresAt: null,
+      },
+    });
+
+    if (transitioned.count === 0) {
+      return reply.status(409).send({ error: "Pass state changed, please refresh and try again" });
+    }
+
+    const updated = {
+      ...pass,
+      status: "REVOKED",
+      qrToken: null,
+      qrExpiresAt: null,
+    };
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "PASS_REVOKED",
+        targetId: pass.id,
+        targetType: "GatePass",
+        metadata: {
+          reason: reason.trim(),
+          previousStatus,
+          newStatus: "REVOKED",
+        },
+      },
+    });
+
+    return reply.send(updated);
   });
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────

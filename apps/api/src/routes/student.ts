@@ -7,10 +7,23 @@ import { notifyDepartmentHods } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import { getStudentInTenant } from "../services/authz.js";
+import { buildPassTimeline, computeOutsideDurationMinutes } from "../services/pass-lifecycle.js";
 
 export async function studentRoutes(app: FastifyInstance) {
   // All student routes require STUDENT role
   app.addHook("preHandler", requireTenantRole("STUDENT"));
+
+  // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
+  app.get("/emergency/active", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const active = await prisma.emergencyAlert.findFirst({
+      where: { institutionId, status: "ACTIVE" },
+      orderBy: { declaredAt: "desc" },
+    });
+
+    return reply.send(active);
+  });
 
   // ─── GET EXIT REASONS ────────────────────────────────────────────────────────
   app.get("/reasons", async (request, reply) => {
@@ -293,6 +306,100 @@ export async function studentRoutes(app: FastifyInstance) {
         total,
         totalPages: Math.ceil(total / limitNum),
       },
+    });
+  });
+
+  // ─── GET PASS TIMELINE ─────────────────────────────────────────────────────
+  app.get("/gate-pass/:passId/timeline", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const student = await getStudentInTenant(userId, institutionId);
+    if (!student) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: { id: passId, studentId: student.id },
+      include: {
+        gateEvents: { include: { gate: true } },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Pass not found" });
+    }
+
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        targetType: "GatePass",
+        targetId: pass.id,
+        action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
+      },
+      orderBy: { timestamp: "asc" },
+    });
+
+    const timeline = buildPassTimeline(pass as any, logs as any);
+    return reply.send({ passId: pass.id, timeline });
+  });
+
+  // ─── GET PASS SUMMARY ──────────────────────────────────────────────────────
+  app.get("/gate-pass/:passId/summary", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const student = await getStudentInTenant(userId, institutionId);
+    if (!student) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: { id: passId, studentId: student.id },
+      include: {
+        student: { include: { department: true } },
+        reason: true,
+        approvedBy: true,
+        gateEvents: { include: { gate: true }, orderBy: { timestamp: "asc" } },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Pass not found" });
+    }
+
+    const outsideDurationMinutes = computeOutsideDurationMinutes(pass.actualExit, pass.actualReturn);
+
+    return reply.send({
+      passId: pass.id,
+      passNumber: pass.passNumber,
+      status: pass.status,
+      student: {
+        name: pass.student.name,
+        enrollmentNo: pass.student.enrollmentNo,
+        department: pass.student.department.name,
+      },
+      reason: {
+        label: pass.reason.label,
+        customReason: pass.customReason,
+      },
+      approval: {
+        approvedBy: pass.approvedBy?.name ?? null,
+        approvedAt: pass.approvedAt,
+        rejectionReason: pass.rejectionReason,
+      },
+      movement: {
+        requestedExit: pass.requestedExit,
+        expectedReturn: pass.expectedReturn,
+        actualExit: pass.actualExit,
+        actualReturn: pass.actualReturn,
+        outsideDurationMinutes,
+        overdueMinutes: pass.overdueMinutes,
+      },
+      gates: pass.gateEvents.map((e) => ({
+        type: e.eventType,
+        at: e.timestamp,
+        gate: e.gate.name,
+      })),
     });
   });
 

@@ -1,12 +1,188 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@campusgate/db";
-import { verifyQrSchema, markExitSchema, markReturnSchema } from "@campusgate/shared";
+import {
+  verifyQrSchema,
+  markExitSchema,
+  markReturnSchema,
+  startGuardShiftSchema,
+  endGuardShiftSchema,
+} from "@campusgate/shared";
 import { requireTenantRole } from "../middleware/auth.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { getGuardInTenant } from "../services/authz.js";
 
 export async function guardRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireTenantRole("GUARD"));
+
+  const getActiveShiftForGuard = async (guardId: string, institutionId: string) => {
+    return prisma.guardShift.findFirst({
+      where: { institutionId, guardId, status: "ACTIVE" },
+      include: { gate: true },
+      orderBy: { actualStartAt: "desc" },
+    });
+  };
+
+  // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
+  app.get("/emergency/active", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const active = await prisma.emergencyAlert.findFirst({
+      where: { institutionId, status: "ACTIVE" },
+      orderBy: { declaredAt: "desc" },
+    });
+
+    return reply.send(active);
+  });
+
+  // ─── SHIFT STATUS ───────────────────────────────────────────────────────────
+  app.get("/shift/current", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const guard = await getGuardInTenant(userId, institutionId);
+    if (!guard) {
+      return reply.status(404).send({ error: "Guard profile not found" });
+    }
+
+    const now = new Date();
+
+    const [activeShift, nextShift] = await Promise.all([
+      getActiveShiftForGuard(guard.id, institutionId),
+      prisma.guardShift.findFirst({
+        where: {
+          institutionId,
+          guardId: guard.id,
+          status: "SCHEDULED",
+          scheduledEndAt: { gte: now },
+        },
+        include: { gate: true },
+        orderBy: { scheduledStartAt: "asc" },
+      }),
+    ]);
+
+    return reply.send({ activeShift, nextShift });
+  });
+
+  app.post("/shift/start", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = startGuardShiftSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const guard = await getGuardInTenant(userId, institutionId);
+    if (!guard) {
+      return reply.status(404).send({ error: "Guard profile not found" });
+    }
+
+    const shift = await prisma.guardShift.findFirst({
+      where: {
+        id: parsed.data.shiftId,
+        institutionId,
+        guardId: guard.id,
+      },
+      include: { gate: true },
+    });
+
+    if (!shift) {
+      return reply.status(404).send({ error: "Shift not found" });
+    }
+
+    if (shift.status !== "SCHEDULED") {
+      return reply.status(409).send({ error: `Shift cannot be started from ${shift.status} state` });
+    }
+
+    const activeShift = await getActiveShiftForGuard(guard.id, institutionId);
+    if (activeShift) {
+      return reply.status(409).send({ error: "You already have an active shift" });
+    }
+
+    const assignment = await prisma.guardGateAssignment.findUnique({
+      where: { guardId_gateId: { guardId: guard.id, gateId: shift.gateId } },
+    });
+    if (!assignment) {
+      return reply.status(403).send({ error: "You are no longer assigned to this gate" });
+    }
+
+    const now = new Date();
+    const earlyWindowStart = new Date(shift.scheduledStartAt.getTime() - 30 * 60 * 1000);
+
+    if (now < earlyWindowStart) {
+      return reply.status(400).send({ error: "Shift start window has not opened yet" });
+    }
+
+    if (now > shift.scheduledEndAt) {
+      return reply.status(400).send({ error: "Shift has already ended" });
+    }
+
+    const started = await prisma.guardShift.update({
+      where: { id: shift.id },
+      data: { status: "ACTIVE", actualStartAt: now },
+      include: { gate: true },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "SHIFT_STARTED",
+        targetId: shift.id,
+        targetType: "GuardShift",
+        metadata: { gateId: shift.gateId },
+      },
+    });
+
+    return reply.send({ message: "Shift started", shift: started });
+  });
+
+  app.post("/shift/end", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = endGuardShiftSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const guard = await getGuardInTenant(userId, institutionId);
+    if (!guard) {
+      return reply.status(404).send({ error: "Guard profile not found" });
+    }
+
+    const shift = await prisma.guardShift.findFirst({
+      where: {
+        id: parsed.data.shiftId,
+        institutionId,
+        guardId: guard.id,
+      },
+      include: { gate: true },
+    });
+
+    if (!shift) {
+      return reply.status(404).send({ error: "Shift not found" });
+    }
+
+    if (shift.status !== "ACTIVE") {
+      return reply.status(409).send({ error: `Shift cannot be ended from ${shift.status} state` });
+    }
+
+    const now = new Date();
+    const ended = await prisma.guardShift.update({
+      where: { id: shift.id },
+      data: { status: "COMPLETED", actualEndAt: now },
+      include: { gate: true },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "SHIFT_ENDED",
+        targetId: shift.id,
+        targetType: "GuardShift",
+        metadata: { gateId: shift.gateId },
+      },
+    });
+
+    return reply.send({ message: "Shift ended", shift: ended });
+  });
 
   // ─── VERIFY QR TOKEN ───────────────────────────────────────────────────────
   app.post("/verify", async (request, reply) => {
@@ -156,6 +332,14 @@ export async function guardRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "You are not assigned to this gate" });
     }
 
+    const activeShift = await getActiveShiftForGuard(guard.id, institutionId);
+    if (!activeShift || activeShift.gateId !== parsed.data.gateId) {
+      return reply.status(403).send({
+        success: false,
+        error: "No active shift for this gate. Start your shift first.",
+      });
+    }
+
     // Atomic state transition: APPROVED/ACTIVE → OUTSIDE
     // Using a transaction to prevent concurrent duplicate exits
     try {
@@ -245,6 +429,14 @@ export async function guardRoutes(app: FastifyInstance) {
     });
     if (!assignment) {
       return reply.status(403).send({ error: "You are not assigned to this gate" });
+    }
+
+    const activeShift = await getActiveShiftForGuard(guard.id, institutionId);
+    if (!activeShift || activeShift.gateId !== parsed.data.gateId) {
+      return reply.status(403).send({
+        success: false,
+        error: "No active shift for this gate. Start your shift first.",
+      });
     }
 
     // Atomic state transition: OUTSIDE → COMPLETED

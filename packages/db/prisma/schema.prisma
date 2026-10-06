@@ -50,6 +50,11 @@ enum AuditAction {
   PASS_EXPIRED
   GATE_EXIT
   GATE_RETURN
+  SHIFT_CREATED
+  SHIFT_STARTED
+  SHIFT_ENDED
+  EMERGENCY_DECLARED
+  EMERGENCY_RESOLVED
   USER_CREATED
   USER_UPDATED
   USER_DEACTIVATED
@@ -111,6 +116,27 @@ enum AcademicDayType {
   INSTITUTION_EVENT
 }
 
+enum GuardShiftStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum EmergencyType {
+  FIRE
+  EARTHQUAKE
+  MEDICAL
+  SECURITY
+  EVACUATION
+  OTHER
+}
+
+enum EmergencyStatus {
+  ACTIVE
+  RESOLVED
+}
+
 // ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
 
 model Institution {
@@ -130,6 +156,8 @@ model Institution {
   allowancePolicy    AllowancePolicy?
   institutionConfig  InstitutionConfig?
   academicCalendarDays AcademicCalendarDay[]
+  guardShifts          GuardShift[]
+  emergencyAlerts      EmergencyAlert[]
 
   @@map("institutions")
 }
@@ -173,7 +201,10 @@ model User {
 
   // Audit trail
   auditLogs          AuditLog[]          @relation("AuditActor")
-  emergencyOverrides EmergencyOverride[] @relation("OverrideActor")
+  emergencyOverrides    EmergencyOverride[] @relation("OverrideActor")
+  createdShifts         GuardShift[]        @relation("ShiftCreatedBy")
+  createdEmergencyAlerts EmergencyAlert[]   @relation("EmergencyDeclaredBy")
+  resolvedEmergencyAlerts EmergencyAlert[]  @relation("EmergencyResolvedBy")
 
   @@map("users")
 }
@@ -233,6 +264,7 @@ model GuardProfile {
 
   assignedGates GuardGateAssignment[]
   gateEvents    GateEvent[]
+  shifts        GuardShift[]
 
   @@map("guard_profiles")
 }
@@ -251,6 +283,7 @@ model Gate {
 
   assignedGuards GuardGateAssignment[]
   gateEvents     GateEvent[]
+  shifts         GuardShift[]
 
   @@unique([institutionId, name])
   @@map("gates")
@@ -348,6 +381,33 @@ model GateEvent {
   @@map("gate_events")
 }
 
+// ─── GUARD SHIFTS ───────────────────────────────────────────────────────────
+
+model GuardShift {
+  id               String           @id @default(cuid())
+  institutionId    String
+  institution      Institution      @relation(fields: [institutionId], references: [id])
+  guardId          String
+  guard            GuardProfile     @relation(fields: [guardId], references: [id])
+  gateId           String
+  gate             Gate             @relation(fields: [gateId], references: [id])
+  status           GuardShiftStatus @default(SCHEDULED)
+  scheduledStartAt DateTime
+  scheduledEndAt   DateTime
+  actualStartAt    DateTime?
+  actualEndAt      DateTime?
+  note             String?
+  createdById      String?
+  createdBy        User?            @relation("ShiftCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([institutionId, scheduledStartAt])
+  @@index([guardId, status])
+  @@index([gateId, status])
+  @@map("guard_shifts")
+}
+
 // ─── AUDIT LOG ──────────────────────────────────────────────────────────────
 
 model AuditLog {
@@ -442,6 +502,29 @@ model EmergencyOverride {
   createdAt      DateTime @default(now())
 
   @@map("emergency_overrides")
+}
+
+model EmergencyAlert {
+  id             String          @id @default(cuid())
+  institutionId  String
+  institution    Institution     @relation(fields: [institutionId], references: [id])
+  type           EmergencyType
+  status         EmergencyStatus @default(ACTIVE)
+  title          String
+  message        String
+  affectedArea   String?
+  declaredById   String
+  declaredBy     User            @relation("EmergencyDeclaredBy", fields: [declaredById], references: [id])
+  declaredAt     DateTime        @default(now())
+  resolvedById   String?
+  resolvedBy     User?           @relation("EmergencyResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([institutionId, status, declaredAt])
+  @@map("emergency_alerts")
 }
 
 // ─── RELIABILITY SCORE SNAPSHOT ─────────────────────────────────────────────

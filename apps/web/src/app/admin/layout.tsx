@@ -13,6 +13,9 @@ import {
   FileText,
   Shield,
   Upload,
+  Clock3,
+  BarChart3,
+  Siren,
   LogOut,
 } from "lucide-react";
 import Link from "next/link";
@@ -24,6 +27,9 @@ const navItems = [
   { href: "/admin/import", icon: Upload, label: "CSV Import" },
   { href: "/admin/departments", icon: Building, label: "Courses" },
   { href: "/admin/gates", icon: DoorOpen, label: "Gates" },
+  { href: "/admin/shifts", icon: Clock3, label: "Guard Shifts" },
+  { href: "/admin/analytics", icon: BarChart3, label: "Analytics" },
+  { href: "/admin/emergency", icon: Siren, label: "Emergency" },
   { href: "/admin/reasons", icon: FileText, label: "Exit Reasons" },
   { href: "/admin/audit", icon: Shield, label: "Audit Log" },
 ];

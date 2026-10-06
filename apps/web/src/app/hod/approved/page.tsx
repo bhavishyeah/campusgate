@@ -6,14 +6,35 @@ import { api } from "@/lib/api";
 export default function HodApproved() {
   const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const fetchData = async () => {
+    const data = await api.get<any[]>("/api/hod/requests?status=APPROVED");
+    setRequests(data);
+  };
 
   useEffect(() => {
-    api
-      .get<any[]>("/api/hod/requests?status=APPROVED")
-      .then(setRequests)
+    fetchData()
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  const handleRevoke = async (passId: string) => {
+    const reason = window.prompt("Enter revocation reason:");
+    if (!reason || reason.trim().length < 3) {
+      return;
+    }
+
+    setRevokingId(passId);
+    try {
+      await api.post("/api/hod/revoke", { passId, reason: reason.trim() });
+      await fetchData();
+    } catch (err: any) {
+      alert(err.message || "Failed to revoke pass");
+    } finally {
+      setRevokingId(null);
+    }
+  };
 
   if (loading) {
     return <div className="animate-pulse text-gray-500 text-center py-12">Loading...</div>;
@@ -39,6 +60,16 @@ export default function HodApproved() {
                 </span>
               </div>
               <p className="text-sm text-gray-600 mt-2">{req.reason?.label}</p>
+
+              <div className="mt-3 flex justify-end">
+                <button
+                  className="btn-danger"
+                  onClick={() => handleRevoke(req.id)}
+                  disabled={revokingId === req.id}
+                >
+                  {revokingId === req.id ? "Revoking..." : "Revoke Pass"}
+                </button>
+              </div>
             </div>
           ))}
         </div>

@@ -35,6 +35,15 @@ interface AllowanceSummary {
   currentlyOutsideElapsed: number | null;
 }
 
+interface EmergencyAlert {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  affectedArea?: string | null;
+  declaredAt: string;
+}
+
 function formatMinutes(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -104,6 +113,7 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true);
   const [allowance, setAllowance] = useState<AllowanceSummary | null>(null);
   const [elapsedTimer, setElapsedTimer] = useState<number | null>(null);
+  const [emergency, setEmergency] = useState<EmergencyAlert | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDashboard = async () => {
@@ -134,11 +144,13 @@ export default function StudentDashboard() {
   useEffect(() => {
     fetchDashboard();
     fetchAllowance();
+    api.get<EmergencyAlert | null>("/api/student/emergency/active").then(setEmergency).catch(() => {});
 
     // Listen for real-time notifications to refresh
     const unsubscribe = onMessage("notification", () => {
       fetchDashboard();
       fetchAllowance();
+      api.get<EmergencyAlert | null>("/api/student/emergency/active").then(setEmergency).catch(() => {});
     });
     return unsubscribe;
   }, []);
@@ -190,6 +202,18 @@ export default function StudentDashboard() {
         </h1>
         <p className="text-gray-500 text-sm">{data.student.enrollmentNo}</p>
       </div>
+
+      {emergency && (
+        <div className="card border-2 border-danger-500 bg-danger-50 text-danger-800">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle className="w-5 h-5" />
+            <p className="font-semibold">Emergency Alert · {emergency.type}</p>
+          </div>
+          <p className="text-sm font-medium">{emergency.title}</p>
+          <p className="text-sm mt-1 whitespace-pre-wrap">{emergency.message}</p>
+          {emergency.affectedArea && <p className="text-xs mt-2">Area: {emergency.affectedArea}</p>}
+        </div>
+      )}
 
       {/* Movement State Card */}
       <div className={`card border-2 ${state.color}`}>

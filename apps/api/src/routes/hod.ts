@@ -1,15 +1,28 @@
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma } from "@campusgate/db";
-import { approvePassSchema, rejectPassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
+import { approvePassSchema, rejectPassSchema, revokePassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
 import { requireTenantRole } from "../middleware/auth.js";
 import { notifyUser } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import { getHodInTenant } from "../services/authz.js";
+import { buildPassTimeline, computeOutsideDurationMinutes } from "../services/pass-lifecycle.js";
 
 export async function hodRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireTenantRole("HOD"));
+
+  // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
+  app.get("/emergency/active", async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const active = await prisma.emergencyAlert.findFirst({
+      where: { institutionId, status: "ACTIVE" },
+      orderBy: { declaredAt: "desc" },
+    });
+
+    return reply.send(active);
+  });
 
   // ─── GET PENDING REQUESTS (for HOD's department) ───────────────────────────
   app.get("/requests", async (request, reply) => {
@@ -315,6 +328,174 @@ export async function hodRoutes(app: FastifyInstance) {
     });
 
     return reply.send(updated);
+  });
+
+  // ─── REVOKE PASS ──────────────────────────────────────────────────────────
+  app.post("/revoke", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = revokePassSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const hod = await getHodInTenant(userId, institutionId);
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: parsed.data.passId,
+        student: { departmentId: hod.departmentId, user: { institutionId } },
+        status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
+    }
+
+    const previousStatus = pass.status;
+
+    const transitioned = await prisma.gatePass.updateMany({
+      where: {
+        id: pass.id,
+        status: previousStatus,
+      },
+      data: {
+        status: "REVOKED",
+        qrToken: null,
+        qrExpiresAt: null,
+      },
+    });
+
+    if (transitioned.count === 0) {
+      return reply.status(409).send({ error: "Pass state changed, please refresh and try again" });
+    }
+
+    const updated = {
+      ...pass,
+      status: "REVOKED",
+      qrToken: null,
+      qrExpiresAt: null,
+    };
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "PASS_REVOKED",
+        targetId: pass.id,
+        targetType: "GatePass",
+        metadata: {
+          reason: parsed.data.reason,
+          previousStatus,
+          newStatus: "REVOKED",
+        },
+      },
+    });
+
+    return reply.send(updated);
+  });
+
+  // ─── REQUEST TIMELINE ──────────────────────────────────────────────────────
+  app.get("/requests/:passId/timeline", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const hod = await getHodInTenant(userId, institutionId);
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { departmentId: hod.departmentId, user: { institutionId } },
+      },
+      include: {
+        gateEvents: { include: { gate: true } },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Request not found" });
+    }
+
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        targetType: "GatePass",
+        targetId: pass.id,
+        action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
+      },
+      orderBy: { timestamp: "asc" },
+    });
+
+    const timeline = buildPassTimeline(pass as any, logs as any);
+    return reply.send({ passId: pass.id, timeline });
+  });
+
+  // ─── REQUEST SUMMARY ───────────────────────────────────────────────────────
+  app.get("/requests/:passId/summary", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { passId } = request.params as { passId: string };
+
+    const hod = await getHodInTenant(userId, institutionId);
+    if (!hod) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+
+    const pass = await prisma.gatePass.findFirst({
+      where: {
+        id: passId,
+        student: { departmentId: hod.departmentId, user: { institutionId } },
+      },
+      include: {
+        student: { include: { department: true } },
+        reason: true,
+        approvedBy: true,
+        gateEvents: { include: { gate: true }, orderBy: { timestamp: "asc" } },
+      },
+    });
+
+    if (!pass) {
+      return reply.status(404).send({ error: "Request not found" });
+    }
+
+    const outsideDurationMinutes = computeOutsideDurationMinutes(pass.actualExit, pass.actualReturn);
+
+    return reply.send({
+      passId: pass.id,
+      passNumber: pass.passNumber,
+      status: pass.status,
+      student: {
+        name: pass.student.name,
+        enrollmentNo: pass.student.enrollmentNo,
+        department: pass.student.department.name,
+      },
+      reason: {
+        label: pass.reason.label,
+        customReason: pass.customReason,
+      },
+      approval: {
+        approvedBy: pass.approvedBy?.name ?? null,
+        approvedAt: pass.approvedAt,
+        rejectionReason: pass.rejectionReason,
+      },
+      movement: {
+        requestedExit: pass.requestedExit,
+        expectedReturn: pass.expectedReturn,
+        actualExit: pass.actualExit,
+        actualReturn: pass.actualReturn,
+        outsideDurationMinutes,
+        overdueMinutes: pass.overdueMinutes,
+      },
+      gates: pass.gateEvents.map((e) => ({
+        type: e.eventType,
+        at: e.timestamp,
+        gate: e.gate.name,
+      })),
+    });
   });
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
