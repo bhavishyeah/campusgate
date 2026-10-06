@@ -76,11 +76,13 @@ export default function GuardScanPage() {
   const [gateId, setGateId] = useState("");
   const [shiftInfo, setShiftInfo] = useState<ShiftStatusResponse | null>(null);
   const [shiftLoading, setShiftLoading] = useState(true);
+  const [shiftError, setShiftError] = useState("");
   const [emergency, setEmergency] = useState<EmergencyAlert | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
 
   const loadShift = async () => {
     setShiftLoading(true);
+    setShiftError("");
     try {
       const [data, emergencyData] = await Promise.all([
         api.get<ShiftStatusResponse>("/api/guard/shift/current"),
@@ -95,10 +97,18 @@ export default function GuardScanPage() {
         const me = await api.get<any>("/api/auth/me");
         if (me.profile?.assignedGates?.[0]?.gate?.id) {
           setGateId(me.profile.assignedGates[0].gate.id);
+        } else if (!data.activeShift) {
+          setShiftError(
+            "No gate is assigned to your account. Contact an admin to assign you to a gate before you can scan passes."
+          );
         }
       }
-    } catch {
+    } catch (err: any) {
       setShiftInfo(null);
+      setShiftError(
+        err?.message ||
+          "Could not load your shift information. Check your connection or contact admin."
+      );
     } finally {
       setShiftLoading(false);
     }
@@ -140,6 +150,16 @@ export default function GuardScanPage() {
     setResult(null);
     setError("");
     setScanning(true);
+
+    // Clean up any existing scanner instance before starting a new one
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop();
+      } catch {
+        // ignore — scanner may already be stopped
+      }
+      scannerRef.current = null;
+    }
 
     try {
       const scanner = new Html5Qrcode("qr-reader");
@@ -310,11 +330,17 @@ export default function GuardScanPage() {
       );
     }
 
-    return (
-      <div className="bg-gray-800 rounded-xl p-4 text-gray-400 text-sm">
-        No active or upcoming shifts. Contact admin to schedule your shift.
-      </div>
-    );
+    // Load succeeded but no shifts exist
+    if (shiftInfo && !shiftInfo.activeShift && !shiftInfo.nextShift) {
+      return (
+        <div className="bg-gray-800 rounded-xl p-4 text-gray-400 text-sm">
+          No active or upcoming shifts. Contact admin to schedule your shift.
+        </div>
+      );
+    }
+
+    // Load failed (shiftInfo is null) — the shift error banner explains why
+    return null;
   };
 
   return (
@@ -333,6 +359,13 @@ export default function GuardScanPage() {
 
       {shiftPanel()}
 
+      {shiftError && !shiftLoading && (
+        <div className="bg-danger-900/30 border border-danger-700 rounded-xl p-4 text-danger-200 text-sm">
+          <p className="font-semibold mb-1">Shift unavailable</p>
+          <p>{shiftError}</p>
+        </div>
+      )}
+
       <div className="text-center">
         <div
           id="qr-reader"
@@ -341,14 +374,24 @@ export default function GuardScanPage() {
         />
 
         {!scanning && !result && (
-          <button
-            onClick={startScanner}
-            disabled={!shiftInfo?.activeShift}
-            className="bg-primary-600 hover:bg-primary-700 disabled:bg-gray-700 disabled:text-gray-400 text-white font-bold py-6 px-8 rounded-2xl text-xl flex items-center gap-3 mx-auto"
-          >
-            <Camera className="w-8 h-8" />
-            SCAN PASS
-          </button>
+          <>
+            <button
+              onClick={startScanner}
+              disabled={!shiftInfo?.activeShift}
+              className="bg-primary-600 hover:bg-primary-700 disabled:bg-gray-700 disabled:text-gray-400 text-white font-bold py-6 px-8 rounded-2xl text-xl flex items-center gap-3 mx-auto"
+            >
+              <Camera className="w-8 h-8" />
+              SCAN PASS
+            </button>
+            {!shiftInfo?.activeShift && !shiftLoading && (
+              <p className="text-xs text-gray-500 mt-3 max-w-xs mx-auto">
+                Scanning is disabled until you start your shift.{" "}
+                {shiftInfo?.nextShift
+                  ? "Tap Start Shift above to begin."
+                  : "Contact admin to schedule a shift for your gate."}
+              </p>
+            )}
+          </>
         )}
 
         {scanning && (

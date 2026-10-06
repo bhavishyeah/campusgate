@@ -10,6 +10,7 @@ import {
 import { requireTenantRole } from "../middleware/auth.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { getGuardInTenant } from "../services/authz.js";
+import { notifyUser } from "../services/notifications.js";
 
 export async function guardRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireTenantRole("GUARD"));
@@ -396,6 +397,26 @@ export async function guardRoutes(app: FastifyInstance) {
         },
       });
 
+      // Notify the student their exit was recorded (fire-and-forget)
+      ;(async () => {
+        try {
+          const passInfo = await prisma.gatePass.findUnique({
+            where: { id: parsed.data.passId },
+            select: { passNumber: true, student: { select: { userId: true } } },
+          });
+          if (passInfo) {
+            await notifyUser(passInfo.student.userId, {
+              title: "Exit Recorded",
+              body: `Your gate pass ${passInfo.passNumber} exit has been recorded at the gate.`,
+              type: "GATE_EXIT",
+              data: { passId: parsed.data.passId },
+            });
+          }
+        } catch (err) {
+          app.log.error(err, "Failed to notify student of exit");
+        }
+      })();
+
       return reply.send({
         success: true,
         message: "Exit recorded successfully",
@@ -517,6 +538,14 @@ export async function guardRoutes(app: FastifyInstance) {
           });
 
           if (!pass) return;
+
+          // Notify the student their return was recorded
+          await notifyUser(pass.student.userId, {
+            title: "Return Recorded",
+            body: `Your gate pass ${pass.passNumber} return has been recorded at the gate.`,
+            type: "GATE_RETURN",
+            data: { passId: parsed.data.passId },
+          });
 
           // Check exclusion rules: don't record snapshot for emergency override passes (Req 11.2)
           if (pass.emergencyOverride) return;
