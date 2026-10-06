@@ -1,11 +1,74 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 const { Client } = pg;
 import bcrypt from "bcrypt";
 
+function parseEnvLine(line: string): [string, string] | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+
+  const eq = trimmed.indexOf("=");
+  if (eq <= 0) return null;
+
+  const key = trimmed.slice(0, eq).trim();
+  let value = trimmed.slice(eq + 1).trim();
+
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  return [key, value];
+}
+
+function loadEnvFromFile(filePath: string) {
+  if (!fs.existsSync(filePath)) return;
+
+  const content = fs.readFileSync(filePath, "utf8");
+  for (const line of content.split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (!parsed) continue;
+
+    const [key, value] = parsed;
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+
+  console.log(`Loaded environment from: ${filePath}`);
+}
+
+function bootstrapEnv() {
+  const cwd = process.cwd();
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+
+  const candidates = [
+    path.join(cwd, ".env"),
+    path.join(cwd, "..", ".env"),
+    path.join(cwd, "..", "..", ".env"),
+    path.join(scriptDir, ".env"),
+    path.join(scriptDir, "..", ".env"),
+    path.join(scriptDir, "..", "..", ".env"),
+  ];
+
+  for (const filePath of candidates) {
+    loadEnvFromFile(path.resolve(filePath));
+    if (process.env.DATABASE_URL) return;
+  }
+}
+
+bootstrapEnv();
+
 const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
-  throw new Error("DATABASE_URL is required");
+  throw new Error(
+    "DATABASE_URL is required. Set it in your shell or add it to a .env file (project root or packages/db)."
+  );
 }
 
 async function main() {
@@ -41,25 +104,34 @@ async function main() {
   ];
 
   for (const c of coursesToCreate) {
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO "departments" ("id", "name", "code", "institutionId", "updatedAt")
       VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT ("institutionId", "code") DO NOTHING
-    `, [c.id, c.name, c.code, instId]);
+    `,
+      [c.id, c.name, c.code, instId]
+    );
   }
   console.log("  ✓ Courses (9 created)");
 
   // Gates
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "gates" ("id", "name", "location", "institutionId", "updatedAt")
     VALUES ('gate_main', 'Main Gate', 'Front Entrance', $1, NOW())
     ON CONFLICT ("institutionId", "name") DO NOTHING
-  `, [instId]);
-  await client.query(`
+  `,
+    [instId]
+  );
+  await client.query(
+    `
     INSERT INTO "gates" ("id", "name", "location", "institutionId", "updatedAt")
     VALUES ('gate_side', 'Side Gate', 'Parking Side', $1, NOW())
     ON CONFLICT ("institutionId", "name") DO NOTHING
-  `, [instId]);
+  `,
+    [instId]
+  );
   console.log("  ✓ Gates");
 
   // Exit reasons
@@ -72,11 +144,14 @@ async function main() {
     { id: "reason_other", label: "Other", requiresNote: true },
   ];
   for (const r of reasons) {
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO "exit_reasons" ("id", "label", "requiresNote", "institutionId", "updatedAt")
       VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT DO NOTHING
-    `, [r.id, r.label, r.requiresNote, instId]);
+    `,
+      [r.id, r.label, r.requiresNote, instId]
+    );
   }
   console.log("  ✓ Exit reasons");
 
@@ -87,11 +162,14 @@ async function main() {
   const studentPw = await bcrypt.hash("student123", 12);
 
   // Admin
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
     VALUES ('user_admin', 'admin@demo.edu', $1, 'ADMIN', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
-  `, [adminPw, instId]);
+  `,
+    [adminPw, instId]
+  );
 
   // Super admin (platform scope)
   const superPw = await bcrypt.hash("superadmin123", 12);
@@ -100,19 +178,25 @@ async function main() {
     VALUES ('inst_platform', 'CAMPUSGATE Platform', 'PLATFORM', 'platform.local', 'ACTIVE', '{}', NOW())
     ON CONFLICT ("code") DO NOTHING
   `);
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
     VALUES ('user_superadmin', 'superadmin@campusgate.local', $1, 'SUPER_ADMIN', 'ACTIVE', 'inst_platform', NOW())
     ON CONFLICT ("email") DO NOTHING
-  `, [superPw]);
+  `,
+    [superPw]
+  );
   console.log("  ✓ Admin (admin@demo.edu / admin123)");
 
   // HOD
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
     VALUES ('user_hod', 'hod.bca@demo.edu', $1, 'HOD', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
-  `, [hodPw, instId]);
+  `,
+    [hodPw, instId]
+  );
   await client.query(`
     INSERT INTO "hod_profiles" ("id", "userId", "name", "departmentId", "updatedAt")
     VALUES ('hod_bca', 'user_hod', 'Dr. Sharma', 'course_512', NOW())
@@ -121,11 +205,14 @@ async function main() {
   console.log("  ✓ HOD (hod.bca@demo.edu / hod123)");
 
   // Guard
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
     VALUES ('user_guard', 'guard@demo.edu', $1, 'GUARD', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
-  `, [guardPw, instId]);
+  `,
+    [guardPw, instId]
+  );
   await client.query(`
     INSERT INTO "guard_profiles" ("id", "userId", "name", "updatedAt")
     VALUES ('guard_main', 'user_guard', 'Rajesh Kumar', NOW())
@@ -139,11 +226,14 @@ async function main() {
   console.log("  ✓ Guard (guard@demo.edu / guard123)");
 
   // Student
-  await client.query(`
+  await client.query(
+    `
     INSERT INTO "users" ("id", "email", "passwordHash", "role", "accountStatus", "institutionId", "updatedAt")
     VALUES ('user_student', 'bhavishya@demo.edu', $1, 'STUDENT', 'ACTIVE', $2, NOW())
     ON CONFLICT ("email") DO NOTHING
-  `, [studentPw, instId]);
+  `,
+    [studentPw, instId]
+  );
   await client.query(`
     INSERT INTO "student_profiles" ("id", "userId", "enrollmentNo", "name", "departmentId", "program", "semester", "section", "updatedAt")
     VALUES ('student_1', 'user_student', 'BCA2024001', 'Bhavishya Verma', 'course_512', 'BCA', 4, 'A', NOW())
