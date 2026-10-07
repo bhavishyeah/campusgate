@@ -229,6 +229,115 @@ export default function StudentProfile() {
           </div>
         )}
       </div>
+
+      {/* Active Sessions */}
+      <SessionsSection />
+    </div>
+  );
+}
+
+// ─── Sessions section ────────────────────────────────────────────────────────
+
+interface SessionRow {
+  id: string;
+  isCurrent: boolean;
+  deviceType: string | null;
+  browser: string | null;
+  os: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastActiveAt: string;
+}
+
+function SessionsSection() {
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState(false);
+
+  const load = () => {
+    api
+      .get<SessionRow[]>("/api/auth/sessions")
+      .then(setSessions)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, []);
+
+  const revoke = async (id: string) => {
+    setBusyId(id);
+    try {
+      await api.delete(`/api/auth/sessions/${id}`);
+      load();
+    } catch (err: any) {
+      alert(err.message || "Failed to revoke session");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const revokeAll = async () => {
+    if (!confirm("Sign out all other devices?")) return;
+    setRevoking(true);
+    try {
+      await api.post("/api/auth/sessions/revoke-all");
+      load();
+    } catch (err: any) {
+      alert(err.message || "Failed");
+    } finally {
+      setRevoking(false);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-gray-900">Active Sessions</h3>
+        {sessions.filter((s) => !s.isCurrent).length > 0 && (
+          <button
+            onClick={revokeAll}
+            disabled={revoking}
+            className="text-xs text-danger-600 hover:underline disabled:opacity-50"
+          >
+            Sign out all other devices
+          </button>
+        )}
+      </div>
+      <div className="divide-y divide-gray-100">
+        {sessions.map((s) => (
+          <div key={s.id} className="flex items-center justify-between py-3 gap-4">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-900">
+                {s.browser} on {s.os}
+                {s.isCurrent && (
+                  <span className="ml-2 text-xs bg-success-50 text-success-700 px-1.5 py-0.5 rounded font-normal">
+                    This device
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {s.deviceType ?? "—"} · {s.ipAddress ?? "Unknown IP"} ·{" "}
+                Active {new Date(s.lastActiveAt).toLocaleDateString()}
+              </p>
+            </div>
+            {!s.isCurrent && (
+              <button
+                onClick={() => revoke(s.id)}
+                disabled={busyId === s.id}
+                className="text-xs text-danger-600 hover:underline shrink-0 disabled:opacity-50"
+              >
+                Sign out
+              </button>
+            )}
+          </div>
+        ))}
+        {sessions.length === 0 && (
+          <p className="text-sm text-gray-500 py-4 text-center">No active sessions found</p>
+        )}
+      </div>
     </div>
   );
 }

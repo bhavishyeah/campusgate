@@ -227,7 +227,40 @@ export async function guardRoutes(app: FastifyInstance) {
     }
 
     // Don't expire passes in OUTSIDE status — they must always be completable for return
-    if (pass.status !== "OUTSIDE" && (pass.status === "EXPIRED" || (pass.qrExpiresAt && new Date() > pass.qrExpiresAt))) {
+    const qrTimedOut =
+      pass.status !== "OUTSIDE" &&
+      (pass.status === "EXPIRED" || (pass.qrExpiresAt && new Date() > pass.qrExpiresAt));
+
+    if (qrTimedOut) {
+      // Persist the transition the first time we observe it, so analytics,
+      // reliability scoring, and the student's history reflect reality
+      // instead of leaving the pass stuck as APPROVED/ACTIVE forever.
+      if (pass.status !== "EXPIRED") {
+        const expiredNow = await prisma.gatePass.updateMany({
+          where: { id: pass.id, status: pass.status },
+          data: { status: "EXPIRED", qrToken: null, qrExpiresAt: null },
+        });
+
+        if (expiredNow.count > 0) {
+          await prisma.auditLog.create({
+            data: {
+              actorId: pass.student.userId,
+              action: "PASS_EXPIRED",
+              targetId: pass.id,
+              targetType: "GatePass",
+              metadata: { previousStatus: pass.status },
+            },
+          });
+
+          await notifyUser(pass.student.userId, {
+            title: "Gate Pass Expired",
+            body: `Your gate pass ${pass.passNumber} expired before it was used.`,
+            type: "PASS_EXPIRED",
+            data: { passId: pass.id },
+          });
+        }
+      }
+
       return reply.send({
         valid: false,
         status: "EXPIRED",
@@ -334,7 +367,12 @@ export async function guardRoutes(app: FastifyInstance) {
     }
 
     const activeShift = await getActiveShiftForGuard(guard.id, institutionId);
-    if (!activeShift || activeShift.gateId !== parsed.data.gateId) {
+
+    // Enforce shift requirement only when the institution actually uses shifts.
+    // If no shift records exist for this institution at all, skip the check —
+    // this lets institutions that haven't set up shift scheduling yet operate normally.
+    const institutionUsesShifts = await prisma.guardShift.count({ where: { institutionId } });
+    if (institutionUsesShifts > 0 && (!activeShift || activeShift.gateId !== parsed.data.gateId)) {
       return reply.status(403).send({
         success: false,
         error: "No active shift for this gate. Start your shift first.",
@@ -453,7 +491,8 @@ export async function guardRoutes(app: FastifyInstance) {
     }
 
     const activeShift = await getActiveShiftForGuard(guard.id, institutionId);
-    if (!activeShift || activeShift.gateId !== parsed.data.gateId) {
+    const institutionUsesShiftsReturn = await prisma.guardShift.count({ where: { institutionId } });
+    if (institutionUsesShiftsReturn > 0 && (!activeShift || activeShift.gateId !== parsed.data.gateId)) {
       return reply.status(403).send({
         success: false,
         error: "No active shift for this gate. Start your shift first.",

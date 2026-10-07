@@ -14,6 +14,11 @@ import {
 } from "@campusgate/shared";
 import { requireTenantRole } from "../middleware/auth.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
+import {
+  notifyUser,
+  notifyInstitution,
+  broadcastToInstitution,
+} from "../services/notifications.js";
 
 export async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireTenantRole("ADMIN"));
@@ -432,6 +437,20 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     });
 
+    // Instant push to anyone online right now, independent of persisted
+    // per-user notifications below (which also reach offline users on login).
+    broadcastToInstitution(institutionId, {
+      type: "emergency_declared",
+      data: alert,
+    });
+
+    await notifyInstitution(institutionId, {
+      title: `Emergency: ${alert.title}`,
+      body: alert.message,
+      type: "EMERGENCY_DECLARED",
+      data: { alertId: alert.id, emergencyType: alert.type, affectedArea: alert.affectedArea },
+    });
+
     return reply.status(201).send(alert);
   });
 
@@ -480,6 +499,18 @@ export async function adminRoutes(app: FastifyInstance) {
           resolutionNote: parsed.data.resolutionNote,
         },
       },
+    });
+
+    broadcastToInstitution(institutionId, {
+      type: "emergency_resolved",
+      data: resolved,
+    });
+
+    await notifyInstitution(institutionId, {
+      title: "Emergency Resolved",
+      body: `The ${resolved.type.toLowerCase()} alert "${resolved.title}" has been resolved.`,
+      type: "EMERGENCY_RESOLVED",
+      data: { alertId: resolved.id },
     });
 
     return reply.send(resolved);
@@ -1532,6 +1563,7 @@ export async function adminRoutes(app: FastifyInstance) {
         student: { user: { institutionId } },
         status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
       },
+      include: { student: { select: { userId: true, name: true } } },
     });
 
     if (!pass) {
@@ -1575,6 +1607,13 @@ export async function adminRoutes(app: FastifyInstance) {
           newStatus: "REVOKED",
         },
       },
+    });
+
+    await notifyUser(pass.student.userId, {
+      title: "Gate Pass Revoked",
+      body: `Your gate pass ${pass.passNumber} was revoked: ${reason.trim()}`,
+      type: "PASS_REVOKED",
+      data: { passId: pass.id },
     });
 
     return reply.send(updated);

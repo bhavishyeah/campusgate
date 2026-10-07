@@ -124,10 +124,18 @@ export default function StudentHistory() {
                   </div>
                 )}
 
-                <div className="mt-3">
+                <div className="mt-3 flex items-center gap-3 flex-wrap">
                   <button className="btn-secondary text-sm" onClick={() => toggleDetails(pass.id)}>
                     {isExpanded ? "Hide Summary & Timeline" : "View Summary & Timeline"}
                   </button>
+                  {pass.status === "COMPLETED" && (
+                    <a
+                      href={`/student/pass/${pass.id}/receipt`}
+                      className="text-xs text-primary-600 hover:underline"
+                    >
+                      Print Receipt →
+                    </a>
+                  )}
                 </div>
 
                 {isExpanded && (
