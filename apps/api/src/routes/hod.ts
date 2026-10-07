@@ -350,6 +350,7 @@ export async function hodRoutes(app: FastifyInstance) {
         student: { departmentId: hod.departmentId, user: { institutionId } },
         status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
       },
+      include: { student: { select: { userId: true, name: true } } },
     });
 
     if (!pass) {
@@ -393,6 +394,13 @@ export async function hodRoutes(app: FastifyInstance) {
           newStatus: "REVOKED",
         },
       },
+    });
+
+    await notifyUser(pass.student.userId, {
+      title: "Gate Pass Revoked",
+      body: `Your gate pass ${pass.passNumber} was revoked: ${parsed.data.reason}`,
+      type: "PASS_REVOKED",
+      data: { passId: pass.id },
     });
 
     return reply.send(updated);

@@ -147,12 +147,24 @@ export default function StudentDashboard() {
     api.get<EmergencyAlert | null>("/api/student/emergency/active").then(setEmergency).catch(() => {});
 
     // Listen for real-time notifications to refresh
-    const unsubscribe = onMessage("notification", () => {
+    const unsubscribeNotification = onMessage("notification", () => {
       fetchDashboard();
       fetchAllowance();
-      api.get<EmergencyAlert | null>("/api/student/emergency/active").then(setEmergency).catch(() => {});
     });
-    return unsubscribe;
+
+    // Instant emergency banner updates, independent of the notification feed
+    const unsubscribeDeclared = onMessage("emergency_declared", (alert: EmergencyAlert) => {
+      setEmergency(alert);
+    });
+    const unsubscribeResolved = onMessage("emergency_resolved", () => {
+      setEmergency(null);
+    });
+
+    return () => {
+      unsubscribeNotification();
+      unsubscribeDeclared();
+      unsubscribeResolved();
+    };
   }, []);
 
   // Real-time elapsed timer: increment every 60 seconds when outside

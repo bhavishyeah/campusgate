@@ -112,11 +112,9 @@ export default function HodDashboard() {
         api.get<any>("/api/hod/stats"),
         api.get<EmergencyAlert | null>("/api/hod/emergency/active"),
       ]);
-       setRequests(reqs);
-       setStats(statsData);
-+      setEmergency(emergencyData);
       setRequests(reqs);
       setStats(statsData);
+      setEmergency(emergencyData);
 
       // Fetch allowance and reliability info for each request
       const detailEntries = await Promise.all(
@@ -151,8 +149,18 @@ export default function HodDashboard() {
 
   useEffect(() => {
     fetchData();
-    const unsubscribe = onMessage("notification", fetchData);
-    return unsubscribe;
+    const unsubscribeNotification = onMessage("notification", fetchData);
+    const unsubscribeDeclared = onMessage("emergency_declared", (alert: EmergencyAlert) => {
+      setEmergency(alert);
+    });
+    const unsubscribeResolved = onMessage("emergency_resolved", () => {
+      setEmergency(null);
+    });
+    return () => {
+      unsubscribeNotification();
+      unsubscribeDeclared();
+      unsubscribeResolved();
+    };
   }, []);
 
   const handleApprove = async (passId: string) => {

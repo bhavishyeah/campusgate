@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
 import { api } from "@/lib/api";
+import { onMessage } from "@/lib/socket";
 import {
   CheckCircle,
   XCircle,
@@ -116,6 +117,16 @@ export default function GuardScanPage() {
 
   useEffect(() => {
     loadShift();
+    const unsubscribeDeclared = onMessage("emergency_declared", (alert: EmergencyAlert) => {
+      setEmergency(alert);
+    });
+    const unsubscribeResolved = onMessage("emergency_resolved", () => {
+      setEmergency(null);
+    });
+    return () => {
+      unsubscribeDeclared();
+      unsubscribeResolved();
+    };
   }, []);
 
   const handleStartShift = async () => {
@@ -377,13 +388,13 @@ export default function GuardScanPage() {
           <>
             <button
               onClick={startScanner}
-              disabled={!shiftInfo?.activeShift}
+              disabled={shiftInfo?.nextShift !== undefined && shiftInfo?.nextShift !== null && !shiftInfo?.activeShift}
               className="bg-primary-600 hover:bg-primary-700 disabled:bg-gray-700 disabled:text-gray-400 text-white font-bold py-6 px-8 rounded-2xl text-xl flex items-center gap-3 mx-auto"
             >
               <Camera className="w-8 h-8" />
               SCAN PASS
             </button>
-            {!shiftInfo?.activeShift && !shiftLoading && (
+            {shiftInfo?.nextShift && !shiftInfo?.activeShift && !shiftLoading && (
               <p className="text-xs text-gray-500 mt-3 max-w-xs mx-auto">
                 Scanning is disabled until you start your shift.{" "}
                 {shiftInfo?.nextShift
@@ -412,7 +423,7 @@ export default function GuardScanPage() {
             onChange={(e) => setManualQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleManualLookup()}
           />
-          <button onClick={handleManualLookup} className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg" disabled={loading || !shiftInfo?.activeShift}>
+          <button onClick={handleManualLookup} className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg" disabled={loading || (!!shiftInfo?.nextShift && !shiftInfo?.activeShift)}>
             <Search className="w-5 h-5" />
           </button>
         </div>

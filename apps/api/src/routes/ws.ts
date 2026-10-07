@@ -2,8 +2,14 @@ import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "@fastify/websocket";
 import { prisma } from "@campusgate/db";
 
-// Global map of userId → WebSocket connection
-export const wsConnections = new Map<string, WebSocket>();
+interface ConnectionMeta {
+  socket: WebSocket;
+  institutionId: string;
+}
+
+// Global map of userId → connection + tenant metadata, so broadcasts can be
+// scoped to one institution without a DB lookup per message.
+export const wsConnections = new Map<string, ConnectionMeta>();
 
 export async function wsRoutes(app: FastifyInstance) {
   app.get("/connect", { websocket: true }, async (socket, request) => {
@@ -30,6 +36,7 @@ export async function wsRoutes(app: FastifyInstance) {
         select: {
           id: true,
           role: true,
+          institutionId: true,
           accountStatus: true,
           institution: { select: { status: true } },
         },
@@ -41,7 +48,7 @@ export async function wsRoutes(app: FastifyInstance) {
       }
 
       // Register connection
-      wsConnections.set(userId, socket);
+      wsConnections.set(userId, { socket, institutionId: user.institutionId });
 
       app.log.info(`WebSocket connected: ${userId}`);
 

@@ -1,9 +1,40 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import { prisma } from "@campusgate/db";
 import { loginSchema, registerSchema } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { notifyInstitutionAdmins } from "../services/notifications.js";
+
+/** Parse a basic device descriptor from the User-Agent string. */
+function parseDevice(ua?: string) {
+  if (!ua) return { deviceType: "unknown", browser: "unknown", os: "unknown" };
+  const lower = ua.toLowerCase();
+  const deviceType = /mobile|android|iphone|ipad|ipod/.test(lower)
+    ? lower.includes("ipad") ? "tablet" : "mobile"
+    : "desktop";
+  const browser = lower.includes("chrome") && !lower.includes("chromium")
+    ? "Chrome"
+    : lower.includes("firefox")
+    ? "Firefox"
+    : lower.includes("safari") && !lower.includes("chrome")
+    ? "Safari"
+    : lower.includes("edge")
+    ? "Edge"
+    : "Other";
+  const os = lower.includes("windows")
+    ? "Windows"
+    : lower.includes("mac os")
+    ? "macOS"
+    : lower.includes("android")
+    ? "Android"
+    : lower.includes("iphone") || lower.includes("ipad")
+    ? "iOS"
+    : lower.includes("linux")
+    ? "Linux"
+    : "Unknown";
+  return { deviceType, browser, os };
+}
 
 export async function authRoutes(app: FastifyInstance) {
   // ─── PUBLIC DEPARTMENTS (for registration form) ────────────────────────────
@@ -72,10 +103,40 @@ export async function authRoutes(app: FastifyInstance) {
       data: { lastLoginAt: new Date() },
     });
 
+    // Include a unique jti so sessions can be individually revoked
+    const jti = randomUUID();
     const token = app.jwt.sign({
       userId: user.id,
       role: user.role,
       institutionId: user.institutionId,
+      jti,
+    });
+
+    // Persist session for device management
+    const ua = request.headers["user-agent"];
+    const { deviceType, browser, os } = parseDevice(ua);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h matches JWT expiry
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        jti,
+        deviceType,
+        browser,
+        os,
+        ipAddress: request.ip || null,
+        expiresAt,
+      },
+    });
+
+    // Log security event
+    await prisma.securityEvent.create({
+      data: {
+        userId: user.id,
+        institutionId: user.institutionId,
+        eventType: "LOGIN_SUCCESS",
+        ipAddress: request.ip || null,
+        deviceInfo: `${browser} on ${os} (${deviceType})`,
+      },
     });
 
     return reply.send({
@@ -252,5 +313,107 @@ export async function authRoutes(app: FastifyInstance) {
       institution: { id: user.institution.id, name: user.institution.name },
       profile: user.studentProfile || user.hodProfile || user.guardProfile,
     });
+  });
+
+  // ─── LOGOUT (revoke current session) ───────────────────────────────────────
+  app.post("/logout", { preHandler: [authenticate] }, async (request, reply) => {
+    const { userId } = request.user;
+    const jti = (request.user as any).jti as string | undefined;
+
+    if (jti) {
+      await prisma.session.updateMany({
+        where: { jti, userId },
+        data: { revoked: true, revokedAt: new Date(), revokedReason: "user_logout" },
+      });
+    }
+
+    await prisma.securityEvent.create({
+      data: {
+        userId,
+        eventType: "LOGOUT",
+        ipAddress: request.ip || null,
+      },
+    });
+
+    return reply.send({ success: true });
+  });
+
+  // ─── LIST SESSIONS ────────────────────────────────────────────────────────
+  app.get("/sessions", { preHandler: [authenticate] }, async (request, reply) => {
+    const { userId } = request.user;
+    const currentJti = (request.user as any).jti as string | undefined;
+
+    const sessions = await prisma.session.findMany({
+      where: { userId, revoked: false, expiresAt: { gte: new Date() } },
+      orderBy: { lastActiveAt: "desc" },
+    });
+
+    return reply.send(
+      sessions.map((s) => ({
+        id: s.id,
+        isCurrent: s.jti === currentJti,
+        deviceType: s.deviceType,
+        browser: s.browser,
+        os: s.os,
+        ipAddress: s.ipAddress,
+        createdAt: s.createdAt,
+        lastActiveAt: s.lastActiveAt,
+      }))
+    );
+  });
+
+  // ─── REVOKE A SPECIFIC SESSION ────────────────────────────────────────────
+  app.delete("/sessions/:sessionId", { preHandler: [authenticate] }, async (request, reply) => {
+    const { userId } = request.user;
+    const { sessionId } = request.params as { sessionId: string };
+
+    const session = await prisma.session.findFirst({
+      where: { id: sessionId, userId },
+    });
+    if (!session) {
+      return reply.status(404).send({ error: "Session not found" });
+    }
+
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { revoked: true, revokedAt: new Date(), revokedReason: "user_revoked" },
+    });
+
+    await prisma.securityEvent.create({
+      data: {
+        userId,
+        eventType: "SESSION_REVOKED",
+        ipAddress: request.ip || null,
+        metadata: { revokedSessionId: sessionId },
+      },
+    });
+
+    return reply.send({ success: true });
+  });
+
+  // ─── REVOKE ALL OTHER SESSIONS ────────────────────────────────────────────
+  app.post("/sessions/revoke-all", { preHandler: [authenticate] }, async (request, reply) => {
+    const { userId } = request.user;
+    const currentJti = (request.user as any).jti as string | undefined;
+
+    const result = await prisma.session.updateMany({
+      where: {
+        userId,
+        revoked: false,
+        ...(currentJti ? { jti: { not: currentJti } } : {}),
+      },
+      data: { revoked: true, revokedAt: new Date(), revokedReason: "revoke_all" },
+    });
+
+    await prisma.securityEvent.create({
+      data: {
+        userId,
+        eventType: "SESSION_REVOKED",
+        ipAddress: request.ip || null,
+        metadata: { count: result.count, action: "revoke_all_others" },
+      },
+    });
+
+    return reply.send({ success: true, revoked: result.count });
   });
 }

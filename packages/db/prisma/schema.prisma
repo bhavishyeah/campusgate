@@ -205,6 +205,8 @@ model User {
   createdShifts         GuardShift[]        @relation("ShiftCreatedBy")
   createdEmergencyAlerts EmergencyAlert[]   @relation("EmergencyDeclaredBy")
   resolvedEmergencyAlerts EmergencyAlert[]  @relation("EmergencyResolvedBy")
+  sessions               Session[]
+  securityEvents         SecurityEvent[]
 
   @@map("users")
 }
@@ -539,4 +541,57 @@ model ReliabilityScoreSnapshot {
 
   @@index([studentId, computedAt])
   @@map("reliability_score_snapshots")
+}
+
+// ─── SESSION & DEVICE SECURITY ──────────────────────────────────────────────
+
+model Session {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Stores the JWT jti claim — revoke by marking this row revoked
+  jti          String    @unique
+  deviceName   String?
+  deviceType   String?   // "desktop" | "mobile" | "tablet"
+  browser      String?
+  os           String?
+  ipAddress    String?
+  revoked      Boolean   @default(false)
+  revokedAt    DateTime?
+  revokedReason String?
+  createdAt    DateTime  @default(now())
+  lastActiveAt DateTime  @default(now())
+  expiresAt    DateTime
+
+  @@index([userId, revoked])
+  @@index([jti])
+  @@map("sessions")
+}
+
+model SecurityEvent {
+  id            String   @id @default(cuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  institutionId String?
+  eventType     SecurityEventType
+  ipAddress     String?
+  deviceInfo    String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([institutionId, eventType, createdAt])
+  @@map("security_events")
+}
+
+enum SecurityEventType {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_REVOKED
+  SESSION_EXPIRED
+  PASSWORD_CHANGED
+  SUSPICIOUS_ACTIVITY
+  ACCOUNT_LOCKED
+  NEW_DEVICE_LOGIN
 }
