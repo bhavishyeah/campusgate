@@ -78,6 +78,15 @@ export default function RequestGatePass() {
 
       {step === "form" && (
         <div className="card space-y-5">
+          {error && (
+            <div
+              className="bg-danger-50 text-danger-700 px-4 py-3 rounded-lg text-sm"
+              role="alert"
+            >
+              {error}
+            </div>
+          )}
+
           {/* Reason */}
           <div>
             <label htmlFor="reason" className="label">

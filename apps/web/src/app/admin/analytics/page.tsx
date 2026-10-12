@@ -67,11 +67,15 @@ export default function AdminAnalyticsPage() {
 
     setError("");
     try {
-      const fromIso = new Date(`${fromDate}T00:00:00.000Z`).toISOString();
-      const toIso = new Date(`${toDate}T23:59:59.999Z`).toISOString();
+      // Build boundaries in local time (not UTC) so today's data isn't truncated
+      // by a timezone offset. We construct an ISO string from the local date parts.
+      const fromLocal = new Date(fromDate);
+      fromLocal.setHours(0, 0, 0, 0);
+      const toLocal = new Date(toDate);
+      toLocal.setHours(23, 59, 59, 999);
 
       const res = await api.get<AnalyticsResponse>(
-        `/api/admin/analytics?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`
+        `/api/admin/analytics?from=${encodeURIComponent(fromLocal.toISOString())}&to=${encodeURIComponent(toLocal.toISOString())}`
       );
       setData(res);
     } catch (err: any) {

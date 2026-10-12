@@ -351,7 +351,7 @@ function CreateUserModal({
         payload.departmentId = form.departmentId;
         payload.enrollmentNo = form.enrollmentNo;
         payload.program = form.program;
-        payload.semester = parseInt(form.semester);
+        payload.semester = parseInt(form.semester) || 1;
         if (form.section) payload.section = form.section;
       } else if (form.role === "HOD") {
         payload.departmentId = form.departmentId;

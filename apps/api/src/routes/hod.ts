@@ -34,7 +34,7 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
 
-    const validStatuses = ["PENDING", "APPROVED", "REJECTED", "ALL"];
+    const validStatuses = ["PENDING", "APPROVED", "ACTIVE", "OUTSIDE", "REJECTED", "COMPLETED", "ALL"];
     const statusFilter = validStatuses.includes(status) ? status : "PENDING";
 
     const where: any = {

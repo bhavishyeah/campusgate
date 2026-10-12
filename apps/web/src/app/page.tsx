@@ -30,6 +30,9 @@ export default function Home() {
       case "ADMIN":
         router.replace("/admin");
         break;
+      case "SUPER_ADMIN":
+        router.replace("/platform");
+        break;
       default:
         router.replace("/login");
     }

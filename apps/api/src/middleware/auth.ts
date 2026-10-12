@@ -30,6 +30,25 @@ export async function authenticate(
   }
 
   const tokenUser = request.user;
+
+  // Check session revocation before anything else.
+  // If the token carries a jti, that session must exist and not be revoked.
+  if (tokenUser.jti) {
+    const session = await prisma.session.findFirst({
+      where: { jti: tokenUser.jti, revoked: false },
+      select: { id: true, expiresAt: true },
+    });
+
+    if (!session) {
+      return reply.status(401).send({ error: "Session revoked or expired" });
+    }
+
+    // Update lastActiveAt in background so it doesn't slow down requests
+    prisma.session
+      .update({ where: { jti: tokenUser.jti }, data: { lastActiveAt: new Date() } })
+      .catch(() => {});
+  }
+
   const dbUser = await prisma.user.findUnique({
     where: { id: tokenUser.userId },
     select: {
@@ -49,10 +68,12 @@ export async function authenticate(
     return reply.status(403).send({ error: "Institution is suspended" });
   }
 
+  // Preserve jti so logout/session endpoints can reference the right session
   request.user = {
     userId: dbUser.id,
     role: dbUser.role,
     institutionId: dbUser.institutionId,
+    jti: tokenUser.jti,
   };
 }
 

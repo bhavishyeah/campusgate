@@ -33,12 +33,14 @@ export default function AdminEmergencyPage() {
   const [affectedArea, setAffectedArea] = useState("");
   const [resolutionNote, setResolutionNote] = useState("");
 
+  const [historyLimit, setHistoryLimit] = useState(20);
+
   const load = async () => {
     try {
       setError("");
       const [activeRes, historyRes] = await Promise.all([
         api.get<EmergencyAlert | null>("/api/admin/emergency/active"),
-        api.get<EmergencyAlert[]>("/api/admin/emergency?limit=20"),
+        api.get<EmergencyAlert[]>(`/api/admin/emergency?limit=${historyLimit}`),
       ]);
       setActive(activeRes);
       setHistory(historyRes);
@@ -51,7 +53,7 @@ export default function AdminEmergencyPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [historyLimit]);
 
   const declareEmergency = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,6 +201,14 @@ export default function AdminEmergencyPage() {
                     {item.resolutionNote && <p className="text-xs text-gray-600 mt-1">Note: {item.resolutionNote}</p>}
                   </div>
                 ))}
+                {history.length >= historyLimit && historyLimit < 100 && (
+                  <button
+                    className="w-full text-xs text-primary-600 hover:underline py-2"
+                    onClick={() => setHistoryLimit((l) => Math.min(100, l + 20))}
+                  >
+                    Load more
+                  </button>
+                )}
               </div>
             )}
           </div>
