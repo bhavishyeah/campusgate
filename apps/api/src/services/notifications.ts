@@ -1,4 +1,4 @@
-import { prisma } from "@campusgate/db";
+import { prisma, type Prisma } from "@campusgate/db";
 import { wsConnections } from "../routes/ws.js";
 
 interface NotificationPayload {
@@ -8,9 +8,21 @@ interface NotificationPayload {
   data?: Record<string, any>;
 }
 
-export async function notifyUser(userId: string, payload: NotificationPayload) {
+/**
+ * All fan-out helpers accept an optional `db` client (default: `prisma`). When
+ * called from inside a tenant request they MUST be passed the `withTenant`
+ * transaction client (`tx`) so the `notification.create` runs with the tenant
+ * RLS context set and satisfies the WITH CHECK policy. The `notifications` table
+ * is tenant-owned.
+ */
+
+export async function notifyUser(
+  userId: string,
+  payload: NotificationPayload,
+  db: Prisma.TransactionClient = prisma,
+) {
   // Derive the tenant from the recipient user (notifications are tenant-owned).
-  const user = await prisma.user.findUnique({
+  const user = await db.user.findUnique({
     where: { id: userId },
     select: { institutionId: true },
   });
@@ -19,7 +31,7 @@ export async function notifyUser(userId: string, payload: NotificationPayload) {
   }
 
   // Persist notification
-  const notification = await prisma.notification.create({
+  const notification = await db.notification.create({
     data: {
       userId,
       institutionId: user.institutionId,
@@ -46,29 +58,31 @@ export async function notifyUser(userId: string, payload: NotificationPayload) {
 
 export async function notifyInstitutionAdmins(
   institutionId: string,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  db: Prisma.TransactionClient = prisma,
 ) {
-  const admins = await prisma.user.findMany({
+  const admins = await db.user.findMany({
     where: { institutionId, role: "ADMIN", accountStatus: "ACTIVE" },
     select: { id: true },
   });
 
   for (const admin of admins) {
-    await notifyUser(admin.id, payload);
+    await notifyUser(admin.id, payload, db);
   }
 }
 
 export async function notifyDepartmentHods(
   departmentId: string,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  db: Prisma.TransactionClient = prisma,
 ) {
-  const hods = await prisma.hodProfile.findMany({
+  const hods = await db.hodProfile.findMany({
     where: { departmentId },
     include: { user: true },
   });
 
   for (const hod of hods) {
-    await notifyUser(hod.userId, payload);
+    await notifyUser(hod.userId, payload, db);
   }
 }
 
@@ -97,14 +111,15 @@ export function broadcastToInstitution(
  */
 export async function notifyInstitution(
   institutionId: string,
-  payload: NotificationPayload
+  payload: NotificationPayload,
+  db: Prisma.TransactionClient = prisma,
 ) {
-  const users = await prisma.user.findMany({
+  const users = await db.user.findMany({
     where: { institutionId, accountStatus: "ACTIVE" },
     select: { id: true },
   });
 
   for (const user of users) {
-    await notifyUser(user.id, payload);
+    await notifyUser(user.id, payload, db);
   }
 }

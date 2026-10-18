@@ -1,4 +1,4 @@
-import { prisma } from "@campusgate/db";
+import { prisma, type Prisma } from "@campusgate/db";
 import { AllowanceEngine } from "./allowance-engine.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -199,10 +199,11 @@ export class ReliabilityEngine {
    */
   static async computeScore(
     studentId: string,
-    institutionId: string
+    institutionId: string,
+    db: Prisma.TransactionClient = prisma,
   ): Promise<ReliabilityScore> {
     // 1. Get all terminal gate passes for student with their events
-    const allPasses = await prisma.gatePass.findMany({
+    const allPasses = await db.gatePass.findMany({
       where: {
         studentId,
         status: { in: ["COMPLETED", "EXPIRED", "REVOKED"] },
@@ -211,7 +212,7 @@ export class ReliabilityEngine {
     });
 
     // 2. Get emergency override records for this student's passes
-    const overrides = await prisma.emergencyOverride.findMany({
+    const overrides = await db.emergencyOverride.findMany({
       where: {
         gatePass: { studentId },
       },
@@ -225,7 +226,7 @@ export class ReliabilityEngine {
     const scoringPassIds = new Set(scoringPasses.map((p) => p.id));
 
     // 4. Get policy config for grace period and severity thresholds
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId, db);
 
     // 5. Build Movement objects from GateEvent pairs
     const movements: Movement[] = [];
@@ -293,7 +294,7 @@ export class ReliabilityEngine {
     );
 
     // 8. Get trend data
-    const trend = await ReliabilityEngine.getScoreTrend(studentId);
+    const trend = await ReliabilityEngine.getScoreTrend(studentId, 30, db);
 
     // 9. Return ReliabilityScore
     return {
@@ -321,9 +322,10 @@ export class ReliabilityEngine {
     studentId: string,
     institutionId: string,
     score: number,
-    movementNumber: number
+    movementNumber: number,
+    db: Prisma.TransactionClient = prisma,
   ): Promise<void> {
-    await prisma.reliabilityScoreSnapshot.create({
+    await db.reliabilityScoreSnapshot.create({
       data: {
         studentId,
         institutionId,
@@ -346,9 +348,10 @@ export class ReliabilityEngine {
    */
   static async getScoreTrend(
     studentId: string,
-    limit: number = 30
+    limit: number = 30,
+    db: Prisma.TransactionClient = prisma,
   ): Promise<ScoreTrend> {
-    const snapshots = await prisma.reliabilityScoreSnapshot.findMany({
+    const snapshots = await db.reliabilityScoreSnapshot.findMany({
       where: { studentId },
       orderBy: { computedAt: "desc" },
       take: limit,

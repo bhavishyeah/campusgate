@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "@fastify/websocket";
-import { prisma } from "@campusgate/db";
+import { privilegedPrisma } from "@campusgate/db";
 
 interface ConnectionMeta {
   socket: WebSocket;
@@ -31,7 +31,7 @@ export async function wsRoutes(app: FastifyInstance) {
 
       const userId = decoded.userId;
 
-      const user = await prisma.user.findUnique({
+      const user = await privilegedPrisma.user.findUnique({
         where: { id: userId },
         select: {
           id: true,

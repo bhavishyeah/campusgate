@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
-import { prisma, InstitutionStatus } from "@campusgate/db";
+import { privilegedPrisma, InstitutionStatus } from "@campusgate/db";
 import { requireSuperAdmin } from "../middleware/auth.js";
 
 export async function platformRoutes(app: FastifyInstance) {
@@ -18,13 +18,13 @@ export async function platformRoutes(app: FastifyInstance) {
       totalPasses,
       totalOutside,
     ] = await Promise.all([
-      prisma.institution.count(),
-      prisma.institution.count({ where: { status: "ACTIVE" } }),
-      prisma.institution.count({ where: { status: "SUSPENDED" } }),
-      prisma.user.count(),
-      prisma.user.count({ where: { role: "STUDENT" } }),
-      prisma.gatePass.count(),
-      prisma.gatePass.count({ where: { status: "OUTSIDE" } }),
+      privilegedPrisma.institution.count(),
+      privilegedPrisma.institution.count({ where: { status: "ACTIVE" } }),
+      privilegedPrisma.institution.count({ where: { status: "SUSPENDED" } }),
+      privilegedPrisma.user.count(),
+      privilegedPrisma.user.count({ where: { role: "STUDENT" } }),
+      privilegedPrisma.gatePass.count(),
+      privilegedPrisma.gatePass.count({ where: { status: "OUTSIDE" } }),
     ]);
 
     return reply.send({
@@ -46,7 +46,7 @@ export async function platformRoutes(app: FastifyInstance) {
 
   // List institutions with tenant-level summaries
   app.get("/institutions", async (_request, reply) => {
-    const institutions = await prisma.institution.findMany({
+    const institutions = await privilegedPrisma.institution.findMany({
       orderBy: { createdAt: "desc" },
       include: {
         _count: {
@@ -78,14 +78,14 @@ export async function platformRoutes(app: FastifyInstance) {
         .send({ error: "name, code and adminEmail are required" });
     }
 
-    const existingInstitution = await prisma.institution.findUnique({
+    const existingInstitution = await privilegedPrisma.institution.findUnique({
       where: { code },
     });
     if (existingInstitution) {
       return reply.status(409).send({ error: "Institution code already exists" });
     }
 
-    const existingAdminUser = await prisma.user.findUnique({ where: { email: adminEmail } });
+    const existingAdminUser = await privilegedPrisma.user.findUnique({ where: { email: adminEmail } });
     if (existingAdminUser) {
       return reply.status(409).send({ error: "Admin email already in use" });
     }
@@ -93,7 +93,7 @@ export async function platformRoutes(app: FastifyInstance) {
     const tempPassword = randomBytes(9).toString("base64url");
     const passwordHash = await bcrypt.hash(tempPassword, 12);
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await privilegedPrisma.$transaction(async (tx) => {
       const institution = await tx.institution.create({
         data: {
           name,
@@ -136,12 +136,12 @@ export async function platformRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "status must be ACTIVE or SUSPENDED" });
     }
 
-    const existing = await prisma.institution.findUnique({ where: { id } });
+    const existing = await privilegedPrisma.institution.findUnique({ where: { id } });
     if (!existing) {
       return reply.status(404).send({ error: "Institution not found" });
     }
 
-    const updated = await prisma.institution.update({
+    const updated = await privilegedPrisma.institution.update({
       where: { id },
       data: { status },
     });

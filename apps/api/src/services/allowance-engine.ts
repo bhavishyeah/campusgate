@@ -1,4 +1,4 @@
-import { prisma, PolicyPeriod, EnforcementMode, WeekStartDay, AcademicDayType } from "@campusgate/db";
+import { prisma, PolicyPeriod, EnforcementMode, WeekStartDay, AcademicDayType, type Prisma } from "@campusgate/db";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -62,8 +62,11 @@ export class AllowanceEngine {
    * Computes actual duration in minutes for a completed gate pass
    * by deriving from EXIT and RETURN GateEvent timestamps.
    */
-  static async computeActualDuration(passId: string): Promise<number | null> {
-    const gateEvents = await prisma.gateEvent.findMany({
+  static async computeActualDuration(
+    passId: string,
+    db: Prisma.TransactionClient = prisma,
+  ): Promise<number | null> {
+    const gateEvents = await db.gateEvent.findMany({
       where: { passId },
       orderBy: { timestamp: "asc" },
     });
@@ -197,13 +200,16 @@ export class AllowanceEngine {
     return workingDaysOfWeek.has(date.getDay());
   }
 
-  static async getOrCreatePolicy(institutionId: string): Promise<PolicyConfig> {
-    let policy = await prisma.allowancePolicy.findUnique({
+  static async getOrCreatePolicy(
+    institutionId: string,
+    db: Prisma.TransactionClient = prisma,
+  ): Promise<PolicyConfig> {
+    let policy = await db.allowancePolicy.findUnique({
       where: { institutionId },
     });
 
     if (!policy) {
-      policy = await prisma.allowancePolicy.create({
+      policy = await db.allowancePolicy.create({
         data: {
           institutionId,
           allowanceAmount: 1440,
@@ -232,13 +238,16 @@ export class AllowanceEngine {
     };
   }
 
-  static async getOrCreateInstitutionConfig(institutionId: string): Promise<InstitutionConfig> {
-    let config = await prisma.institutionConfig.findUnique({
+  static async getOrCreateInstitutionConfig(
+    institutionId: string,
+    db: Prisma.TransactionClient = prisma,
+  ): Promise<InstitutionConfig> {
+    let config = await db.institutionConfig.findUnique({
       where: { institutionId },
     });
 
     if (!config) {
-      config = await prisma.institutionConfig.create({
+      config = await db.institutionConfig.create({
         data: {
           institutionId,
           timezone: "Asia/Kolkata",
@@ -265,11 +274,12 @@ export class AllowanceEngine {
 
   static async getRemainingAllowance(
     studentId: string,
-    institutionId: string
+    institutionId: string,
+    db: Prisma.TransactionClient = prisma,
   ): Promise<AllowanceSummary> {
     const [policy, institutionConfig] = await Promise.all([
-      AllowanceEngine.getOrCreatePolicy(institutionId),
-      AllowanceEngine.getOrCreateInstitutionConfig(institutionId),
+      AllowanceEngine.getOrCreatePolicy(institutionId, db),
+      AllowanceEngine.getOrCreateInstitutionConfig(institutionId, db),
     ]);
 
     const now = new Date();
@@ -279,7 +289,7 @@ export class AllowanceEngine {
         : AllowanceEngine.getPeriodBounds(policy.policyPeriod, now);
 
     const [completedPasses, calendarDays] = await Promise.all([
-      prisma.gatePass.findMany({
+      db.gatePass.findMany({
         where: {
           studentId,
           status: "COMPLETED",
@@ -292,7 +302,7 @@ export class AllowanceEngine {
         },
         include: { gateEvents: true },
       }),
-      prisma.academicCalendarDay.findMany({
+      db.academicCalendarDay.findMany({
         where: {
           institutionId,
           date: { gte: start, lte: end },
@@ -328,7 +338,7 @@ export class AllowanceEngine {
     }
 
     let currentlyOutsideElapsed: number | null = null;
-    const outsidePass = await prisma.gatePass.findFirst({
+    const outsidePass = await db.gatePass.findFirst({
       where: { studentId, status: "OUTSIDE" },
       include: { gateEvents: true },
     });
@@ -360,15 +370,16 @@ export class AllowanceEngine {
 
   static async getEnforcementDecision(
     studentId: string,
-    institutionId: string
+    institutionId: string,
+    db: Prisma.TransactionClient = prisma,
   ): Promise<EnforcementDecision> {
-    const summary = await AllowanceEngine.getRemainingAllowance(studentId, institutionId);
+    const summary = await AllowanceEngine.getRemainingAllowance(studentId, institutionId, db);
 
     if (summary.remaining > 0) {
       return { action: "allow", remainingAllowance: summary.remaining };
     }
 
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId, db);
 
     if (policy.enforcement === "BLOCK_NEW_REQUESTS") {
       return {

@@ -2,15 +2,26 @@ import Fastify from "fastify";
 import jwt from "@fastify/jwt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@campusgate/db", () => ({
-  prisma: {
+vi.mock("@campusgate/db", () => {
+  const prisma = {
     user: { findUnique: vi.fn() },
     institution: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     gatePass: { count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     exitReason: { findMany: vi.fn() },
     hodProfile: { findFirst: vi.fn() },
-  },
-}));
+  };
+  return {
+    prisma,
+    // privilegedPrisma shares the same mocked delegates: the authenticate
+    // middleware and platform routes call it, and the assertions inspect the
+    // same objects.
+    privilegedPrisma: prisma,
+    // withTenant runs the callback immediately against the mocked prisma so
+    // tenant-route DB calls land on the delegates the assertions inspect.
+    withTenant: (_institutionId: string, fn: (tx: typeof prisma) => unknown) => fn(prisma),
+    Prisma: {},
+  };
+});
 
 import { prisma } from "@campusgate/db";
 import { studentRoutes } from "../student.js";

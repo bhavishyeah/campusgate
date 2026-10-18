@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { prisma } from "@campusgate/db";
+import { withTenant } from "@campusgate/db";
 import { approvePassSchema, rejectPassSchema, revokePassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
 import { requireTenantRole } from "../middleware/auth.js";
 import { notifyUser } from "../services/notifications.js";
@@ -16,10 +16,12 @@ export async function hodRoutes(app: FastifyInstance) {
   app.get("/emergency/active", async (request, reply) => {
     const { institutionId } = request.user;
 
-    const active = await prisma.emergencyAlert.findFirst({
-      where: { institutionId, status: "ACTIVE" },
-      orderBy: { declaredAt: "desc" },
-    });
+    const active = await withTenant(institutionId, (tx) =>
+      tx.emergencyAlert.findFirst({
+        where: { institutionId, status: "ACTIVE" },
+        orderBy: { declaredAt: "desc" },
+      }),
+    );
 
     return reply.send(active);
   });
@@ -29,36 +31,40 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { status = "PENDING" } = request.query as { status?: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return null;
+
+      const validStatuses = ["PENDING", "APPROVED", "ACTIVE", "OUTSIDE", "REJECTED", "COMPLETED", "ALL"];
+      const statusFilter = validStatuses.includes(status) ? status : "PENDING";
+
+      const where: any = {
+        student: {
+          departmentId: hod.departmentId,
+          user: { institutionId },
+        },
+      };
+
+      if (statusFilter !== "ALL") {
+        where.status = statusFilter;
+      }
+
+      return tx.gatePass.findMany({
+        where,
+        include: {
+          student: { include: { department: true } },
+          reason: true,
+          approvedBy: true,
+        },
+        orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      });
+    });
+
+    if (!result) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
 
-    const validStatuses = ["PENDING", "APPROVED", "ACTIVE", "OUTSIDE", "REJECTED", "COMPLETED", "ALL"];
-    const statusFilter = validStatuses.includes(status) ? status : "PENDING";
-
-    const where: any = {
-      student: {
-        departmentId: hod.departmentId,
-        user: { institutionId },
-      },
-    };
-
-    if (statusFilter !== "ALL") {
-      where.status = statusFilter;
-    }
-
-    const requests = await prisma.gatePass.findMany({
-      where,
-      include: {
-        student: { include: { department: true } },
-        reason: true,
-        approvedBy: true,
-      },
-      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    });
-
-    return reply.send(requests);
+    return reply.send(result);
   });
 
   // ─── GET SINGLE REQUEST DETAIL ─────────────────────────────────────────────
@@ -66,39 +72,46 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: {
-        student: { include: { department: true } },
-        reason: true,
-        approvedBy: true,
-        gateEvents: { include: { gate: true } },
-      },
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: {
+          student: { include: { department: true } },
+          reason: true,
+          approvedBy: true,
+          gateEvents: { include: { gate: true } },
+        },
+      });
+
+      if (!pass) return { notFoundPass: true as const };
+
+      // Include student allowance info for HOD decision-making (Req 7.1, 7.2, 7.3)
+      const allowance = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId, tx);
+      const policy = await AllowanceEngine.getOrCreatePolicy(institutionId, tx);
+
+      // Include reliability score as advisory information (Req 9.5, 12.3)
+      const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId, tx);
+
+      return { pass, allowance, policy, score };
     });
 
-    if (!pass) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
-    // Include student allowance info for HOD decision-making (Req 7.1, 7.2, 7.3)
-    const allowance = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId);
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
-
-    // Include reliability score as advisory information (Req 9.5, 12.3)
-    const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
-
     return reply.send({
-      ...pass,
-      allowance: { ...allowance, enforcement: policy.enforcement.toLowerCase() },
-      reliabilityScore: score.hasSufficientData ? score : null,
+      ...result.pass,
+      allowance: { ...result.allowance, enforcement: result.policy.enforcement.toLowerCase() },
+      reliabilityScore: result.score.hasSufficientData ? result.score : null,
     });
   });
 
@@ -107,23 +120,30 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
+
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+      });
+      if (!pass) return { notFoundPass: true as const };
+
+      const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId, tx);
+      return { score };
+    });
+
+    if ("notFoundHod" in result) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
-
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-    });
-    if (!pass) {
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
-    const score = await ReliabilityEngine.computeScore(pass.studentId, institutionId);
-    return reply.send(score);
+    return reply.send(result.score);
   });
 
   // ─── GET STUDENT ALLOWANCE FOR A REQUEST ─────────────────────────────────
@@ -131,24 +151,31 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
+
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+      });
+      if (!pass) return { notFoundPass: true as const };
+
+      const summary = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId, tx);
+      const policy = await AllowanceEngine.getOrCreatePolicy(institutionId, tx);
+      return { summary, policy };
+    });
+
+    if ("notFoundHod" in result) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
-
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-    });
-    if (!pass) {
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
-    const summary = await AllowanceEngine.getRemainingAllowance(pass.studentId, institutionId);
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
-    return reply.send({ ...summary, enforcement: policy.enforcement.toLowerCase() });
+    return reply.send({ ...result.summary, enforcement: result.policy.enforcement.toLowerCase() });
   });
 
   // ─── EMERGENCY OVERRIDE ───────────────────────────────────────────────────
@@ -160,46 +187,53 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Justification must be at least 10 characters" });
     }
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
+
+      // Verify pass belongs to HOD's department
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: { student: true },
+      });
+      if (!pass) return { notFoundPass: true as const };
+
+      // Create override record
+      const override = await tx.emergencyOverride.create({
+        data: {
+          gatePassId: passId,
+          institutionId,
+          overriddenById: userId,
+          justification,
+        },
+      });
+
+      // Create audit log entry (Req 5.3)
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "EMERGENCY_OVERRIDE",
+          targetId: passId,
+          targetType: "GatePass",
+          metadata: { justification, studentId: pass.studentId },
+        },
+      });
+
+      return { override };
+    });
+
+    if ("notFoundHod" in result) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
-
-    // Verify pass belongs to HOD's department
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: { student: true },
-    });
-    if (!pass) {
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Pass not found in your department" });
     }
 
-    // Create override record
-    const override = await prisma.emergencyOverride.create({
-      data: {
-        gatePassId: passId,
-        institutionId,
-        overriddenById: userId,
-        justification,
-      },
-    });
-
-    // Create audit log entry (Req 5.3)
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "EMERGENCY_OVERRIDE",
-        targetId: passId,
-        targetType: "GatePass",
-        metadata: { justification, studentId: pass.studentId },
-      },
-    });
-
-    return reply.status(201).send(override);
+    return reply.status(201).send(result.override);
   });
 
   // ─── APPROVE REQUEST ───────────────────────────────────────────────────────
@@ -211,66 +245,77 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    // Find the pass and verify it belongs to HOD's department
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: parsed.data.passId,
-        status: "PENDING",
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: { student: true },
+      // Find the pass and verify it belongs to HOD's department
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: parsed.data.passId,
+          status: "PENDING",
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: { student: true },
+      });
+
+      if (!pass) return { notFoundPass: true as const };
+
+      // Generate QR token
+      const qrToken = nanoid(32);
+      const qrExpiresAt = new Date(
+        Date.now() + QR_TOKEN_VALIDITY_MINUTES * 60 * 1000
+      );
+
+      // Atomic update: PENDING → APPROVED
+      const updated = await tx.gatePass.update({
+        where: { id: pass.id, status: "PENDING" }, // Optimistic lock
+        data: {
+          status: "APPROVED",
+          approvedById: hod.id,
+          approvedAt: new Date(),
+          qrToken,
+          qrExpiresAt,
+        },
+      });
+
+      // Audit
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "PASS_APPROVED",
+          targetId: pass.id,
+          targetType: "GatePass",
+          metadata: { studentId: pass.studentId, passNumber: pass.passNumber },
+        },
+      });
+
+      // Notify student
+      await notifyUser(
+        pass.student.userId,
+        {
+          title: "Gate Pass Approved",
+          body: `Your gate pass ${pass.passNumber} has been approved.`,
+          type: "PASS_APPROVED",
+          data: { passId: pass.id },
+        },
+        tx,
+      );
+
+      return { updated };
     });
 
-    if (!pass) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
       return reply
         .status(404)
         .send({ error: "Pending request not found or not in your department" });
     }
 
-    // Generate QR token
-    const qrToken = nanoid(32);
-    const qrExpiresAt = new Date(
-      Date.now() + QR_TOKEN_VALIDITY_MINUTES * 60 * 1000
-    );
-
-    // Atomic update: PENDING → APPROVED
-    const updated = await prisma.gatePass.update({
-      where: { id: pass.id, status: "PENDING" }, // Optimistic lock
-      data: {
-        status: "APPROVED",
-        approvedById: hod.id,
-        approvedAt: new Date(),
-        qrToken,
-        qrExpiresAt,
-      },
-    });
-
-    // Audit
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "PASS_APPROVED",
-        targetId: pass.id,
-        targetType: "GatePass",
-        metadata: { studentId: pass.studentId, passNumber: pass.passNumber },
-      },
-    });
-
-    // Notify student
-    await notifyUser(pass.student.userId, {
-      title: "Gate Pass Approved",
-      body: `Your gate pass ${pass.passNumber} has been approved.`,
-      type: "PASS_APPROVED",
-      data: { passId: pass.id },
-    });
-
-    return reply.send(updated);
+    return reply.send(result.updated);
   });
 
   // ─── REJECT REQUEST ────────────────────────────────────────────────────────
@@ -282,56 +327,67 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: parsed.data.passId,
-        status: "PENDING",
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: { student: true },
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: parsed.data.passId,
+          status: "PENDING",
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: { student: true },
+      });
+
+      if (!pass) return { notFoundPass: true as const };
+
+      const updated = await tx.gatePass.update({
+        where: { id: pass.id, status: "PENDING" },
+        data: {
+          status: "REJECTED",
+          rejectionReason: parsed.data.rejectionReason,
+          approvedById: hod.id,
+          approvedAt: new Date(),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "PASS_REJECTED",
+          targetId: pass.id,
+          targetType: "GatePass",
+          metadata: { reason: parsed.data.rejectionReason },
+        },
+      });
+
+      // Notify student
+      await notifyUser(
+        pass.student.userId,
+        {
+          title: "Gate Pass Rejected",
+          body: `Your gate pass ${pass.passNumber} was rejected: ${parsed.data.rejectionReason}`,
+          type: "PASS_REJECTED",
+          data: { passId: pass.id },
+        },
+        tx,
+      );
+
+      return { updated };
     });
 
-    if (!pass) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
       return reply
         .status(404)
         .send({ error: "Pending request not found or not in your department" });
     }
 
-    const updated = await prisma.gatePass.update({
-      where: { id: pass.id, status: "PENDING" },
-      data: {
-        status: "REJECTED",
-        rejectionReason: parsed.data.rejectionReason,
-        approvedById: hod.id,
-        approvedAt: new Date(),
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "PASS_REJECTED",
-        targetId: pass.id,
-        targetType: "GatePass",
-        metadata: { reason: parsed.data.rejectionReason },
-      },
-    });
-
-    // Notify student
-    await notifyUser(pass.student.userId, {
-      title: "Gate Pass Rejected",
-      body: `Your gate pass ${pass.passNumber} was rejected: ${parsed.data.rejectionReason}`,
-      type: "PASS_REJECTED",
-      data: { passId: pass.id },
-    });
-
-    return reply.send(updated);
+    return reply.send(result.updated);
   });
 
   // ─── REVOKE PASS ──────────────────────────────────────────────────────────
@@ -343,72 +399,84 @@ export async function hodRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: parsed.data.passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-        status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
-      },
-      include: { student: { select: { userId: true, name: true } } },
-    });
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: parsed.data.passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+          status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
+        },
+        include: { student: { select: { userId: true, name: true } } },
+      });
 
-    if (!pass) {
-      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
-    }
+      if (!pass) return { notFoundPass: true as const };
 
-    const previousStatus = pass.status;
+      const previousStatus = pass.status;
 
-    const transitioned = await prisma.gatePass.updateMany({
-      where: {
-        id: pass.id,
-        status: previousStatus,
-      },
-      data: {
+      const transitioned = await tx.gatePass.updateMany({
+        where: {
+          id: pass.id,
+          status: previousStatus,
+        },
+        data: {
+          status: "REVOKED",
+          qrToken: null,
+          qrExpiresAt: null,
+        },
+      });
+
+      if (transitioned.count === 0) return { conflict: true as const };
+
+      const updated = {
+        ...pass,
         status: "REVOKED",
         qrToken: null,
         qrExpiresAt: null,
-      },
+      };
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "PASS_REVOKED",
+          targetId: pass.id,
+          targetType: "GatePass",
+          metadata: {
+            reason: parsed.data.reason,
+            previousStatus,
+            newStatus: "REVOKED",
+          },
+        },
+      });
+
+      await notifyUser(
+        pass.student.userId,
+        {
+          title: "Gate Pass Revoked",
+          body: `Your gate pass ${pass.passNumber} was revoked: ${parsed.data.reason}`,
+          type: "PASS_REVOKED",
+          data: { passId: pass.id },
+        },
+        tx,
+      );
+
+      return { updated };
     });
 
-    if (transitioned.count === 0) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
+      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
+    }
+    if ("conflict" in result) {
       return reply.status(409).send({ error: "Pass state changed, please refresh and try again" });
     }
 
-    const updated = {
-      ...pass,
-      status: "REVOKED",
-      qrToken: null,
-      qrExpiresAt: null,
-    };
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "PASS_REVOKED",
-        targetId: pass.id,
-        targetType: "GatePass",
-        metadata: {
-          reason: parsed.data.reason,
-          previousStatus,
-          newStatus: "REVOKED",
-        },
-      },
-    });
-
-    await notifyUser(pass.student.userId, {
-      title: "Gate Pass Revoked",
-      body: `Your gate pass ${pass.passNumber} was revoked: ${parsed.data.reason}`,
-      type: "PASS_REVOKED",
-      data: { passId: pass.id },
-    });
-
-    return reply.send(updated);
+    return reply.send(result.updated);
   });
 
   // ─── REQUEST TIMELINE ──────────────────────────────────────────────────────
@@ -416,36 +484,43 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: {
-        gateEvents: { include: { gate: true } },
-      },
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: {
+          gateEvents: { include: { gate: true } },
+        },
+      });
+
+      if (!pass) return { notFoundPass: true as const };
+
+      const logs = await tx.auditLog.findMany({
+        where: {
+          targetType: "GatePass",
+          targetId: pass.id,
+          action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
+        },
+        orderBy: { timestamp: "asc" },
+      });
+
+      return { pass, logs };
     });
 
-    if (!pass) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
-    const logs = await prisma.auditLog.findMany({
-      where: {
-        targetType: "GatePass",
-        targetId: pass.id,
-        action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
-      },
-      orderBy: { timestamp: "asc" },
-    });
-
-    const timeline = buildPassTimeline(pass as any, logs as any);
-    return reply.send({ passId: pass.id, timeline });
+    const timeline = buildPassTimeline(result.pass as any, result.logs as any);
+    return reply.send({ passId: result.pass.id, timeline });
   });
 
   // ─── REQUEST SUMMARY ───────────────────────────────────────────────────────
@@ -453,28 +528,35 @@ export async function hodRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
-      return reply.status(404).send({ error: "HOD profile not found" });
-    }
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return { notFoundHod: true as const };
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { departmentId: hod.departmentId, user: { institutionId } },
-      },
-      include: {
-        student: { include: { department: true } },
-        reason: true,
-        approvedBy: true,
-        gateEvents: { include: { gate: true }, orderBy: { timestamp: "asc" } },
-      },
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { departmentId: hod.departmentId, user: { institutionId } },
+        },
+        include: {
+          student: { include: { department: true } },
+          reason: true,
+          approvedBy: true,
+          gateEvents: { include: { gate: true }, orderBy: { timestamp: "asc" } },
+        },
+      });
+
+      if (!pass) return { notFoundPass: true as const };
+      return { pass };
     });
 
-    if (!pass) {
+    if ("notFoundHod" in result) {
+      return reply.status(404).send({ error: "HOD profile not found" });
+    }
+    if ("notFoundPass" in result) {
       return reply.status(404).send({ error: "Request not found" });
     }
 
+    const pass = result.pass;
     const outsideDurationMinutes = computeOutsideDurationMinutes(pass.actualExit, pass.actualReturn);
 
     return reply.send({
@@ -515,46 +597,47 @@ export async function hodRoutes(app: FastifyInstance) {
   app.get("/stats", async (request, reply) => {
     const { userId, institutionId } = request.user;
 
-    const hod = await getHodInTenant(userId, institutionId);
-    if (!hod) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const hod = await getHodInTenant(userId, institutionId, tx);
+      if (!hod) return null;
+
+      const [pending, approvedToday, rejectedToday, currentlyOutside] =
+        await Promise.all([
+          tx.gatePass.count({
+            where: {
+              status: "PENDING",
+              student: { departmentId: hod.departmentId, user: { institutionId } },
+            },
+          }),
+          tx.gatePass.count({
+            where: {
+              status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED"] },
+              approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+              student: { departmentId: hod.departmentId, user: { institutionId } },
+            },
+          }),
+          tx.gatePass.count({
+            where: {
+              status: "REJECTED",
+              approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+              student: { departmentId: hod.departmentId, user: { institutionId } },
+            },
+          }),
+          tx.gatePass.count({
+            where: {
+              status: "OUTSIDE",
+              student: { departmentId: hod.departmentId, user: { institutionId } },
+            },
+          }),
+        ]);
+
+      return { pending, approvedToday, rejectedToday, currentlyOutside };
+    });
+
+    if (!result) {
       return reply.status(404).send({ error: "HOD profile not found" });
     }
 
-    const [pending, approvedToday, rejectedToday, currentlyOutside] =
-      await Promise.all([
-        prisma.gatePass.count({
-          where: {
-            status: "PENDING",
-            student: { departmentId: hod.departmentId, user: { institutionId } },
-          },
-        }),
-        prisma.gatePass.count({
-          where: {
-            status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED"] },
-            approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-            student: { departmentId: hod.departmentId, user: { institutionId } },
-          },
-        }),
-        prisma.gatePass.count({
-          where: {
-            status: "REJECTED",
-            approvedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-            student: { departmentId: hod.departmentId, user: { institutionId } },
-          },
-        }),
-        prisma.gatePass.count({
-          where: {
-            status: "OUTSIDE",
-            student: { departmentId: hod.departmentId, user: { institutionId } },
-          },
-        }),
-      ]);
-
-    return reply.send({
-      pending,
-      approvedToday,
-      rejectedToday,
-      currentlyOutside,
-    });
+    return reply.send(result);
   });
 }

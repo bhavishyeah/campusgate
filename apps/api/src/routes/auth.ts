@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
-import { prisma } from "@campusgate/db";
+import { privilegedPrisma, withTenant } from "@campusgate/db";
 import { loginSchema, registerSchema } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { notifyInstitutionAdmins } from "../services/notifications.js";
@@ -39,7 +39,7 @@ function parseDevice(ua?: string) {
 export async function authRoutes(app: FastifyInstance) {
   // ─── PUBLIC DEPARTMENTS (for registration form) ────────────────────────────
   app.get("/departments", async (_request, reply) => {
-    const departments = await prisma.department.findMany({
+    const departments = await privilegedPrisma.department.findMany({
       where: { institution: { status: "ACTIVE" } },
       select: {
         id: true,
@@ -61,7 +61,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     const { email, password } = parsed.data;
 
-    const user = await prisma.user.findUnique({
+    const user = await privilegedPrisma.user.findUnique({
       where: { email },
       include: {
         studentProfile: true,
@@ -98,7 +98,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Update last login
-    await prisma.user.update({
+    await privilegedPrisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
     });
@@ -116,7 +116,7 @@ export async function authRoutes(app: FastifyInstance) {
     const ua = request.headers["user-agent"];
     const { deviceType, browser, os } = parseDevice(ua);
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h matches JWT expiry
-    await prisma.session.create({
+    await privilegedPrisma.session.create({
       data: {
         userId: user.id,
         jti,
@@ -129,7 +129,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     // Log security event
-    await prisma.securityEvent.create({
+    await privilegedPrisma.securityEvent.create({
       data: {
         userId: user.id,
         institutionId: user.institutionId,
@@ -162,7 +162,7 @@ export async function authRoutes(app: FastifyInstance) {
       parsed.data;
 
     // Get the department's institution
-    const department = await prisma.department.findUnique({
+    const department = await privilegedPrisma.department.findUnique({
       where: { id: departmentId },
       include: { institution: { select: { status: true } } },
     });
@@ -177,7 +177,7 @@ export async function authRoutes(app: FastifyInstance) {
     const passwordHash = await bcrypt.hash(password, 12);
 
     // If a user already exists with this email, attempt first-time activation flow
-    const existingByEmail = await prisma.user.findUnique({
+    const existingByEmail = await privilegedPrisma.user.findUnique({
       where: { email },
       include: { studentProfile: true },
     });
@@ -207,7 +207,7 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      const activated = await prisma.user.update({
+      const activated = await privilegedPrisma.user.update({
         where: { id: existingByEmail.id },
         data: {
           passwordHash,
@@ -238,7 +238,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Check enrollment collision for new self-registration
-    const existingEnrollment = await prisma.studentProfile.findUnique({
+    const existingEnrollment = await privilegedPrisma.studentProfile.findUnique({
       where: { enrollmentNo },
     });
     if (existingEnrollment) {
@@ -246,7 +246,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Create user + student profile (awaiting admin approval)
-    const user = await prisma.user.create({
+    const user = await privilegedPrisma.user.create({
       data: {
         email,
         passwordHash,
@@ -268,13 +268,22 @@ export async function authRoutes(app: FastifyInstance) {
       include: { studentProfile: true },
     });
 
-    // Let admins know there is a registration waiting for approval
-    await notifyInstitutionAdmins(department.institutionId, {
-      title: "New Student Registration",
-      body: `${name} (${enrollmentNo}) registered and is awaiting approval.`,
-      type: "REGISTRATION_PENDING",
-      data: { userId: user.id },
-    });
+    // Let admins know there is a registration waiting for approval.
+    // The notification rows are tenant-owned, so run the fan-out inside the
+    // tenant context (institutionId derived from the department, server-side)
+    // so the writes satisfy the RLS WITH CHECK policy.
+    await withTenant(department.institutionId, (tx) =>
+      notifyInstitutionAdmins(
+        department.institutionId,
+        {
+          title: "New Student Registration",
+          body: `${name} (${enrollmentNo}) registered and is awaiting approval.`,
+          type: "REGISTRATION_PENDING",
+          data: { userId: user.id },
+        },
+        tx,
+      ),
+    );
 
     return reply.status(201).send({
       activation: false,
@@ -292,7 +301,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.get("/me", { preHandler: [authenticate] }, async (request, reply) => {
     const { userId } = request.user;
 
-    const user = await prisma.user.findUnique({
+    const user = await privilegedPrisma.user.findUnique({
       where: { id: userId },
       include: {
         studentProfile: { include: { department: true } },
@@ -322,13 +331,13 @@ export async function authRoutes(app: FastifyInstance) {
     const jti = (request.user as any).jti as string | undefined;
 
     if (jti) {
-      await prisma.session.updateMany({
+      await privilegedPrisma.session.updateMany({
         where: { jti, userId },
         data: { revoked: true, revokedAt: new Date(), revokedReason: "user_logout" },
       });
     }
 
-    await prisma.securityEvent.create({
+    await privilegedPrisma.securityEvent.create({
       data: {
         userId,
         eventType: "LOGOUT",
@@ -344,7 +353,7 @@ export async function authRoutes(app: FastifyInstance) {
     const { userId } = request.user;
     const currentJti = (request.user as any).jti as string | undefined;
 
-    const sessions = await prisma.session.findMany({
+    const sessions = await privilegedPrisma.session.findMany({
       where: { userId, revoked: false, expiresAt: { gte: new Date() } },
       orderBy: { lastActiveAt: "desc" },
     });
@@ -368,19 +377,19 @@ export async function authRoutes(app: FastifyInstance) {
     const { userId } = request.user;
     const { sessionId } = request.params as { sessionId: string };
 
-    const session = await prisma.session.findFirst({
+    const session = await privilegedPrisma.session.findFirst({
       where: { id: sessionId, userId },
     });
     if (!session) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
-    await prisma.session.update({
+    await privilegedPrisma.session.update({
       where: { id: sessionId },
       data: { revoked: true, revokedAt: new Date(), revokedReason: "user_revoked" },
     });
 
-    await prisma.securityEvent.create({
+    await privilegedPrisma.securityEvent.create({
       data: {
         userId,
         eventType: "SESSION_REVOKED",
@@ -397,7 +406,7 @@ export async function authRoutes(app: FastifyInstance) {
     const { userId } = request.user;
     const currentJti = (request.user as any).jti as string | undefined;
 
-    const result = await prisma.session.updateMany({
+    const result = await privilegedPrisma.session.updateMany({
       where: {
         userId,
         revoked: false,
@@ -406,7 +415,7 @@ export async function authRoutes(app: FastifyInstance) {
       data: { revoked: true, revokedAt: new Date(), revokedReason: "revoke_all" },
     });
 
-    await prisma.securityEvent.create({
+    await privilegedPrisma.securityEvent.create({
       data: {
         userId,
         eventType: "SESSION_REVOKED",

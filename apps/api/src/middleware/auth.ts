@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { prisma, type Role } from "@campusgate/db";
+import { privilegedPrisma, type Role } from "@campusgate/db";
 
 // Extend Fastify's JWT types
 declare module "@fastify/jwt" {
@@ -34,7 +34,7 @@ export async function authenticate(
   // Check session revocation before anything else.
   // If the token carries a jti, that session must exist and not be revoked.
   if (tokenUser.jti) {
-    const session = await prisma.session.findFirst({
+    const session = await privilegedPrisma.session.findFirst({
       where: { jti: tokenUser.jti, revoked: false },
       select: { id: true, expiresAt: true },
     });
@@ -44,12 +44,12 @@ export async function authenticate(
     }
 
     // Update lastActiveAt in background so it doesn't slow down requests
-    prisma.session
+    privilegedPrisma.session
       .update({ where: { jti: tokenUser.jti }, data: { lastActiveAt: new Date() } })
       .catch(() => {});
   }
 
-  const dbUser = await prisma.user.findUnique({
+  const dbUser = await privilegedPrisma.user.findUnique({
     where: { id: tokenUser.userId },
     select: {
       id: true,

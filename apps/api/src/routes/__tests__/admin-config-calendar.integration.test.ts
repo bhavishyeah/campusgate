@@ -2,14 +2,20 @@ import Fastify from "fastify";
 import jwt from "@fastify/jwt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@campusgate/db", () => ({
-  prisma: {
+vi.mock("@campusgate/db", () => {
+  const prisma = {
     user: { findUnique: vi.fn() },
     institutionConfig: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
     academicCalendarDay: { findMany: vi.fn(), upsert: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
     auditLog: { create: vi.fn() },
-  },
-}));
+  };
+  return {
+    prisma,
+    privilegedPrisma: prisma,
+    withTenant: (_institutionId: string, fn: (tx: typeof prisma) => unknown) => fn(prisma),
+    Prisma: {},
+  };
+});
 
 import { prisma } from "@campusgate/db";
 import { adminRoutes } from "../admin.js";

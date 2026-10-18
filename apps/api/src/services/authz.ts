@@ -1,25 +1,48 @@
-import { prisma } from "@campusgate/db";
+import { prisma, type Prisma } from "@campusgate/db";
 
-export async function getStudentInTenant(userId: string, institutionId: string) {
-  return prisma.studentProfile.findFirst({
+/**
+ * All helpers accept an optional `db` client (default: the module-level
+ * `prisma`). Tenant routes pass the `withTenant` transaction client (`tx`) so
+ * these lookups run inside the tenant RLS context; callers outside a tenant
+ * context (and the mocked tests) transparently use the default `prisma`.
+ */
+
+export async function getStudentInTenant(
+  userId: string,
+  institutionId: string,
+  db: Prisma.TransactionClient = prisma,
+) {
+  return db.studentProfile.findFirst({
     where: { userId, user: { institutionId } },
   });
 }
 
-export async function getHodInTenant(userId: string, institutionId: string) {
-  return prisma.hodProfile.findFirst({
+export async function getHodInTenant(
+  userId: string,
+  institutionId: string,
+  db: Prisma.TransactionClient = prisma,
+) {
+  return db.hodProfile.findFirst({
     where: { userId, user: { institutionId } },
   });
 }
 
-export async function getGuardInTenant(userId: string, institutionId: string) {
-  return prisma.guardProfile.findFirst({
+export async function getGuardInTenant(
+  userId: string,
+  institutionId: string,
+  db: Prisma.TransactionClient = prisma,
+) {
+  return db.guardProfile.findFirst({
     where: { userId, user: { institutionId } },
   });
 }
 
-export async function getTenantPassById(passId: string, institutionId: string) {
-  return prisma.gatePass.findFirst({
+export async function getTenantPassById(
+  passId: string,
+  institutionId: string,
+  db: Prisma.TransactionClient = prisma,
+) {
+  return db.gatePass.findFirst({
     where: {
       id: passId,
       student: { user: { institutionId } },

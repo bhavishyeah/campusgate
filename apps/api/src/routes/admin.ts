@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
 import ExcelJS from "exceljs";
-import { prisma } from "@campusgate/db";
+import { withTenant } from "@campusgate/db";
 import {
   createUserSchema,
   bulkImportStudentSchema,
@@ -39,33 +39,35 @@ export async function adminRoutes(app: FastifyInstance) {
       currentlyOutside,
       pendingApprovals,
       pendingRegistrations,
-    ] = await Promise.all([
-      prisma.user.count({ where: { institutionId, role: "STUDENT", accountStatus: "ACTIVE" } }),
-      prisma.user.count({ where: { institutionId, role: "HOD", accountStatus: "ACTIVE" } }),
-      prisma.user.count({ where: { institutionId, role: "GUARD", accountStatus: "ACTIVE" } }),
-      prisma.gate.count({ where: { institutionId, isActive: true } }),
-      prisma.gateEvent.count({
-        where: {
-          eventType: "EXIT",
-          timestamp: { gte: today },
-          pass: { student: { user: { institutionId } } },
-        },
-      }),
-      prisma.gateEvent.count({
-        where: {
-          eventType: "RETURN",
-          timestamp: { gte: today },
-          pass: { student: { user: { institutionId } } },
-        },
-      }),
-      prisma.gatePass.count({
-        where: { status: "OUTSIDE", student: { user: { institutionId } } },
-      }),
-      prisma.gatePass.count({
-        where: { status: "PENDING", student: { user: { institutionId } } },
-      }),
-      prisma.user.count({ where: { institutionId, accountStatus: "PENDING_APPROVAL" } }),
-    ]);
+    ] = await withTenant(institutionId, (tx) =>
+      Promise.all([
+        tx.user.count({ where: { institutionId, role: "STUDENT", accountStatus: "ACTIVE" } }),
+        tx.user.count({ where: { institutionId, role: "HOD", accountStatus: "ACTIVE" } }),
+        tx.user.count({ where: { institutionId, role: "GUARD", accountStatus: "ACTIVE" } }),
+        tx.gate.count({ where: { institutionId, isActive: true } }),
+        tx.gateEvent.count({
+          where: {
+            eventType: "EXIT",
+            timestamp: { gte: today },
+            pass: { student: { user: { institutionId } } },
+          },
+        }),
+        tx.gateEvent.count({
+          where: {
+            eventType: "RETURN",
+            timestamp: { gte: today },
+            pass: { student: { user: { institutionId } } },
+          },
+        }),
+        tx.gatePass.count({
+          where: { status: "OUTSIDE", student: { user: { institutionId } } },
+        }),
+        tx.gatePass.count({
+          where: { status: "PENDING", student: { user: { institutionId } } },
+        }),
+        tx.user.count({ where: { institutionId, accountStatus: "PENDING_APPROVAL" } }),
+      ]),
+    );
 
     return reply.send({
       totalStudents,
@@ -113,85 +115,87 @@ export async function adminRoutes(app: FastifyInstance) {
       gateEvents,
       emergencyAlerts,
       activeEmergency,
-    ] = await Promise.all([
-      prisma.gatePass.count({ where: basePassWhere }),
-      prisma.gatePass.count({
-        where: {
-          ...basePassWhere,
-          status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED", "REVOKED", "EXPIRED"] },
-        },
-      }),
-      prisma.gatePass.count({ where: { ...basePassWhere, status: "REJECTED" } }),
-      prisma.gatePass.count({ where: { ...basePassWhere, status: "REVOKED" } }),
-      prisma.gatePass.count({
-        where: {
-          ...basePassWhere,
-          status: "REVOKED",
-          actualExit: { not: null },
-          actualReturn: null,
-        },
-      }),
-      prisma.gatePass.count({ where: { ...basePassWhere, status: "COMPLETED" } }),
-      prisma.gatePass.count({ where: { status: "OUTSIDE", student: { user: { institutionId } } } }),
-      prisma.gatePass.count({
-        where: {
-          status: "OUTSIDE",
-          expectedReturn: { lt: now },
-          student: { user: { institutionId } },
-        },
-      }),
-      prisma.gatePass.findMany({
-        where: basePassWhere,
-        select: {
-          id: true,
-          createdAt: true,
-          status: true,
-          reason: { select: { label: true } },
-          student: { select: { department: { select: { name: true } } } },
-        },
-      }),
-      prisma.gatePass.findMany({
-        where: {
-          status: "COMPLETED",
-          actualExit: { gte: start, lte: end },
-          actualReturn: { not: null },
-          student: { user: { institutionId } },
-        },
-        select: {
-          actualExit: true,
-          actualReturn: true,
-          student: { select: { department: { select: { name: true } } } },
-          reason: { select: { label: true } },
-        },
-      }),
-      prisma.gateEvent.findMany({
-        where: {
-          timestamp: { gte: start, lte: end },
-          pass: { student: { user: { institutionId } } },
-        },
-        select: {
-          eventType: true,
-          timestamp: true,
-          gate: { select: { name: true } },
-        },
-      }),
-      prisma.emergencyAlert.findMany({
-        where: {
-          institutionId,
-          declaredAt: { gte: start, lte: end },
-        },
-        select: {
-          declaredAt: true,
-          resolvedAt: true,
-          type: true,
-          status: true,
-        },
-      }),
-      prisma.emergencyAlert.findFirst({
-        where: { institutionId, status: "ACTIVE" },
-        select: { id: true, declaredAt: true, type: true, title: true },
-      }),
-    ]);
+    ] = await withTenant(institutionId, (tx) =>
+      Promise.all([
+        tx.gatePass.count({ where: basePassWhere }),
+        tx.gatePass.count({
+          where: {
+            ...basePassWhere,
+            status: { in: ["APPROVED", "ACTIVE", "OUTSIDE", "COMPLETED", "REVOKED", "EXPIRED"] },
+          },
+        }),
+        tx.gatePass.count({ where: { ...basePassWhere, status: "REJECTED" } }),
+        tx.gatePass.count({ where: { ...basePassWhere, status: "REVOKED" } }),
+        tx.gatePass.count({
+          where: {
+            ...basePassWhere,
+            status: "REVOKED",
+            actualExit: { not: null },
+            actualReturn: null,
+          },
+        }),
+        tx.gatePass.count({ where: { ...basePassWhere, status: "COMPLETED" } }),
+        tx.gatePass.count({ where: { status: "OUTSIDE", student: { user: { institutionId } } } }),
+        tx.gatePass.count({
+          where: {
+            status: "OUTSIDE",
+            expectedReturn: { lt: now },
+            student: { user: { institutionId } },
+          },
+        }),
+        tx.gatePass.findMany({
+          where: basePassWhere,
+          select: {
+            id: true,
+            createdAt: true,
+            status: true,
+            reason: { select: { label: true } },
+            student: { select: { department: { select: { name: true } } } },
+          },
+        }),
+        tx.gatePass.findMany({
+          where: {
+            status: "COMPLETED",
+            actualExit: { gte: start, lte: end },
+            actualReturn: { not: null },
+            student: { user: { institutionId } },
+          },
+          select: {
+            actualExit: true,
+            actualReturn: true,
+            student: { select: { department: { select: { name: true } } } },
+            reason: { select: { label: true } },
+          },
+        }),
+        tx.gateEvent.findMany({
+          where: {
+            timestamp: { gte: start, lte: end },
+            pass: { student: { user: { institutionId } } },
+          },
+          select: {
+            eventType: true,
+            timestamp: true,
+            gate: { select: { name: true } },
+          },
+        }),
+        tx.emergencyAlert.findMany({
+          where: {
+            institutionId,
+            declaredAt: { gte: start, lte: end },
+          },
+          select: {
+            declaredAt: true,
+            resolvedAt: true,
+            type: true,
+            status: true,
+          },
+        }),
+        tx.emergencyAlert.findFirst({
+          where: { institutionId, status: "ACTIVE" },
+          select: { id: true, declaredAt: true, type: true, title: true },
+        }),
+      ]),
+    );
 
     const departmentMap = new Map<string, { requests: number; approved: number; rejected: number }>();
     const reasonMap = new Map<string, number>();
@@ -363,13 +367,15 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/emergency/active", async (request, reply) => {
     const { institutionId } = request.user;
 
-    const active = await prisma.emergencyAlert.findFirst({
-      where: { institutionId, status: "ACTIVE" },
-      orderBy: { declaredAt: "desc" },
-      include: {
-        declaredBy: { select: { id: true, email: true } },
-      },
-    });
+    const active = await withTenant(institutionId, (tx) =>
+      tx.emergencyAlert.findFirst({
+        where: { institutionId, status: "ACTIVE" },
+        orderBy: { declaredAt: "desc" },
+        include: {
+          declaredBy: { select: { id: true, email: true } },
+        },
+      }),
+    );
 
     return reply.send(active);
   });
@@ -379,15 +385,17 @@ export async function adminRoutes(app: FastifyInstance) {
     const { limit = "20" } = request.query as { limit?: string };
     const take = Math.min(100, Math.max(1, parseInt(limit || "20", 10) || 20));
 
-    const alerts = await prisma.emergencyAlert.findMany({
-      where: { institutionId },
-      orderBy: { declaredAt: "desc" },
-      take,
-      include: {
-        declaredBy: { select: { id: true, email: true } },
-        resolvedBy: { select: { id: true, email: true } },
-      },
-    });
+    const alerts = await withTenant(institutionId, (tx) =>
+      tx.emergencyAlert.findMany({
+        where: { institutionId },
+        orderBy: { declaredAt: "desc" },
+        take,
+        include: {
+          declaredBy: { select: { id: true, email: true } },
+          resolvedBy: { select: { id: true, email: true } },
+        },
+      }),
+    );
 
     return reply.send(alerts);
   });
@@ -400,59 +408,69 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const existingActive = await prisma.emergencyAlert.findFirst({
-      where: { institutionId, status: "ACTIVE" },
-      orderBy: { declaredAt: "desc" },
+    const result = await withTenant(institutionId, async (tx) => {
+      const existingActive = await tx.emergencyAlert.findFirst({
+        where: { institutionId, status: "ACTIVE" },
+        orderBy: { declaredAt: "desc" },
+      });
+
+      if (existingActive) return { conflict: true as const };
+
+      const alert = await tx.emergencyAlert.create({
+        data: {
+          institutionId,
+          type: parsed.data.type,
+          title: parsed.data.title,
+          message: parsed.data.message,
+          affectedArea: parsed.data.affectedArea,
+          declaredById: userId,
+        },
+        include: {
+          declaredBy: { select: { id: true, email: true } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "EMERGENCY_DECLARED",
+          targetId: alert.id,
+          targetType: "EmergencyAlert",
+          metadata: {
+            type: alert.type,
+            title: alert.title,
+            affectedArea: alert.affectedArea,
+          },
+        },
+      });
+
+      await notifyInstitution(
+        institutionId,
+        {
+          title: `Emergency: ${alert.title}`,
+          body: alert.message,
+          type: "EMERGENCY_DECLARED",
+          data: { alertId: alert.id, emergencyType: alert.type, affectedArea: alert.affectedArea },
+        },
+        tx,
+      );
+
+      return { alert };
     });
 
-    if (existingActive) {
+    if ("conflict" in result) {
       return reply.status(409).send({ error: "An emergency is already active. Resolve it first." });
     }
 
-    const alert = await prisma.emergencyAlert.create({
-      data: {
-        institutionId,
-        type: parsed.data.type,
-        title: parsed.data.title,
-        message: parsed.data.message,
-        affectedArea: parsed.data.affectedArea,
-        declaredById: userId,
-      },
-      include: {
-        declaredBy: { select: { id: true, email: true } },
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "EMERGENCY_DECLARED",
-        targetId: alert.id,
-        targetType: "EmergencyAlert",
-        metadata: {
-          type: alert.type,
-          title: alert.title,
-          affectedArea: alert.affectedArea,
-        },
-      },
-    });
-
     // Instant push to anyone online right now, independent of persisted
-    // per-user notifications below (which also reach offline users on login).
+    // per-user notifications above (which also reach offline users on login).
     broadcastToInstitution(institutionId, {
       type: "emergency_declared",
-      data: alert,
+      data: result.alert,
     });
 
-    await notifyInstitution(institutionId, {
-      title: `Emergency: ${alert.title}`,
-      body: alert.message,
-      type: "EMERGENCY_DECLARED",
-      data: { alertId: alert.id, emergencyType: alert.type, affectedArea: alert.affectedArea },
-    });
-
-    return reply.status(201).send(alert);
+    return reply.status(201).send(result.alert);
   });
 
   app.post("/emergency/:id/resolve", async (request, reply) => {
@@ -464,58 +482,68 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const existing = await prisma.emergencyAlert.findFirst({
-      where: { id, institutionId },
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.emergencyAlert.findFirst({
+        where: { id, institutionId },
+      });
+
+      if (!existing) return { notFound: true as const };
+      if (existing.status !== "ACTIVE") return { conflict: true as const };
+
+      const resolved = await tx.emergencyAlert.update({
+        where: { id: existing.id },
+        data: {
+          status: "RESOLVED",
+          resolvedById: userId,
+          resolvedAt: new Date(),
+          resolutionNote: parsed.data.resolutionNote,
+        },
+        include: {
+          declaredBy: { select: { id: true, email: true } },
+          resolvedBy: { select: { id: true, email: true } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "EMERGENCY_RESOLVED",
+          targetId: resolved.id,
+          targetType: "EmergencyAlert",
+          metadata: {
+            resolutionNote: parsed.data.resolutionNote,
+          },
+        },
+      });
+
+      await notifyInstitution(
+        institutionId,
+        {
+          title: "Emergency Resolved",
+          body: `The ${resolved.type.toLowerCase()} alert "${resolved.title}" has been resolved.`,
+          type: "EMERGENCY_RESOLVED",
+          data: { alertId: resolved.id },
+        },
+        tx,
+      );
+
+      return { resolved };
     });
 
-    if (!existing) {
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "Emergency alert not found" });
     }
-
-    if (existing.status !== "ACTIVE") {
+    if ("conflict" in result) {
       return reply.status(409).send({ error: "Emergency alert is already resolved" });
     }
 
-    const resolved = await prisma.emergencyAlert.update({
-      where: { id: existing.id },
-      data: {
-        status: "RESOLVED",
-        resolvedById: userId,
-        resolvedAt: new Date(),
-        resolutionNote: parsed.data.resolutionNote,
-      },
-      include: {
-        declaredBy: { select: { id: true, email: true } },
-        resolvedBy: { select: { id: true, email: true } },
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "EMERGENCY_RESOLVED",
-        targetId: resolved.id,
-        targetType: "EmergencyAlert",
-        metadata: {
-          resolutionNote: parsed.data.resolutionNote,
-        },
-      },
-    });
-
     broadcastToInstitution(institutionId, {
       type: "emergency_resolved",
-      data: resolved,
+      data: result.resolved,
     });
 
-    await notifyInstitution(institutionId, {
-      title: "Emergency Resolved",
-      body: `The ${resolved.type.toLowerCase()} alert "${resolved.title}" has been resolved.`,
-      type: "EMERGENCY_RESOLVED",
-      data: { alertId: resolved.id },
-    });
-
-    return reply.send(resolved);
+    return reply.send(result.resolved);
   });
 
   // ─── LIST USERS ────────────────────────────────────────────────────────────
@@ -530,20 +558,22 @@ export async function adminRoutes(app: FastifyInstance) {
     if (role) where.role = role;
     if (status) where.accountStatus = status;
 
-    const [users, total] = await Promise.all([
-      prisma.user.findMany({
-        where,
-        include: {
-          studentProfile: { include: { department: true } },
-          hodProfile: { include: { department: true } },
-          guardProfile: { include: { assignedGates: { include: { gate: true } } } },
-        },
-        orderBy: { createdAt: "desc" },
-        skip: (pageNum - 1) * limitNum,
-        take: limitNum,
-      }),
-      prisma.user.count({ where }),
-    ]);
+    const [users, total] = await withTenant(institutionId, (tx) =>
+      Promise.all([
+        tx.user.findMany({
+          where,
+          include: {
+            studentProfile: { include: { department: true } },
+            hodProfile: { include: { department: true } },
+            guardProfile: { include: { assignedGates: { include: { gate: true } } } },
+          },
+          orderBy: { createdAt: "desc" },
+          skip: (pageNum - 1) * limitNum,
+          take: limitNum,
+        }),
+        tx.user.count({ where }),
+      ]),
+    );
 
     return reply.send({
       users,
@@ -563,16 +593,14 @@ export async function adminRoutes(app: FastifyInstance) {
     const { email, name, role, departmentId, enrollmentNo, program, semester, section, gateIds } =
       parsed.data;
 
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      return reply.status(409).send({ error: "Email already in use" });
-    }
-
     // Generate a temporary password
     const tempPassword = randomBytes(9).toString("base64url");
     const passwordHash = await bcrypt.hash(tempPassword, 12);
 
-    const user = await prisma.$transaction(async (tx) => {
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.user.findUnique({ where: { email } });
+      if (existing) return { conflict: true as const };
+
       const newUser = await tx.user.create({
         data: {
           email,
@@ -612,22 +640,26 @@ export async function adminRoutes(app: FastifyInstance) {
         }
       }
 
-      return newUser;
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "USER_CREATED",
+          targetId: newUser.id,
+          targetType: "User",
+          metadata: { role, email },
+        },
+      });
+
+      return { user: newUser };
     });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "USER_CREATED",
-        targetId: user.id,
-        targetType: "User",
-        metadata: { role, email },
-      },
-    });
+    if ("conflict" in result) {
+      return reply.status(409).send({ error: "Email already in use" });
+    }
 
     return reply.status(201).send({
-      user: { id: user.id, email: user.email, role: user.role },
+      user: { id: result.user.id, email: result.user.email, role: result.user.role },
       tempPassword, // In production, send this via email
     });
   });
@@ -637,28 +669,34 @@ export async function adminRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
-    const user = await prisma.user.findFirst({
-      where: { id, institutionId, accountStatus: "PENDING_APPROVAL" },
+    const result = await withTenant(institutionId, async (tx) => {
+      const user = await tx.user.findFirst({
+        where: { id, institutionId, accountStatus: "PENDING_APPROVAL" },
+      });
+      if (!user) return { notFound: true as const };
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { accountStatus: "ACTIVE" },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "USER_REACTIVATED",
+          targetId: id,
+          targetType: "User",
+          metadata: { reason: "registration_approved" },
+        },
+      });
+
+      return { ok: true as const };
     });
-    if (!user) {
+
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "No pending user found" });
     }
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { accountStatus: "ACTIVE" },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "USER_REACTIVATED",
-        targetId: id,
-        targetType: "User",
-        metadata: { reason: "registration_approved" },
-      },
-    });
 
     return reply.send({ message: "User approved" });
   });
@@ -668,25 +706,31 @@ export async function adminRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
-    const target = await prisma.user.findFirst({ where: { id, institutionId } });
-    if (!target) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const target = await tx.user.findFirst({ where: { id, institutionId } });
+      if (!target) return { notFound: true as const };
+
+      await tx.user.update({
+        where: { id: target.id },
+        data: { accountStatus: "INACTIVE" },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "USER_DEACTIVATED",
+          targetId: id,
+          targetType: "User",
+        },
+      });
+
+      return { ok: true as const };
+    });
+
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "User not found" });
     }
-
-    await prisma.user.update({
-      where: { id: target.id },
-      data: { accountStatus: "INACTIVE" },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "USER_DEACTIVATED",
-        targetId: id,
-        targetType: "User",
-      },
-    });
 
     return reply.send({ message: "User deactivated" });
   });
@@ -696,25 +740,31 @@ export async function adminRoutes(app: FastifyInstance) {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
-    const target = await prisma.user.findFirst({ where: { id, institutionId } });
-    if (!target) {
+    const result = await withTenant(institutionId, async (tx) => {
+      const target = await tx.user.findFirst({ where: { id, institutionId } });
+      if (!target) return { notFound: true as const };
+
+      await tx.user.update({
+        where: { id: target.id },
+        data: { accountStatus: "ACTIVE" },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "USER_REACTIVATED",
+          targetId: id,
+          targetType: "User",
+        },
+      });
+
+      return { ok: true as const };
+    });
+
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "User not found" });
     }
-
-    await prisma.user.update({
-      where: { id: target.id },
-      data: { accountStatus: "ACTIVE" },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "USER_REACTIVATED",
-        targetId: id,
-        targetType: "User",
-      },
-    });
 
     return reply.send({ message: "User reactivated" });
   });
@@ -734,74 +784,76 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const results = { created: 0, skipped: 0, errors: [] as string[] };
 
-    for (const row of students) {
-      const parsed = bulkImportStudentSchema.safeParse(row);
-      if (!parsed.success) {
-        results.errors.push(`Row ${results.created + results.skipped + 1}: Invalid data`);
-        results.skipped++;
-        continue;
-      }
+    await withTenant(institutionId, async (tx) => {
+      for (const row of students) {
+        const parsed = bulkImportStudentSchema.safeParse(row);
+        if (!parsed.success) {
+          results.errors.push(`Row ${results.created + results.skipped + 1}: Invalid data`);
+          results.skipped++;
+          continue;
+        }
 
-      const data = parsed.data;
+        const data = parsed.data;
 
-      // Find course by code
-      const dept = await prisma.department.findFirst({
-        where: { code: data.courseCode, institutionId },
-      });
-      if (!dept) {
-        results.errors.push(`${data.enrollmentNo}: Course '${data.courseCode}' not found`);
-        results.skipped++;
-        continue;
-      }
+        // Find course by code
+        const dept = await tx.department.findFirst({
+          where: { code: data.courseCode, institutionId },
+        });
+        if (!dept) {
+          results.errors.push(`${data.enrollmentNo}: Course '${data.courseCode}' not found`);
+          results.skipped++;
+          continue;
+        }
 
-      // Check existing
-      const existing = await prisma.user.findUnique({ where: { email: data.email } });
-      if (existing) {
-        results.errors.push(`${data.enrollmentNo}: Email already exists`);
-        results.skipped++;
-        continue;
-      }
+        // Check existing
+        const existing = await tx.user.findUnique({ where: { email: data.email } });
+        if (existing) {
+          results.errors.push(`${data.enrollmentNo}: Email already exists`);
+          results.skipped++;
+          continue;
+        }
 
-      try {
-        await prisma.user.create({
-          data: {
-            email: data.email,
-            passwordHash: null,
-            role: "STUDENT",
-            accountStatus: "ACTIVE",
-            institutionId,
-            studentProfile: {
-              create: {
-                name: data.name,
-                enrollmentNo: data.enrollmentNo,
-                rollNumber: data.rollNumber,
-                departmentId: dept.id,
-                institutionId,
-                program: data.program,
-                semester: data.semester,
-                section: data.section,
-                dob: data.dob,
-                phone: data.phone,
-                address: data.address,
+        try {
+          await tx.user.create({
+            data: {
+              email: data.email,
+              passwordHash: null,
+              role: "STUDENT",
+              accountStatus: "ACTIVE",
+              institutionId,
+              studentProfile: {
+                create: {
+                  name: data.name,
+                  enrollmentNo: data.enrollmentNo,
+                  rollNumber: data.rollNumber,
+                  departmentId: dept.id,
+                  institutionId,
+                  program: data.program,
+                  semester: data.semester,
+                  section: data.section,
+                  dob: data.dob,
+                  phone: data.phone,
+                  address: data.address,
+                },
               },
             },
-          },
-        });
-        results.created++;
-      } catch {
-        results.errors.push(`${data.enrollmentNo}: Creation failed`);
-        results.skipped++;
+          });
+          results.created++;
+        } catch {
+          results.errors.push(`${data.enrollmentNo}: Creation failed`);
+          results.skipped++;
+        }
       }
-    }
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "BULK_IMPORT",
-        targetType: "User",
-        metadata: { created: results.created, skipped: results.skipped },
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "BULK_IMPORT",
+          targetType: "User",
+          metadata: { created: results.created, skipped: results.skipped },
+        },
+      });
     });
 
     return reply.send(results);
@@ -811,13 +863,15 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/students/export", async (request, reply) => {
     const { institutionId } = request.user;
 
-    const students = await prisma.user.findMany({
-      where: { institutionId, role: "STUDENT" },
-      include: {
-        studentProfile: { include: { department: true } },
-      },
-      orderBy: [{ createdAt: "asc" }],
-    });
+    const students = await withTenant(institutionId, (tx) =>
+      tx.user.findMany({
+        where: { institutionId, role: "STUDENT" },
+        include: {
+          studentProfile: { include: { department: true } },
+        },
+        orderBy: [{ createdAt: "asc" }],
+      }),
+    );
 
     const headers = [
       "userId",
@@ -882,13 +936,15 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/students/export.xlsx", async (request, reply) => {
     const { institutionId } = request.user;
 
-    const students = await prisma.user.findMany({
-      where: { institutionId, role: "STUDENT" },
-      include: {
-        studentProfile: { include: { department: true } },
-      },
-      orderBy: [{ createdAt: "asc" }],
-    });
+    const students = await withTenant(institutionId, (tx) =>
+      tx.user.findMany({
+        where: { institutionId, role: "STUDENT" },
+        include: {
+          studentProfile: { include: { department: true } },
+        },
+        orderBy: [{ createdAt: "asc" }],
+      }),
+    );
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Students");
@@ -954,7 +1010,9 @@ export async function adminRoutes(app: FastifyInstance) {
   // ─── DEPARTMENTS ───────────────────────────────────────────────────────────
   app.get("/departments", async (request, reply) => {
     const { institutionId } = request.user;
-    const depts = await prisma.department.findMany({ where: { institutionId } });
+    const depts = await withTenant(institutionId, (tx) =>
+      tx.department.findMany({ where: { institutionId } }),
+    );
     return reply.send(depts);
   });
 
@@ -966,18 +1024,22 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Name and code are required" });
     }
 
-    const dept = await prisma.department.create({
-      data: { name, code, institutionId },
-    });
+    const dept = await withTenant(institutionId, async (tx) => {
+      const created = await tx.department.create({
+        data: { name, code, institutionId },
+      });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "DEPARTMENT_CREATED",
-        targetId: dept.id,
-        targetType: "Department",
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "DEPARTMENT_CREATED",
+          targetId: created.id,
+          targetType: "Department",
+        },
+      });
+
+      return created;
     });
 
     return reply.status(201).send(dept);
@@ -986,10 +1048,12 @@ export async function adminRoutes(app: FastifyInstance) {
   // ─── GATES ─────────────────────────────────────────────────────────────────
   app.get("/gates", async (request, reply) => {
     const { institutionId } = request.user;
-    const gates = await prisma.gate.findMany({
-      where: { institutionId },
-      include: { assignedGuards: { include: { guard: true } } },
-    });
+    const gates = await withTenant(institutionId, (tx) =>
+      tx.gate.findMany({
+        where: { institutionId },
+        include: { assignedGuards: { include: { guard: true } } },
+      }),
+    );
     return reply.send(gates);
   });
 
@@ -1000,31 +1064,32 @@ export async function adminRoutes(app: FastifyInstance) {
     const now = Date.now();
     const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
 
-    const gates = await prisma.gate.findMany({
-      where: { institutionId },
-      include: {
-        assignedGuards: { include: { guard: true } },
-        gateEvents: {
-          orderBy: { timestamp: "desc" },
-          take: 1,
-          include: { guard: true },
+    const rows = await withTenant(institutionId, async (tx) => {
+      const gates = await tx.gate.findMany({
+        where: { institutionId },
+        include: {
+          assignedGuards: { include: { guard: true } },
+          gateEvents: {
+            orderBy: { timestamp: "desc" },
+            take: 1,
+            include: { guard: true },
+          },
         },
-      },
-      orderBy: { name: "asc" },
-    });
+        orderBy: { name: "asc" },
+      });
 
-    const rows = await Promise.all(
-      gates.map(async (gate) => {
-        const [todayExits, todayReturns] = await Promise.all([
-          prisma.gateEvent.count({
-            where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
-          }),
-          prisma.gateEvent.count({
-            where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
-          }),
-        ]);
+      return Promise.all(
+        gates.map(async (gate) => {
+          const [todayExits, todayReturns] = await Promise.all([
+            tx.gateEvent.count({
+              where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
+            }),
+            tx.gateEvent.count({
+              where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
+            }),
+          ]);
 
-        const lastEvent = gate.gateEvents[0] ?? null;
+          const lastEvent = gate.gateEvents[0] ?? null;
         const lastActivityAt = lastEvent?.timestamp ?? null;
         const minutesSinceLastActivity = lastActivityAt
           ? Math.floor((now - lastActivityAt.getTime()) / 60000)
@@ -1056,8 +1121,9 @@ export async function adminRoutes(app: FastifyInstance) {
           todayExits,
           todayReturns,
         };
-      })
-    );
+        })
+      );
+    });
 
     return reply.send(rows);
   });
@@ -1069,30 +1135,38 @@ export async function adminRoutes(app: FastifyInstance) {
     const now = Date.now();
     const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
 
-    const gate = await prisma.gate.findFirst({
-      where: { id: gateId, institutionId },
-      include: {
-        assignedGuards: { include: { guard: true } },
-        gateEvents: {
-          orderBy: { timestamp: "desc" },
-          take: 20,
-          include: { guard: true, pass: { include: { student: true } } },
+    const data = await withTenant(institutionId, async (tx) => {
+      const gate = await tx.gate.findFirst({
+        where: { id: gateId, institutionId },
+        include: {
+          assignedGuards: { include: { guard: true } },
+          gateEvents: {
+            orderBy: { timestamp: "desc" },
+            take: 20,
+            include: { guard: true, pass: { include: { student: true } } },
+          },
         },
-      },
+      });
+
+      if (!gate) return null;
+
+      const [todayExits, todayReturns] = await Promise.all([
+        tx.gateEvent.count({
+          where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
+        }),
+        tx.gateEvent.count({
+          where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
+        }),
+      ]);
+
+      return { gate, todayExits, todayReturns };
     });
 
-    if (!gate) {
+    if (!data) {
       return reply.status(404).send({ error: "Gate not found" });
     }
 
-    const [todayExits, todayReturns] = await Promise.all([
-      prisma.gateEvent.count({
-        where: { gateId: gate.id, eventType: "EXIT", timestamp: { gte: todayStart } },
-      }),
-      prisma.gateEvent.count({
-        where: { gateId: gate.id, eventType: "RETURN", timestamp: { gte: todayStart } },
-      }),
-    ]);
+    const { gate, todayExits, todayReturns } = data;
 
     const lastEvent = gate.gateEvents[0] ?? null;
     const lastActivityAt = lastEvent?.timestamp ?? null;
@@ -1144,18 +1218,22 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Gate name is required" });
     }
 
-    const gate = await prisma.gate.create({
-      data: { name, location, institutionId },
-    });
+    const gate = await withTenant(institutionId, async (tx) => {
+      const created = await tx.gate.create({
+        data: { name, location, institutionId },
+      });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "GATE_CREATED",
-        targetId: gate.id,
-        targetType: "Gate",
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "GATE_CREATED",
+          targetId: created.id,
+          targetType: "Gate",
+        },
+      });
+
+      return created;
     });
 
     return reply.status(201).send(gate);
@@ -1183,24 +1261,26 @@ export async function adminRoutes(app: FastifyInstance) {
       }
     }
 
-    const shifts = await prisma.guardShift.findMany({
-      where: {
-        institutionId,
-        ...(fromDate || toDate
-          ? {
-              scheduledStartAt: {
-                ...(fromDate ? { gte: fromDate } : {}),
-                ...(toDate ? { lte: toDate } : {}),
-              },
-            }
-          : {}),
-      },
-      include: {
-        guard: { select: { id: true, name: true } },
-        gate: { select: { id: true, name: true, location: true } },
-      },
-      orderBy: { scheduledStartAt: "asc" },
-    });
+    const shifts = await withTenant(institutionId, (tx) =>
+      tx.guardShift.findMany({
+        where: {
+          institutionId,
+          ...(fromDate || toDate
+            ? {
+                scheduledStartAt: {
+                  ...(fromDate ? { gte: fromDate } : {}),
+                  ...(toDate ? { lte: toDate } : {}),
+                },
+              }
+            : {}),
+        },
+        include: {
+          guard: { select: { id: true, name: true } },
+          gate: { select: { id: true, name: true, location: true } },
+        },
+        orderBy: { scheduledStartAt: "asc" },
+      }),
+    );
 
     return reply.send(shifts);
   });
@@ -1217,75 +1297,80 @@ export async function adminRoutes(app: FastifyInstance) {
     const shiftStart = new Date(scheduledStartAt);
     const shiftEnd = new Date(scheduledEndAt);
 
-    const [guard, gate] = await Promise.all([
-      prisma.guardProfile.findFirst({ where: { id: guardId, user: { institutionId } } }),
-      prisma.gate.findFirst({ where: { id: gateId, institutionId } }),
-    ]);
+    const result = await withTenant(institutionId, async (tx) => {
+      const [guard, gate] = await Promise.all([
+        tx.guardProfile.findFirst({ where: { id: guardId, user: { institutionId } } }),
+        tx.gate.findFirst({ where: { id: gateId, institutionId } }),
+      ]);
 
-    if (!guard) {
-      return reply.status(404).send({ error: "Guard not found in your institution" });
-    }
+      if (!guard) return { error: { status: 404 as const, body: { error: "Guard not found in your institution" } } };
+      if (!gate) return { error: { status: 404 as const, body: { error: "Gate not found in your institution" } } };
 
-    if (!gate) {
-      return reply.status(404).send({ error: "Gate not found in your institution" });
-    }
+      const assignment = await tx.guardGateAssignment.findUnique({
+        where: { guardId_gateId: { guardId: guard.id, gateId: gate.id } },
+      });
 
-    const assignment = await prisma.guardGateAssignment.findUnique({
-      where: { guardId_gateId: { guardId: guard.id, gateId: gate.id } },
+      if (!assignment) {
+        return { error: { status: 400 as const, body: { error: "Guard is not assigned to this gate" } } };
+      }
+
+      const overlap = await tx.guardShift.findFirst({
+        where: {
+          institutionId,
+          guardId: guard.id,
+          status: { in: ["SCHEDULED", "ACTIVE"] },
+          scheduledStartAt: { lt: shiftEnd },
+          scheduledEndAt: { gt: shiftStart },
+        },
+      });
+
+      if (overlap) {
+        return { error: { status: 409 as const, body: { error: "Guard already has an overlapping shift" } } };
+      }
+
+      const shift = await tx.guardShift.create({
+        data: {
+          institutionId,
+          guardId: guard.id,
+          gateId: gate.id,
+          scheduledStartAt: shiftStart,
+          scheduledEndAt: shiftEnd,
+          note,
+          createdById: userId,
+        },
+        include: {
+          guard: { select: { id: true, name: true } },
+          gate: { select: { id: true, name: true, location: true } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "SHIFT_CREATED",
+          targetId: shift.id,
+          targetType: "GuardShift",
+          metadata: { guardId, gateId, scheduledStartAt, scheduledEndAt },
+        },
+      });
+
+      return { shift };
     });
 
-    if (!assignment) {
-      return reply.status(400).send({ error: "Guard is not assigned to this gate" });
+    if ("error" in result && result.error) {
+      return reply.status(result.error.status).send(result.error.body);
     }
 
-    const overlap = await prisma.guardShift.findFirst({
-      where: {
-        institutionId,
-        guardId: guard.id,
-        status: { in: ["SCHEDULED", "ACTIVE"] },
-        scheduledStartAt: { lt: shiftEnd },
-        scheduledEndAt: { gt: shiftStart },
-      },
-    });
-
-    if (overlap) {
-      return reply.status(409).send({ error: "Guard already has an overlapping shift" });
-    }
-
-    const shift = await prisma.guardShift.create({
-      data: {
-        institutionId,
-        guardId: guard.id,
-        gateId: gate.id,
-        scheduledStartAt: shiftStart,
-        scheduledEndAt: shiftEnd,
-        note,
-        createdById: userId,
-      },
-      include: {
-        guard: { select: { id: true, name: true } },
-        gate: { select: { id: true, name: true, location: true } },
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "SHIFT_CREATED",
-        targetId: shift.id,
-        targetType: "GuardShift",
-        metadata: { guardId, gateId, scheduledStartAt, scheduledEndAt },
-      },
-    });
-
-    return reply.status(201).send(shift);
+    return reply.status(201).send(result.shift);
   });
 
   // ─── EXIT REASONS ──────────────────────────────────────────────────────────
   app.get("/reasons", async (request, reply) => {
     const { institutionId } = request.user;
-    const reasons = await prisma.exitReason.findMany({ where: { institutionId } });
+    const reasons = await withTenant(institutionId, (tx) =>
+      tx.exitReason.findMany({ where: { institutionId } }),
+    );
     return reply.send(reasons);
   });
 
@@ -1297,18 +1382,22 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Label is required" });
     }
 
-    const reason = await prisma.exitReason.create({
-      data: { label, requiresNote: requiresNote || false, institutionId },
-    });
+    const reason = await withTenant(institutionId, async (tx) => {
+      const created = await tx.exitReason.create({
+        data: { label, requiresNote: requiresNote || false, institutionId },
+      });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "REASON_CREATED",
-        targetId: reason.id,
-        targetType: "ExitReason",
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "REASON_CREATED",
+          targetId: created.id,
+          targetType: "ExitReason",
+        },
+      });
+
+      return created;
     });
 
     return reply.status(201).send(reason);
@@ -1317,7 +1406,9 @@ export async function adminRoutes(app: FastifyInstance) {
   // ─── ALLOWANCE POLICY ────────────────────────────────────────────────────────
   app.get("/allowance-policy", async (request, reply) => {
     const { institutionId } = request.user;
-    const policy = await AllowanceEngine.getOrCreatePolicy(institutionId);
+    const policy = await withTenant(institutionId, (tx) =>
+      AllowanceEngine.getOrCreatePolicy(institutionId, tx),
+    );
 
     return reply.send({
       allowanceAmount: policy.allowanceAmount,
@@ -1368,22 +1459,26 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.severitySignificantMax !== undefined) validatedFields.severitySignificantMax = body.severitySignificantMax;
 
     // Upsert the policy
-    const policy = await prisma.allowancePolicy.upsert({
-      where: { institutionId },
-      update: validatedFields,
-      create: { institutionId, ...validatedFields },
-    });
+    const policy = await withTenant(institutionId, async (tx) => {
+      const upserted = await tx.allowancePolicy.upsert({
+        where: { institutionId },
+        update: validatedFields,
+        create: { institutionId, ...validatedFields },
+      });
 
-    // Audit
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "ALLOWANCE_POLICY_UPDATED",
-        targetId: policy.id,
-        targetType: "AllowancePolicy",
-        metadata: body,
-      },
+      // Audit
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "ALLOWANCE_POLICY_UPDATED",
+          targetId: upserted.id,
+          targetType: "AllowancePolicy",
+          metadata: body,
+        },
+      });
+
+      return upserted;
     });
 
     return reply.send(policy);
@@ -1393,7 +1488,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/institution-config", async (request, reply) => {
     const { institutionId } = request.user;
 
-    const config = await AllowanceEngine.getOrCreateInstitutionConfig(institutionId);
+    const config = await withTenant(institutionId, (tx) =>
+      AllowanceEngine.getOrCreateInstitutionConfig(institutionId, tx),
+    );
     return reply.send(config);
   });
 
@@ -1411,34 +1508,38 @@ export async function adminRoutes(app: FastifyInstance) {
       ? Array.from(new Set(payload.workingDaysOfWeek)).sort((a, b) => a - b)
       : undefined;
 
-    const config = await prisma.institutionConfig.upsert({
-      where: { institutionId },
-      update: {
-        ...(payload.timezone !== undefined ? { timezone: payload.timezone } : {}),
-        ...(payload.weekStartDay !== undefined ? { weekStartDay: payload.weekStartDay } : {}),
-        ...(normalizedWorkingDays !== undefined ? { workingDaysOfWeek: normalizedWorkingDays } : {}),
-        ...(payload.lowAllowanceThresholdMinutes !== undefined
-          ? { lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes }
-          : {}),
-      },
-      create: {
-        institutionId,
-        timezone: payload.timezone ?? "Asia/Kolkata",
-        weekStartDay: payload.weekStartDay ?? "MONDAY",
-        workingDaysOfWeek: normalizedWorkingDays ?? [1, 2, 3, 4, 5, 6],
-        lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes ?? 60,
-      },
-    });
+    const config = await withTenant(institutionId, async (tx) => {
+      const upserted = await tx.institutionConfig.upsert({
+        where: { institutionId },
+        update: {
+          ...(payload.timezone !== undefined ? { timezone: payload.timezone } : {}),
+          ...(payload.weekStartDay !== undefined ? { weekStartDay: payload.weekStartDay } : {}),
+          ...(normalizedWorkingDays !== undefined ? { workingDaysOfWeek: normalizedWorkingDays } : {}),
+          ...(payload.lowAllowanceThresholdMinutes !== undefined
+            ? { lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes }
+            : {}),
+        },
+        create: {
+          institutionId,
+          timezone: payload.timezone ?? "Asia/Kolkata",
+          weekStartDay: payload.weekStartDay ?? "MONDAY",
+          workingDaysOfWeek: normalizedWorkingDays ?? [1, 2, 3, 4, 5, 6],
+          lowAllowanceThresholdMinutes: payload.lowAllowanceThresholdMinutes ?? 60,
+        },
+      });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "INSTITUTION_CONFIG_UPDATED",
-        targetId: config.id,
-        targetType: "InstitutionConfig",
-        metadata: payload,
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "INSTITUTION_CONFIG_UPDATED",
+          targetId: upserted.id,
+          targetType: "InstitutionConfig",
+          metadata: payload,
+        },
+      });
+
+      return upserted;
     });
 
     return reply.send(config);
@@ -1460,13 +1561,15 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid date range" });
     }
 
-    const days = await prisma.academicCalendarDay.findMany({
-      where: {
-        institutionId,
-        date: { gte: start, lte: end },
-      },
-      orderBy: { date: "asc" },
-    });
+    const days = await withTenant(institutionId, (tx) =>
+      tx.academicCalendarDay.findMany({
+        where: {
+          institutionId,
+          date: { gte: start, lte: end },
+        },
+        orderBy: { date: "asc" },
+      }),
+    );
 
     return reply.send(days);
   });
@@ -1487,31 +1590,35 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
 
-    const day = await prisma.academicCalendarDay.upsert({
-      where: {
-        institutionId_date: {
+    const day = await withTenant(institutionId, async (tx) => {
+      const upserted = await tx.academicCalendarDay.upsert({
+        where: {
+          institutionId_date: {
+            institutionId,
+            date: normalizedDate,
+          },
+        },
+        update: { dayType, note },
+        create: {
           institutionId,
           date: normalizedDate,
+          dayType,
+          note,
         },
-      },
-      update: { dayType, note },
-      create: {
-        institutionId,
-        date: normalizedDate,
-        dayType,
-        note,
-      },
-    });
+      });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "ACADEMIC_CALENDAR_UPDATED",
-        targetId: day.id,
-        targetType: "AcademicCalendarDay",
-        metadata: { date: day.date, dayType: day.dayType },
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "ACADEMIC_CALENDAR_UPDATED",
+          targetId: upserted.id,
+          targetType: "AcademicCalendarDay",
+          metadata: { date: upserted.date, dayType: upserted.dayType },
+        },
+      });
+
+      return upserted;
     });
 
     return reply.send(day);
@@ -1528,38 +1635,44 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
 
-    const existing = await prisma.academicCalendarDay.findUnique({
-      where: {
-        institutionId_date: {
-          institutionId,
-          date: normalizedDate,
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.academicCalendarDay.findUnique({
+        where: {
+          institutionId_date: {
+            institutionId,
+            date: normalizedDate,
+          },
         },
-      },
+      });
+
+      if (!existing) return { notFound: true as const };
+
+      await tx.academicCalendarDay.delete({
+        where: {
+          institutionId_date: {
+            institutionId,
+            date: normalizedDate,
+          },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "ACADEMIC_CALENDAR_UPDATED",
+          targetId: existing.id,
+          targetType: "AcademicCalendarDay",
+          metadata: { deleted: true, date: normalizedDate },
+        },
+      });
+
+      return { ok: true as const };
     });
 
-    if (!existing) {
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "Calendar day not found" });
     }
-
-    await prisma.academicCalendarDay.delete({
-      where: {
-        institutionId_date: {
-          institutionId,
-          date: normalizedDate,
-        },
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "ACADEMIC_CALENDAR_UPDATED",
-        targetId: existing.id,
-        targetType: "AcademicCalendarDay",
-        metadata: { deleted: true, date: normalizedDate },
-      },
-    });
 
     return reply.send({ success: true });
   });
@@ -1574,67 +1687,78 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Revocation reason is required" });
     }
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { user: { institutionId } },
-        status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
-      },
-      include: { student: { select: { userId: true, name: true } } },
-    });
+    const result = await withTenant(institutionId, async (tx) => {
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { user: { institutionId } },
+          status: { in: ["APPROVED", "ACTIVE", "OUTSIDE"] },
+        },
+        include: { student: { select: { userId: true, name: true } } },
+      });
 
-    if (!pass) {
-      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
-    }
+      if (!pass) return { notFound: true as const };
 
-    const previousStatus = pass.status;
+      const previousStatus = pass.status;
 
-    const transitioned = await prisma.gatePass.updateMany({
-      where: {
-        id: pass.id,
-        status: previousStatus,
-      },
-      data: {
+      const transitioned = await tx.gatePass.updateMany({
+        where: {
+          id: pass.id,
+          status: previousStatus,
+        },
+        data: {
+          status: "REVOKED",
+          qrToken: null,
+          qrExpiresAt: null,
+        },
+      });
+
+      if (transitioned.count === 0) return { conflict: true as const };
+
+      const updated = {
+        ...pass,
         status: "REVOKED",
         qrToken: null,
         qrExpiresAt: null,
-      },
+      };
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "PASS_REVOKED",
+          targetId: pass.id,
+          targetType: "GatePass",
+          metadata: {
+            reason: reason.trim(),
+            previousStatus,
+            newStatus: "REVOKED",
+          },
+        },
+      });
+
+      await notifyUser(
+        pass.student.userId,
+        {
+          title: "Gate Pass Revoked",
+          body: `Your gate pass ${pass.passNumber} was revoked: ${reason.trim()}`,
+          type: "PASS_REVOKED",
+          data: { passId: pass.id },
+        },
+        tx,
+      );
+
+      return { updated };
     });
 
-    if (transitioned.count === 0) {
+    if ("notFound" in result) {
+      return reply.status(404).send({ error: "Eligible pass not found for revocation" });
+    }
+    if ("conflict" in result) {
       return reply.status(409).send({ error: "Pass state changed, please refresh and try again" });
     }
 
-    const updated = {
-      ...pass,
-      status: "REVOKED",
-      qrToken: null,
-      qrExpiresAt: null,
-    };
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "PASS_REVOKED",
-        targetId: pass.id,
-        targetType: "GatePass",
-        metadata: {
-          reason: reason.trim(),
-          previousStatus,
-          newStatus: "REVOKED",
-        },
-      },
-    });
-
-    await notifyUser(pass.student.userId, {
-      title: "Gate Pass Revoked",
-      body: `Your gate pass ${pass.passNumber} was revoked: ${reason.trim()}`,
-      type: "PASS_REVOKED",
-      data: { passId: pass.id },
-    });
-
-    return reply.send(updated);
+    return reply.send(result.updated);
   });
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────
@@ -1646,32 +1770,38 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Justification must be at least 10 characters" });
     }
 
-    const pass = await prisma.gatePass.findFirst({
-      where: {
-        id: passId,
-        student: { user: { institutionId } },
-      },
+    const result = await withTenant(institutionId, async (tx) => {
+      const pass = await tx.gatePass.findFirst({
+        where: {
+          id: passId,
+          student: { user: { institutionId } },
+        },
+      });
+      if (!pass) return { notFound: true as const };
+
+      const override = await tx.emergencyOverride.create({
+        data: { gatePassId: passId, institutionId, overriddenById: userId, justification },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          institutionId,
+          action: "EMERGENCY_OVERRIDE",
+          targetId: passId,
+          targetType: "GatePass",
+          metadata: { justification, studentId: pass.studentId },
+        },
+      });
+
+      return { override };
     });
-    if (!pass) {
+
+    if ("notFound" in result) {
       return reply.status(404).send({ error: "Pass not found" });
     }
 
-    const override = await prisma.emergencyOverride.create({
-      data: { gatePassId: passId, institutionId, overriddenById: userId, justification },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: userId,
-        institutionId,
-        action: "EMERGENCY_OVERRIDE",
-        targetId: passId,
-        targetType: "GatePass",
-        metadata: { justification, studentId: pass.studentId },
-      },
-    });
-
-    return reply.status(201).send(override);
+    return reply.status(201).send(result.override);
   });
 
   // ─── AUDIT LOGS ────────────────────────────────────────────────────────────
@@ -1687,16 +1817,18 @@ export async function adminRoutes(app: FastifyInstance) {
     };
     if (action) where.action = action;
 
-    const [logs, total] = await Promise.all([
-      prisma.auditLog.findMany({
-        where,
-        include: { actor: { select: { id: true, email: true, role: true } } },
-        orderBy: { timestamp: "desc" },
-        skip: (pageNum - 1) * limitNum,
-        take: limitNum,
-      }),
-      prisma.auditLog.count({ where }),
-    ]);
+    const [logs, total] = await withTenant(institutionId, (tx) =>
+      Promise.all([
+        tx.auditLog.findMany({
+          where,
+          include: { actor: { select: { id: true, email: true, role: true } } },
+          orderBy: { timestamp: "desc" },
+          skip: (pageNum - 1) * limitNum,
+          take: limitNum,
+        }),
+        tx.auditLog.count({ where }),
+      ]),
+    );
 
     return reply.send({
       logs,
