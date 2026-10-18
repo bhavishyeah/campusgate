@@ -5,6 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
+    institutionMembership: {
+      findUnique: vi.fn(() =>
+        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
+      ),
+    },
     institution: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     gatePass: { count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     exitReason: { findMany: vi.fn() },

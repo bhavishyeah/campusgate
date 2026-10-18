@@ -3,8 +3,16 @@ import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import { privilegedPrisma, withTenant } from "@campusgate/db";
 import { loginSchema, registerSchema } from "@campusgate/shared";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
+import { resolvePermissions } from "../services/authz-engine.js";
 import { notifyInstitutionAdmins } from "../services/notifications.js";
+
+// Platform permission keys for a SUPER_ADMIN (no membership), normalized the
+// same way (dedup + sort) as the membership-resolved sets.
+const SUPER_ADMIN_PERMISSIONS: string[] = [
+  ...new Set(ROLE_PERMISSIONS.SUPER_ADMIN ?? []),
+].sort();
 
 /** Parse a basic device descriptor from the User-Agent string. */
 function parseDevice(ua?: string) {
@@ -103,12 +111,62 @@ export async function authRoutes(app: FastifyInstance) {
       data: { lastLoginAt: new Date() },
     });
 
-    // Include a unique jti so sessions can be individually revoked
+    // Resolve the canonical dual-shape claims (design §6.1). SUPER_ADMIN has no
+    // membership: platform roles/permissions, null membershipId/version.
+    let membershipId: string | null = null;
+    let roles: string[];
+    let permissions: string[];
+    let permissionsVersion: number | null = null;
+
+    if (user.role === "SUPER_ADMIN") {
+      roles = ["SUPER_ADMIN"];
+      permissions = SUPER_ADMIN_PERMISSIONS;
+    } else {
+      // Pre-tenant-context read (privilegedPrisma): RLS membership/role tables
+      // would fail-closed without a tenant GUC (§6.3).
+      const membership = await privilegedPrisma.institutionMembership.findUnique({
+        where: {
+          userId_institutionId: { userId: user.id, institutionId: user.institutionId },
+        },
+        select: {
+          id: true,
+          permissionsVersion: true,
+          roles: {
+            select: {
+              role: {
+                select: {
+                  key: true,
+                  permissions: { select: { permission: { select: { key: true } } } },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!membership) {
+        // A non-superadmin with no active membership cannot be authorized for
+        // any tenant action — fail-closed (mirrors the authenticate pipeline).
+        return reply.status(403).send({ error: "No active membership" });
+      }
+
+      membershipId = membership.id;
+      roles = [...new Set(membership.roles.map((mr) => mr.role.key))].sort();
+      permissions = resolvePermissions(membership.roles);
+      permissionsVersion = membership.permissionsVersion;
+    }
+
+    // Include a unique jti so sessions can be individually revoked. The token
+    // carries BOTH the new shape AND the retained legacy `role` claim (§6.1).
     const jti = randomUUID();
     const token = app.jwt.sign({
       userId: user.id,
-      role: user.role,
+      membershipId,
       institutionId: user.institutionId,
+      roles,
+      permissions,
+      permissionsVersion,
+      role: user.role,
       jti,
     });
 
