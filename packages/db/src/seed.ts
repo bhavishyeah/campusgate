@@ -1,7 +1,92 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
+import { PERMISSIONS, ROLE_PERMISSIONS } from "@campusgate/shared";
 
 const prisma = new PrismaClient();
+
+/** Human-friendly template role names, keyed by the template role key. */
+const TEMPLATE_ROLE_NAMES: Record<string, string> = {
+  STUDENT: "Student",
+  GUARD: "Guard",
+  HOD: "HOD",
+  ADMIN: "Admin",
+  SUPER_ADMIN: "Super Admin",
+};
+
+/**
+ * Idempotently seed the RBAC catalogue + template roles + role→permission map
+ * from the single @campusgate/shared source (design §3.2). Mirrors the
+ * in-migration seed (ON CONFLICT DO NOTHING) so a fresh/dev DB resolves
+ * permissions even if it was built with `migrate deploy` and no pre-existing
+ * users. Template roles use find-first-then-create (NOT a NULL composite upsert)
+ * so they never trip the roles_key_template_unique partial index.
+ */
+async function seedRbacCatalogue(): Promise<Map<string, string>> {
+  // (i) Permissions — bulk insert, skipping ones already present (idempotent).
+  //     createMany + skipDuplicates keeps this to a single round trip, which
+  //     matters over the slow remote pooler.
+  await prisma.permission.createMany({
+    data: PERMISSIONS.map((p) => ({ key: p.key, module: p.module, description: p.description })),
+    skipDuplicates: true,
+  });
+  const permissions = await prisma.permission.findMany({ select: { id: true, key: true } });
+  const permIdByKey = new Map(permissions.map((p) => [p.key, p.id]));
+
+  // (ii) Template roles (institutionId: null) — find-first-then-create (NOT a
+  //      NULL composite upsert, which could trip roles_key_template_unique).
+  const roleIdByKey = new Map<string, string>();
+  for (const key of Object.keys(ROLE_PERMISSIONS)) {
+    const existing = await prisma.role.findFirst({ where: { key, institutionId: null } });
+    const role =
+      existing ??
+      (await prisma.role.create({
+        data: { key, name: TEMPLATE_ROLE_NAMES[key] ?? key, institutionId: null },
+      }));
+    roleIdByKey.set(key, role.id);
+  }
+
+  // (iii) role_permissions — bulk insert the (roleId, permissionId) links,
+  //       skipping existing (idempotent, one round trip).
+  const links: { roleId: string; permissionId: string }[] = [];
+  for (const [roleKey, permKeys] of Object.entries(ROLE_PERMISSIONS)) {
+    const roleId = roleIdByKey.get(roleKey)!;
+    for (const permKey of permKeys) {
+      const permissionId = permIdByKey.get(permKey);
+      if (permissionId) links.push({ roleId, permissionId });
+    }
+  }
+  await prisma.rolePermission.createMany({ data: links, skipDuplicates: true });
+
+  console.log("  ✓ RBAC catalogue seeded (permissions, template roles, role_permissions)");
+  return roleIdByKey;
+}
+
+/**
+ * Idempotently ensure a demo user has one ACTIVE membership + one membership-role
+ * bound to the template role matching the user's legacy role enum. superadmin is
+ * excluded by the caller (no tenant membership).
+ */
+async function ensureMembership(
+  userId: string,
+  institutionId: string,
+  roleKey: string,
+  roleIdByKey: Map<string, string>,
+): Promise<void> {
+  const membership = await prisma.institutionMembership.upsert({
+    where: { userId_institutionId: { userId, institutionId } },
+    update: {},
+    create: { userId, institutionId, membershipStatus: "ACTIVE", permissionsVersion: 0 },
+  });
+
+  const roleId = roleIdByKey.get(roleKey);
+  if (!roleId) return;
+
+  await prisma.membershipRole.upsert({
+    where: { membershipId_roleId: { membershipId: membership.id, roleId } },
+    update: {},
+    create: { membershipId: membership.id, roleId, institutionId },
+  });
+}
 
 async function main() {
   console.log("🌱 Seeding CAMPUSGATE database...");
@@ -192,6 +277,17 @@ async function main() {
     },
   });
   console.log("  ✓ Student user created (bhavishya@demo.edu / student123)");
+
+  // ─── RBAC: catalogue + template roles + per-user memberships (design §3.2) ──
+  const roleIdByKey = await seedRbacCatalogue();
+
+  // Each demo tenant user gets a membership + membership-role bound to its role.
+  // superadmin@campusgate.local is platform-only — NO membership, NO membership-role.
+  await ensureMembership(admin.id, admin.institutionId, "ADMIN", roleIdByKey);
+  await ensureMembership(hodUser.id, hodUser.institutionId, "HOD", roleIdByKey);
+  await ensureMembership(guardUser.id, guardUser.institutionId, "GUARD", roleIdByKey);
+  await ensureMembership(studentUser.id, studentUser.institutionId, "STUDENT", roleIdByKey);
+  console.log("  ✓ Demo user memberships ensured (superadmin excluded)");
 
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");

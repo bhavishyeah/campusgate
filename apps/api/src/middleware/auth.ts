@@ -1,18 +1,18 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { privilegedPrisma, type Role } from "@campusgate/db";
+import { privilegedPrisma, type UserRole } from "@campusgate/db";
 
 // Extend Fastify's JWT types
 declare module "@fastify/jwt" {
   interface FastifyJWT {
     payload: {
       userId: string;
-      role: Role;
+      role: UserRole;
       institutionId: string;
       jti?: string;
     };
     user: {
       userId: string;
-      role: Role;
+      role: UserRole;
       institutionId: string;
       jti?: string;
     };
@@ -77,7 +77,7 @@ export async function authenticate(
   };
 }
 
-export function requireRole(...roles: Role[]) {
+export function requireRole(...roles: UserRole[]) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     await authenticate(request, reply);
     if (reply.sent) return;
@@ -93,7 +93,7 @@ export function requireSuperAdmin() {
   return requireRole("SUPER_ADMIN");
 }
 
-export function requireTenantRole(...roles: Exclude<Role, "SUPER_ADMIN">[]) {
+export function requireTenantRole(...roles: Exclude<UserRole, "SUPER_ADMIN">[]) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     await authenticate(request, reply);
     if (reply.sent) return;
@@ -103,7 +103,7 @@ export function requireTenantRole(...roles: Exclude<Role, "SUPER_ADMIN">[]) {
       return reply.status(403).send({ error: "Forbidden: platform role cannot access tenant endpoint" });
     }
 
-    if (!roles.includes(user.role as Exclude<Role, "SUPER_ADMIN">)) {
+    if (!roles.includes(user.role as Exclude<UserRole, "SUPER_ADMIN">)) {
       return reply.status(403).send({ error: "Forbidden: insufficient role" });
     }
   };

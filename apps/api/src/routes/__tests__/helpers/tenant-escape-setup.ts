@@ -86,6 +86,8 @@ export interface SeededTenant {
   reasonId: string;
   gateId: string;
   gatePassId: string;
+  membershipId: string;
+  membershipRoleId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -112,7 +114,9 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
         msg.includes("Can't reach database server") ||
         msg.includes("P1001") ||
         msg.includes("Timed out") ||
-        msg.includes("ECONNRESET");
+        msg.includes("ECONNRESET") ||
+        msg.includes("max clients reached") ||
+        msg.includes("EMAXCONNSESSION");
       if (!transient || i === attempts - 1) throw err;
       lastErr = err;
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
@@ -133,6 +137,8 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const reasonId = id(`reason_${key}`);
   const gateId = id(`gate_${key}`);
   const gatePassId = id(`pass_${key}`);
+  const membershipId = id(`mbr_${key}`);
+  const membershipRoleId = id(`mrl_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -188,7 +194,45 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
-  return { institutionId, departmentId, userId, studentProfileId, reasonId, gateId, gatePassId };
+  // Membership + membership-role (the B-2 tenant-owned RBAC tables). The
+  // membership-role binds to the global STUDENT template role (institutionId
+  // null, seeded by the identity_rbac_b2 migration / seed). Created via the
+  // RLS-bypassing adminClient so the read-escape test can later prove the
+  // campass_app client CANNOT see the other tenant's row.
+  const studentTemplateRole = await adminClient.role.findFirst({
+    where: { key: "STUDENT", institutionId: null },
+    select: { id: true },
+  });
+  if (!studentTemplateRole) {
+    throw new Error(
+      "STUDENT template role not found — run the identity_rbac_b2 migration + seed before the escape suite",
+    );
+  }
+
+  await adminClient.institutionMembership.create({
+    data: { id: membershipId, userId, institutionId, membershipStatus: "ACTIVE" },
+  });
+
+  await adminClient.membershipRole.create({
+    data: {
+      id: membershipRoleId,
+      membershipId,
+      roleId: studentTemplateRole.id,
+      institutionId,
+    },
+  });
+
+  return {
+    institutionId,
+    departmentId,
+    userId,
+    studentProfileId,
+    reasonId,
+    gateId,
+    gatePassId,
+    membershipId,
+    membershipRoleId,
+  };
 }
 
 export async function seedBothTenants(): Promise<void> {
@@ -201,6 +245,11 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // B-2 tenant-owned RBAC tables first (child -> parent), so the new RESTRICT
+  // composite FKs (membership_roles -> institution_memberships -> users) do not
+  // block the user/department/institution deletes below.
+  await withRetry(() => adminClient.membershipRole.deleteMany({ where }));
+  await withRetry(() => adminClient.institutionMembership.deleteMany({ where }));
   await withRetry(() => adminClient.gateEvent.deleteMany({ where }));
   await withRetry(() => adminClient.emergencyOverride.deleteMany({ where }));
   await withRetry(() => adminClient.gatePass.deleteMany({ where }));
@@ -220,19 +269,33 @@ export async function cleanup(): Promise<void> {
   );
 }
 
-/** Count remaining test rows across the seeded tables (teardown assertion). */
+/**
+ * Count remaining test rows across the seeded tables (teardown assertion).
+ *
+ * Run SEQUENTIALLY (not Promise.all): the postgres session pooler caps at 15
+ * clients, and firing every count concurrently alongside teardown connections
+ * trips `EMAXCONNSESSION: max clients reached in session mode`. One at a time
+ * (with transient-error retry) keeps well under the cap and is plenty fast for a
+ * teardown assertion.
+ */
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
-  const counts = await Promise.all([
-    adminClient.gatePass.count({ where }),
-    adminClient.studentProfile.count({ where }),
-    adminClient.user.count({ where }),
-    adminClient.department.count({ where }),
-    adminClient.exitReason.count({ where }),
-    adminClient.gate.count({ where }),
-    adminClient.institution.count({ where: { id: { startsWith: PREFIX } } }),
-  ]);
-  return counts.reduce((a, b) => a + b, 0);
+  const counters: Array<() => Promise<number>> = [
+    () => adminClient.membershipRole.count({ where }),
+    () => adminClient.institutionMembership.count({ where }),
+    () => adminClient.gatePass.count({ where }),
+    () => adminClient.studentProfile.count({ where }),
+    () => adminClient.user.count({ where }),
+    () => adminClient.department.count({ where }),
+    () => adminClient.exitReason.count({ where }),
+    () => adminClient.gate.count({ where }),
+    () => adminClient.institution.count({ where: { id: { startsWith: PREFIX } } }),
+  ];
+  let total = 0;
+  for (const count of counters) {
+    total += await withRetry(count);
+  }
+  return total;
 }
 
 export async function disconnect(): Promise<void> {
@@ -260,4 +323,6 @@ export const RLS_TABLES = [
   "reliability_score_snapshots",
   "notifications",
   "audit_logs",
+  "institution_memberships",
+  "membership_roles",
 ] as const;

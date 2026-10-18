@@ -100,6 +100,56 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     ).rejects.toBeTruthy();
   }, 60_000);
 
+  it("3b. membership_roles read escape: tenant A cannot see tenant B's membership-role", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Direct fetch of B's membership-role under A's tenant context => RLS hides it.
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.membershipRole.findUnique({ where: { id: B.membershipRoleId } }),
+    );
+    expect(foreign).toBeNull();
+
+    // Unscoped list under A still returns only A's rows, never B's.
+    const own = await withTenant(A.institutionId, (tx) =>
+      tx.membershipRole.findMany({}),
+    );
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.membershipRoleId);
+    }
+  }, 60_000);
+
+  it("3c. spoofed-tenant insert: tenant A cannot insert a membership-role stamped institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // A real template role id, resolved via the RLS-bypassing admin client, so
+    // the roleId FK is valid and the rejection is proven to come from the tenant
+    // WITH CHECK, not an incidental FK failure.
+    const studentTemplateRole = await adminClient.role.findFirst({
+      where: { key: "STUDENT", institutionId: null },
+      select: { id: true },
+    });
+    expect(studentTemplateRole).toBeTruthy();
+
+    // Claim B's institutionId (and B's membership) while in A's context =>
+    // tenant_isolation_modify WITH CHECK rejects the write.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.membershipRole.create({
+          data: {
+            id: `${PREFIX}SPOOF_MRL`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            membershipId: B.membershipId,
+            roleId: studentTemplateRole!.id,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;

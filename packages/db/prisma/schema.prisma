@@ -10,7 +10,7 @@ datasource db {
 
 // ─── ENUMS ──────────────────────────────────────────────────────────────────
 
-enum Role {
+enum UserRole {
   STUDENT
   HOD
   GUARD
@@ -22,6 +22,11 @@ enum AccountStatus {
   ACTIVE
   INACTIVE
   PENDING_APPROVAL
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 enum PassStatus {
@@ -168,6 +173,8 @@ model Institution {
   reliabilitySnapshots ReliabilityScoreSnapshot[]
   notifications        Notification[]
   auditLogs            AuditLog[]
+  memberships          InstitutionMembership[]
+  roles                Role[]
 
   @@map("institutions")
 }
@@ -198,13 +205,16 @@ model User {
   email         String        @unique
   passwordHash  String?
   googleId      String?       @unique
-  role          Role
+  role          UserRole
   accountStatus AccountStatus @default(ACTIVE)
   institutionId String
   institution   Institution   @relation(fields: [institutionId], references: [id])
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
   lastLoginAt   DateTime?
+  phone         String?
+  mfaEnabled    Boolean       @default(false)
+  mfaSecret     String?
 
   studentProfile StudentProfile?
   hodProfile     HodProfile?
@@ -218,9 +228,86 @@ model User {
   resolvedEmergencyAlerts EmergencyAlert[]  @relation("EmergencyResolvedBy")
   sessions               Session[]
   securityEvents         SecurityEvent[]
+  memberships            InstitutionMembership[]
 
   @@unique([id, institutionId])
   @@map("users")
+}
+
+// ─── IDENTITY & RBAC (B-2) ──────────────────────────────────────────────────
+
+model InstitutionMembership {
+  id                 String           @id @default(cuid())
+  userId             String
+  institutionId      String
+  membershipStatus   MembershipStatus @default(ACTIVE)
+  departmentScope    String?
+  permissionsVersion Int              @default(0)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id])
+  institution Institution      @relation(fields: [institutionId], references: [id])
+  roles       MembershipRole[]
+
+  @@unique([userId, institutionId])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([userId])
+  @@map("institution_memberships")
+}
+
+model Role {
+  id            String           @id @default(cuid())
+  key           String
+  name          String
+  institutionId String?
+  institution   Institution?     @relation(fields: [institutionId], references: [id])
+  permissions   RolePermission[]
+  memberships   MembershipRole[]
+
+  @@unique([key, institutionId])
+  @@index([institutionId])
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  module      String
+  description String
+  roleLinks   RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model MembershipRole {
+  id            String                @id @default(cuid())
+  membershipId  String
+  roleId        String
+  institutionId String
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  membership InstitutionMembership @relation(fields: [membershipId], references: [id])
+  role       Role                  @relation(fields: [roleId], references: [id])
+
+  @@unique([membershipId, roleId])
+  @@index([institutionId])
+  @@map("membership_roles")
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
 }
 
 // ─── STUDENT PROFILE ────────────────────────────────────────────────────────
