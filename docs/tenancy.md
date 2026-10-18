@@ -6,10 +6,24 @@
 > and [`identity-rbac.md`](./identity-rbac.md) (which supplies the identity that scopes
 > each request).
 
-> **Supabase-specific facts in this doc** (role privileges, pooler ports, how
-> `current_setting` behaves under the pooler) are marked **⚠ VERIFY** and must be
-> confirmed against current Supabase docs at implementation time. The *design* is
-> stable; the exact Supabase knobs are the thing to re-check.
+> **Supabase mechanics — VERIFIED (2026-10-18).** The isolation approach in this doc
+> was proven empirically against the live Supabase instance (project
+> `vybsvmvcdmoomuoxvmbc`) with a throwaway-table spike over the pooled connection
+> (port 6543, `pgbouncer=true`). Results, which the real implementation relies on:
+>
+> - Connecting as `postgres` (owner + superuser-equivalent) **bypasses RLS entirely** —
+>   policies do not bite, `WITH CHECK` does not fire, even with `FORCE ROW LEVEL
+>   SECURITY`. This is the headline finding: **RLS is worthless unless Prisma connects
+>   as a dedicated non-superuser, non-`BYPASSRLS` role.**
+> - Connecting as a role created with `NOSUPERUSER NOBYPASSRLS` (verified
+>   `rolsuper=false, rolbypassrls=false`), granted table DML but **not ownership**,
+>   with `set_config('app.current_institution_id', $1, true)` run as the first
+>   statement inside a Prisma `$transaction`: isolation holds perfectly through the
+>   transaction pooler — tenant A sees only A's rows, a no-tenant query returns **zero**
+>   rows (fail-closed), and a cross-tenant `INSERT` is rejected by `WITH CHECK`.
+>
+> The `SET LOCAL`/`set_config(..., true)` value is transaction-scoped and does not leak
+> across pooled requests. See §5–§6 for the verified configuration.
 
 ---
 
@@ -159,18 +173,46 @@ belongs to a different `institutionId` than the pass — the FK will not resolve
 
 RLS makes the **database** enforce isolation, independent of application code.
 
-### 5.1 The app role must NOT bypass RLS ⚠ VERIFY
+### 5.1 The app role must NOT bypass RLS — VERIFIED
 
-- A Postgres **superuser** and any role with **`BYPASSRLS`** ignore RLS policies.
-- On Supabase, the default `postgres` role is effectively superuser-equivalent and
-  **bypasses RLS**. If Prisma keeps connecting as `postgres`, **RLS protects nothing.**
-- **Therefore:** create a dedicated application role (e.g. `campass_app`) that is
-  **NOT** a superuser and does **NOT** have `BYPASSRLS`, grant it only the DML it needs,
-  and point Prisma's runtime connection at it. Migrations run as a more privileged role
-  (see [`database.md`](./database.md)).
+- A Postgres **superuser** and any role with **`BYPASSRLS`** ignore RLS policies, even
+  with `FORCE ROW LEVEL SECURITY`. **Proven in the spike:** as `postgres`, every
+  isolation test leaked (all rows visible, spoof insert allowed).
+- On Supabase, the default `postgres` role is superuser-equivalent and **bypasses RLS**.
+  If Prisma keeps connecting as `postgres`, **RLS protects nothing.**
+- **Therefore (load-bearing, not optional):** create a dedicated application role
+  (e.g. `campass_app`) that is **NOT** a superuser and does **NOT** have `BYPASSRLS`,
+  grant it only the DML it needs, and point Prisma's **runtime** connection at it.
+  Migrations run as the privileged `postgres`/owner connection (`DIRECT_URL`).
 
-⚠ VERIFY the exact role names/privileges and how to create a custom role on Supabase at
-implementation time.
+**Verified role creation + grants** (run once, as `postgres`, during the Phase 0
+migration; the role password is a secret you set, not committed):
+
+```sql
+-- Create the runtime role: can log in, owns nothing, cannot bypass RLS.
+CREATE ROLE "campass_app" LOGIN PASSWORD '<secret>'
+  NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+
+-- Let it use the schema and operate on application tables (NOT own them).
+GRANT USAGE ON SCHEMA public TO "campass_app";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "campass_app";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "campass_app";
+
+-- Ensure future tables (added by later migrations) are covered automatically.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "campass_app";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO "campass_app";
+```
+
+Verify after creation: `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname =
+'campass_app';` — **both must be `false`** (confirmed in the spike).
+
+> **Connection:** the app authenticates as this role through the Supavisor pooler using
+> the `<role>.<project-ref>` username convention, e.g.
+> `campass_app.vybsvmvcdmoomuoxvmbc` on `...pooler.supabase.com:6543` with
+> `?pgbouncer=true`. Proven working in the spike. Decision **3b**: the role is created
+> in Supabase and its credentials supplied as the runtime `DATABASE_URL`.
 
 ### 5.2 Per-request tenant context
 
@@ -185,12 +227,13 @@ SELECT set_config('app.current_institution_id', $1, true);
 
 - `SET LOCAL` / `set_config(..., true)` scopes the value to the **current transaction**
   only, so it cannot leak to the next request that reuses a pooled connection.
-- ⚠ VERIFY behavior under Supabase's connection pooler (Supavisor). In **transaction**
-  pooling mode, a transaction maps to one backend for its duration, so `SET LOCAL`
-  inside an explicit transaction is safe; **session**-scoped `SET` is not safe under a
-  transaction pooler. Confirm the pooling mode and that `set_config(..., true)` inside
-  the Prisma transaction behaves as expected. This interacts with the
-  pooled-vs-direct connection choice in [`database.md`](./database.md).
+- **VERIFIED** under Supabase's transaction pooler (Supavisor, port 6543): running
+  `set_config('app.current_institution_id', $1, true)` as the first statement inside a
+  Prisma `$transaction` correctly scoped all subsequent queries in that transaction, and
+  a request with no tenant set returned zero rows. Transaction-mode pooling pins the
+  transaction to one backend for its duration, so the value is isolated between clients.
+  Session-scoped plain `SET` (outside a transaction) is **not** safe under the
+  transaction pooler — always use `set_config(..., true)` **inside** `$transaction`.
 
 ### 5.3 Enabling RLS and the policy template
 
@@ -282,13 +325,18 @@ app.get("/passes", async (req, reply) => {
 });
 ```
 
-- ⚠ VERIFY the Prisma + pooler interaction: that `set_config(..., true)` executed as the
-  first statement of `$transaction` applies to the subsequent queries on the **same**
-  connection under Supabase's pooler. Consider a Prisma **client extension** instead of
-  raw `withTenant` if it gives cleaner guarantees. Decide at implementation time.
+- **VERIFIED:** `set_config(..., true)` executed as the first statement of
+  `$transaction` applies to the subsequent queries on the same pooled connection. The
+  `withTenant` helper above is the proven shape; a Prisma **client extension** wrapping
+  the same transaction+`set_config` is an acceptable ergonomic alternative (decide at
+  implementation — the underlying mechanism is identical and proven).
 - Middleware that derives `req.tenant.institutionId` from the JWT is the single place
   tenant context originates. A request that changes an ID/URL/body cannot change its
   tenant.
+- **Writes/reads MUST go through `withTenant`** (an interactive transaction). A query run
+  on the base client outside a transaction has no tenant GUC set and, under the RLS
+  policies, returns zero rows / rejects writes (fail-closed) — correct, but it means all
+  tenant data access must use the helper.
 
 ### 6.3 Why both layers
 
@@ -355,3 +403,4 @@ enabled and the standard policies.
 | Date | Change |
 |---|---|
 | 2026-10-18 | Initial tenancy doc: A2 design, A1-vs-A2 tradeoff, composite-FK pattern, RLS policy templates, Supabase app-role + `SET LOCAL` approach, tenant-scoped Prisma client sketch, cross-tenant test strategy, per-table checklist. Supabase specifics flagged ⚠ VERIFY. |
+| 2026-10-18 | **Spike complete.** Proved empirically against live Supabase (pooled, 6543): RLS is bypassed as `postgres` (owner/superuser) even with FORCE; isolation holds perfectly as a `NOSUPERUSER NOBYPASSRLS` role with `set_config(...,true)` inside `$transaction` (A sees only A, fail-closed on no-tenant, `WITH CHECK` blocks cross-tenant insert). Replaced ⚠ VERIFY with verified role-creation SQL, grants, and connection convention. |

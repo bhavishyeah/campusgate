@@ -5,10 +5,11 @@
 > [`tenancy.md`](./tenancy.md); this doc covers the **move**, the **connection
 > strategy**, the **migration workflow**, and the **Phase 0 schema additions**.
 
-> **⚠ VERIFY tags:** every Supabase-specific fact below (port numbers, pooler modes,
-> default role privileges, backup capabilities) must be confirmed against current
-> Supabase documentation at implementation time. The design is stable; Supabase's exact
-> knobs are what to re-check.
+> **Status (2026-10-18):** the Neon → Supabase move and versioned-migration adoption are
+> **DONE** (committed `42ba4db`). Connection strategy, pooler ports, and the RLS app-role
+> mechanics are **VERIFIED** (see [`tenancy.md`](./tenancy.md) spike results). Remaining
+> **⚠ VERIFY** tags below are limited to backup/PITR capabilities, which are operational
+> decisions to confirm when the backup plan is finalized.
 
 ---
 
@@ -24,15 +25,20 @@
 
 ---
 
-## 2. Target connection strategy (Supabase) ⚠ VERIFY
+## 2. Target connection strategy (Supabase) — VERIFIED & IN USE
 
-Supabase typically exposes two connection paths. The ERP needs **both**, used for
-different purposes:
+Supabase exposes these connection paths. The ERP uses **both**. **Verified working**
+against project `vybsvmvcdmoomuoxvmbc`:
 
-| Purpose | Connection | Typical port ⚠ VERIFY | Prisma field |
+> **Network note (this environment):** the **direct** host `db.<ref>.supabase.co:5432`
+> is **IPv6-only and unreachable** on the current network. We therefore use the
+> **session pooler** (same pooler host, port **5432**, IPv4) as `DIRECT_URL` for
+> migrations. The **transaction pooler** (port 6543) is `DATABASE_URL` for runtime.
+
+| Purpose | Connection | Port | Prisma field |
 |---|---|---|---|
-| **App runtime** (many short-lived queries) | Pooled (Supavisor) | 6543 | `DATABASE_URL` (the pooled URL; often `?pgbouncer=true`) |
-| **Migrations / DDL** (one long session) | Direct | 5432 | `directUrl` |
+| **App runtime** (many short-lived queries) | Transaction pooler (Supavisor) | 6543 | `DATABASE_URL` (+ **required** `?pgbouncer=true`) |
+| **Migrations / DDL** (one long session) | Session pooler (IPv4 fallback for IPv6-only direct) | 5432 | `directUrl` |
 
 Prisma schema shape (target):
 
@@ -48,39 +54,38 @@ datasource db {
 session-level/DDL operations; migrations need a direct session. Prisma's `directUrl`
 exists precisely for this.
 
-### 2.1 Interaction with RLS session variables ⚠ VERIFY
+### 2.1 Interaction with RLS session variables — VERIFIED
 
 [`tenancy.md`](./tenancy.md) sets `app.current_institution_id` with
-`set_config(..., true)` **inside a transaction**. Under a **transaction-mode** pooler,
-a transaction is pinned to one backend for its duration, so a transaction-local setting
-is safe. Confirm:
+`set_config(..., true)` **inside a transaction**. **Proven in the spike** against the
+transaction pooler (6543):
 
-- The pooled URL runs in **transaction** mode (not session mode) for the app.
+- The pooled URL runs in **transaction** mode; a transaction is pinned to one backend
+  for its duration, so the GUC is isolated between pooled clients. ✅
 - `set_config('app.current_institution_id', $1, true)` as the first statement of a
-  Prisma `$transaction` applies to the subsequent queries in that transaction over the
-  pooler.
-- `SET LOCAL`/`set_config(..., true)` never leaks to a later request that reuses the
-  pooled connection (it must be transaction-scoped).
+  Prisma `$transaction` correctly applied to subsequent queries in that transaction. ✅
+- A request with the GUC unset returned **zero** rows (fail-closed). ✅
 
-If any of these do not hold under the pooler, fall back to the **direct** connection for
-tenant-scoped transactions, or adopt a Prisma client extension approach — decide at
-implementation.
+Session-scoped plain `SET` (outside a transaction) is NOT safe under the transaction
+pooler — always use `set_config(..., true)` inside `$transaction`.
 
-### 2.2 The dedicated app role ⚠ VERIFY
+### 2.2 The dedicated app role — VERIFIED
 
 Per [`tenancy.md`](./tenancy.md) §5.1, RLS is worthless if Prisma connects as a role that
-bypasses it.
+bypasses it. **Proven in the spike:** as `postgres`, RLS was fully bypassed; as a
+`NOSUPERUSER NOBYPASSRLS` role, isolation held perfectly.
 
-- Create a dedicated role (e.g. `campass_app`) that is **NOT** superuser and does
-  **NOT** have `BYPASSRLS`.
-- Grant it only the DML (`SELECT/INSERT/UPDATE/DELETE`) on application tables it needs;
-  no DDL.
-- The app's `DATABASE_URL` authenticates as this role.
-- Migrations use a **separate, privileged** connection (`DIRECT_URL`) capable of DDL and
-  of creating/altering RLS policies.
-- ⚠ VERIFY how to create and manage custom roles on Supabase, and whether the standard
-  app user Supabase provisions already satisfies "non-`BYPASSRLS`" or whether a custom
-  role is required.
+- Create a dedicated role `campass_app`: `NOSUPERUSER NOBYPASSRLS NOCREATEDB
+  NOCREATEROLE` with `LOGIN`. (Exact SQL + grants in [`tenancy.md`](./tenancy.md) §5.1.)
+- Grant it only DML on application tables + `USAGE` on schema/sequences; no ownership,
+  no DDL. Use `ALTER DEFAULT PRIVILEGES` so future tables are covered.
+- The app's **runtime** `DATABASE_URL` authenticates as this role via the pooler
+  (`campass_app.<project-ref>` username convention, verified working).
+- **Migrations** use the privileged `postgres`/owner connection (`DIRECT_URL`), capable
+  of DDL and of creating/altering RLS policies.
+- **Decision 3b:** the role is created in Supabase and its credentials supplied as the
+  runtime `DATABASE_URL`. The migration that introduces RLS also runs the role-creation
+  SQL (idempotently) so a fresh environment is reproducible.
 
 ---
 
@@ -251,3 +256,4 @@ Values are operational decisions; recorded as placeholders so they are not forgo
 | Date | Change |
 |---|---|
 | 2026-10-18 | Initial database doc: Neon→Supabase runbook, pooled/direct connection strategy, versioned-migration workflow (D7), dedicated app role, RLS/pooler interaction notes, Phase 0 schema additions (tenancy, RBAC, SupportGrant, AuditLog v2, module system), backup/RPO/RTO placeholders. Supabase specifics flagged ⚠ VERIFY. |
+| 2026-10-18 | Move executed (commit `42ba4db`): on Supabase, versioned migrations live, `db push --accept-data-loss` removed. Connection strategy VERIFIED (session pooler used for `DIRECT_URL` due to IPv6-only direct host). App-role + RLS/pooler mechanics VERIFIED via spike (see tenancy.md). Remaining ⚠ VERIFY limited to backup/PITR. |
