@@ -41,18 +41,28 @@ against project `vybsvmvcdmoomuoxvmbc`:
 | **Migrations / DDL** (one long session) | Session pooler (IPv4 fallback for IPv6-only direct) | 5432 | `directUrl` |
 | **Privileged runtime** (auth-bootstrap + platform/Super-Admin reads, RLS-bypass `postgres`) | Session pooler | 5432 | `PRIVILEGED_DATABASE_URL` (B-2; falls back to `DIRECT_URL` then `DATABASE_URL` if unset) |
 
-> **⚠ KNOWN ISSUE (observed during B-2 live testing).** The privileged runtime client
-> uses the **session pooler on port 5432**, and the `authenticate` middleware calls it on
-> **every** request. On the current (IPv6-constrained) network, port 5432 is **slow and
-> intermittently unreachable** (6–12s response times, occasional `P1001 Can't reach
-> database server`), while the transaction pooler (6543) is consistently fast. Logins and
-> tenant-scoped reads succeed, but authenticated requests occasionally 500 on a 5432 blip.
-> **Mitigations to evaluate (later):** (a) route the privileged client's identity lookups
-> through a 6543-style pooled connection where session-level features aren't needed;
-> (b) add a short Prisma connection retry/backoff for P1001 on the privileged client;
-> (c) in production (Railway, not IPv6-constrained) confirm whether 5432 is reliable — this
-> may be a local-network artifact. Does NOT affect correctness or isolation; it is a
-> reliability/latency concern on this network.
+> **⚠ KNOWN ISSUE — local network latency to Supabase `ap-south-1` (NOT a code bug).**
+> During B-2 live testing from the developer's local machine, DB requests to the Supabase
+> pooler are **slow (5–12s) and occasionally fail with `P1001 Can't reach database
+> server`** — observed on **both** the transaction pooler (6543, `campass_app`) **and**
+> the session pooler (5432, privileged). An earlier note blamed 5432 specifically; a load
+> test corrected that: the stalls hit 6543 too (≈1 request in 6 failed, every request
+> 5–12s), so the bottleneck is the **local network path to the ap-south-1 region**, not a
+> port or client choice.
+>
+> **Decision:** the privileged client (`PRIVILEGED_DATABASE_URL`) now uses the **6543
+> transaction pooler** with the `postgres` role (verified: still bypasses RLS, more
+> reliable than 5432 here, and the privileged client uses no session-level features) — so
+> all runtime DB traffic is consolidated on one pooler port. This is an improvement but
+> does **not** resolve the local latency, which app code cannot fix.
+>
+> **Next step is to MEASURE IN PRODUCTION (Railway), not to patch locally.** Railway runs
+> in a datacenter with fast AWS connectivity and almost certainly will not exhibit this.
+> Only if production *also* shows P1001/latency do we add mitigation (Prisma
+> `connection_limit`/pool tuning, a P1001 retry/backoff wrapper, or region colocation of
+> the API with the DB). No speculative retry wrapper is added now, because it cannot be
+> validated in the environment that matters. Does NOT affect correctness or tenant
+> isolation — purely a local reliability/latency artifact.
 
 Prisma schema shape (target):
 
