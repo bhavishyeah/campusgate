@@ -9,6 +9,7 @@ vi.mock("@campusgate/db", () => ({
     studentProfile: { findFirst: vi.fn() },
     gatePass: { findFirst: vi.fn(), updateMany: vi.fn() },
     auditLog: { create: vi.fn(), findMany: vi.fn() },
+    notification: { create: vi.fn() },
   },
 }));
 
@@ -25,6 +26,7 @@ const mockedPrisma = prisma as unknown as {
   studentProfile: { findFirst: MockFn };
   gatePass: { findFirst: MockFn; updateMany: MockFn };
   auditLog: { create: MockFn; findMany: MockFn };
+  notification: { create: MockFn };
 };
 
 async function makeApp() {
@@ -81,8 +83,10 @@ describe("Pass revocation and summaries", () => {
     mockedPrisma.hodProfile.findFirst.mockResolvedValue({ id: "hod-1", departmentId: "dept-1" });
     mockedPrisma.gatePass.findFirst.mockResolvedValue({
       id: "pass-1",
+      passNumber: "CG-2026-001",
       status: "APPROVED",
       studentId: "stu-1",
+      student: { userId: "u-student", name: "Test Student" },
     });
     mockedPrisma.gatePass.updateMany.mockResolvedValue({ count: 1 });
     mockedPrisma.auditLog.create.mockResolvedValue({});
@@ -110,8 +114,10 @@ describe("Pass revocation and summaries", () => {
 
     mockedPrisma.gatePass.findFirst.mockResolvedValue({
       id: "pass-2",
+      passNumber: "CG-2026-002",
       status: "OUTSIDE",
       studentId: "stu-2",
+      student: { userId: "u-student", name: "Test Student" },
     });
     mockedPrisma.gatePass.updateMany.mockResolvedValue({ count: 1 });
     mockedPrisma.auditLog.create.mockResolvedValue({});

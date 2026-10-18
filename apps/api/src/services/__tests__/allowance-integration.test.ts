@@ -55,7 +55,11 @@ describe('Allowance Integration Tests', () => {
       institutionId: INSTITUTION_ID,
       timezone: 'Asia/Kolkata',
       weekStartDay: 'MONDAY',
-      workingDaysOfWeek: [1, 2, 3, 4, 5, 6],
+      // All 7 days are working days in these tests so the duration/enforcement
+      // assertions are independent of which weekday the suite runs on. (The
+      // working-day *filter* itself is covered separately; here we exercise the
+      // consumed/remaining math, which must not depend on "today".)
+      workingDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
       lowAllowanceThresholdMinutes: 60,
     });
     mockedPrisma.academicCalendarDay.findMany.mockResolvedValue([]);

@@ -1,0 +1,18 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "ON UPDATE CASCADE vs doc example",
+      "severity": "non-blocking",
+      "confidence": "possible",
+      "detail": "Composite FKs use ON UPDATE CASCADE while docs/tenancy.md §4 example omits ON UPDATE. Harmless because id/institutionId are immutable cuids that never update; the cascade never fires. No action required; noted for the record."
+    },
+    {
+      "label": "Escape suite is a live-DB suite inside the default vitest glob",
+      "severity": "non-blocking",
+      "confidence": "possible",
+      "detail": "tenant-escape.integration.test.ts requires network + campass_app credentials, so a CI run of `vitest run` without DB access would fail it. The plan flags this as a later CI-tagging follow-up; B-1 intentionally does not alter CI wiring. Track for B-2/CI."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\tenancy-b1-review.md"
+}
