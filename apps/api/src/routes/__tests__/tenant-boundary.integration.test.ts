@@ -5,11 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
-    institutionMembership: {
-      findUnique: vi.fn(() =>
-        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
-      ),
-    },
+    institutionMembership: { findUnique: vi.fn() },
     institution: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     gatePass: { count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     exitReason: { findMany: vi.fn() },
@@ -29,6 +25,20 @@ vi.mock("@campusgate/db", () => {
 });
 
 import { prisma } from "@campusgate/db";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
+
+// Build the membership roles[].role.permissions[].permission.key shape the
+// authenticate middleware selects, from a template role key. After the §7 flip
+// the migrated routes read request.auth.permissions, so the mocked membership
+// MUST carry the role template so requirePermission resolves a real key set.
+function membershipRoles(...roleKeys: string[]) {
+  return roleKeys.map((key) => ({
+    role: {
+      key,
+      permissions: (ROLE_PERMISSIONS[key] ?? []).map((k) => ({ permission: { key: k } })),
+    },
+  }));
+}
 import { studentRoutes } from "../student.js";
 import { platformRoutes } from "../platform.js";
 import { guardRoutes } from "../guard.js";
@@ -57,6 +67,27 @@ function authHeader(token: string) {
 describe("Tenant boundary enforcement", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // Role-aware membership so the flipped (§7) tenant routes resolve the
+    // right permission set. SUPER_ADMIN has no membership (null).
+    mockedPrisma.institutionMembership.findUnique.mockImplementation(
+      ({ where }: { where: { userId_institutionId: { userId: string } } }) => {
+        const userId = where.userId_institutionId.userId;
+        const roleByUser: Record<string, string> = {
+          "u-admin": "ADMIN",
+          "u-guard": "GUARD",
+          "u-hod": "HOD",
+        };
+        const roleKey = roleByUser[userId];
+        if (!roleKey) return Promise.resolve(null);
+        return Promise.resolve({
+          id: `mbr-${userId}`,
+          membershipStatus: "ACTIVE",
+          permissionsVersion: 0,
+          roles: membershipRoles(roleKey),
+        });
+      },
+    );
 
     mockedPrisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
       const id = where.id;

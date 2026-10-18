@@ -5,11 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
-    institutionMembership: {
-      findUnique: vi.fn(() =>
-        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
-      ),
-    },
+    institutionMembership: { findUnique: vi.fn() },
     gatePass: { count: vi.fn(), findMany: vi.fn() },
     gateEvent: { findMany: vi.fn() },
     emergencyAlert: { findMany: vi.fn(), findFirst: vi.fn() },
@@ -23,7 +19,26 @@ vi.mock("@campusgate/db", () => {
 });
 
 import { prisma } from "@campusgate/db";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { adminRoutes } from "../admin.js";
+
+// An ADMIN membership so the flipped (§7) /admin/analytics route resolves the
+// campus_movement.analytics.view key.
+function adminMembership() {
+  return {
+    id: "mbr-test",
+    membershipStatus: "ACTIVE",
+    permissionsVersion: 0,
+    roles: [
+      {
+        role: {
+          key: "ADMIN",
+          permissions: (ROLE_PERMISSIONS.ADMIN ?? []).map((k) => ({ permission: { key: k } })),
+        },
+      },
+    ],
+  };
+}
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -47,6 +62,8 @@ function authHeader(token: string) {
 describe("Admin analytics routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    (prisma as any).institutionMembership.findUnique.mockResolvedValue(adminMembership());
 
     mockedPrisma.user.findUnique.mockResolvedValue({
       id: "u-admin",

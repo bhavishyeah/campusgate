@@ -12,7 +12,8 @@ import {
   updateInstitutionConfigSchema,
   upsertAcademicCalendarDaySchema,
 } from "@campusgate/shared";
-import { requireTenantRole } from "../middleware/auth.js";
+import { authenticate } from "../middleware/auth.js";
+import { requirePermission } from "../services/authz-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import {
   notifyUser,
@@ -21,10 +22,13 @@ import {
 } from "../services/notifications.js";
 
 export async function adminRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", requireTenantRole("ADMIN"));
+  // Authentication runs exactly once per request via this single top-level hook
+  // (replaces the former requireTenantRole("ADMIN") hook — §7). Per-route
+  // requirePermission(...) below owns the access decision and does NOT re-auth.
+  app.addHook("preHandler", authenticate);
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
-  app.get("/stats", async (request, reply) => {
+  app.get("/stats", { preHandler: [requirePermission("campus_movement.analytics.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const today = new Date(new Date().setHours(0, 0, 0, 0));
@@ -83,7 +87,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── MOVEMENT ANALYTICS ───────────────────────────────────────────────────
-  app.get("/analytics", async (request, reply) => {
+  app.get("/analytics", { preHandler: [requirePermission("campus_movement.analytics.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { from, to } = request.query as { from?: string; to?: string };
 
@@ -364,7 +368,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── EMERGENCY ALERTS ─────────────────────────────────────────────────────
-  app.get("/emergency/active", async (request, reply) => {
+  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const active = await withTenant(institutionId, (tx) =>
@@ -380,7 +384,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(active);
   });
 
-  app.get("/emergency", async (request, reply) => {
+  app.get("/emergency", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { limit = "20" } = request.query as { limit?: string };
     const take = Math.min(100, Math.max(1, parseInt(limit || "20", 10) || 20));
@@ -400,7 +404,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(alerts);
   });
 
-  app.post("/emergency/declare", async (request, reply) => {
+  app.post("/emergency/declare", { preHandler: [requirePermission("campus_movement.emergency.declare")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = declareEmergencySchema.safeParse(request.body);
@@ -473,7 +477,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.status(201).send(result.alert);
   });
 
-  app.post("/emergency/:id/resolve", async (request, reply) => {
+  app.post("/emergency/:id/resolve", { preHandler: [requirePermission("campus_movement.emergency.resolve")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
@@ -547,7 +551,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── LIST USERS ────────────────────────────────────────────────────────────
-  app.get("/users", async (request, reply) => {
+  app.get("/users", { preHandler: [requirePermission("admin.users.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { role, status, page = "1", limit = "20" } = request.query as Record<string, string>;
 
@@ -582,7 +586,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── CREATE USER ───────────────────────────────────────────────────────────
-  app.post("/users", async (request, reply) => {
+  app.post("/users", { preHandler: [requirePermission("admin.users.create")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = createUserSchema.safeParse(request.body);
@@ -665,7 +669,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── APPROVE PENDING REGISTRATION ─────────────────────────────────────────
-  app.post("/users/:id/approve", async (request, reply) => {
+  app.post("/users/:id/approve", { preHandler: [requirePermission("admin.users.approve")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
@@ -702,7 +706,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── DEACTIVATE USER ───────────────────────────────────────────────────────
-  app.post("/users/:id/deactivate", async (request, reply) => {
+  app.post("/users/:id/deactivate", { preHandler: [requirePermission("admin.users.deactivate")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
@@ -736,7 +740,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── REACTIVATE USER ──────────────────────────────────────────────────────
-  app.post("/users/:id/reactivate", async (request, reply) => {
+  app.post("/users/:id/reactivate", { preHandler: [requirePermission("admin.users.reactivate")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
@@ -770,7 +774,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── BULK IMPORT STUDENTS (CSV) ───────────────────────────────────────────
-  app.post("/students/bulk-import", async (request, reply) => {
+  app.post("/students/bulk-import", { preHandler: [requirePermission("admin.students.import")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { students } = request.body as { students: any[] };
 
@@ -860,7 +864,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── EXPORT STUDENTS (CSV) ────────────────────────────────────────────────
-  app.get("/students/export", async (request, reply) => {
+  app.get("/students/export", { preHandler: [requirePermission("admin.students.export")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const students = await withTenant(institutionId, (tx) =>
@@ -933,7 +937,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── EXPORT STUDENTS (XLSX) ────────────────────────────────────────────────
-  app.get("/students/export.xlsx", async (request, reply) => {
+  app.get("/students/export.xlsx", { preHandler: [requirePermission("admin.students.export")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const students = await withTenant(institutionId, (tx) =>
@@ -1008,7 +1012,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── DEPARTMENTS ───────────────────────────────────────────────────────────
-  app.get("/departments", async (request, reply) => {
+  app.get("/departments", { preHandler: [requirePermission("admin.departments.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const depts = await withTenant(institutionId, (tx) =>
       tx.department.findMany({ where: { institutionId } }),
@@ -1016,7 +1020,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(depts);
   });
 
-  app.post("/departments", async (request, reply) => {
+  app.post("/departments", { preHandler: [requirePermission("admin.departments.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { name, code } = request.body as { name: string; code: string };
 
@@ -1046,7 +1050,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── GATES ─────────────────────────────────────────────────────────────────
-  app.get("/gates", async (request, reply) => {
+  app.get("/gates", { preHandler: [requirePermission("admin.gates.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const gates = await withTenant(institutionId, (tx) =>
       tx.gate.findMany({
@@ -1058,7 +1062,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── GATE HEALTH MONITORING ───────────────────────────────────────────────
-  app.get("/gates/health", async (request, reply) => {
+  app.get("/gates/health", { preHandler: [requirePermission("admin.gates.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const now = Date.now();
@@ -1128,7 +1132,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(rows);
   });
 
-  app.get("/gates/:gateId/health", async (request, reply) => {
+  app.get("/gates/:gateId/health", { preHandler: [requirePermission("admin.gates.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { gateId } = request.params as { gateId: string };
 
@@ -1210,7 +1214,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/gates", async (request, reply) => {
+  app.post("/gates", { preHandler: [requirePermission("admin.gates.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { name, location } = request.body as { name: string; location?: string };
 
@@ -1240,7 +1244,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── GUARD SHIFTS ──────────────────────────────────────────────────────────
-  app.get("/guard-shifts", async (request, reply) => {
+  app.get("/guard-shifts", { preHandler: [requirePermission("admin.shifts.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { from, to } = request.query as { from?: string; to?: string };
 
@@ -1285,7 +1289,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(shifts);
   });
 
-  app.post("/guard-shifts", async (request, reply) => {
+  app.post("/guard-shifts", { preHandler: [requirePermission("admin.shifts.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = createGuardShiftSchema.safeParse(request.body);
@@ -1366,7 +1370,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── EXIT REASONS ──────────────────────────────────────────────────────────
-  app.get("/reasons", async (request, reply) => {
+  app.get("/reasons", { preHandler: [requirePermission("admin.reasons.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const reasons = await withTenant(institutionId, (tx) =>
       tx.exitReason.findMany({ where: { institutionId } }),
@@ -1374,7 +1378,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(reasons);
   });
 
-  app.post("/reasons", async (request, reply) => {
+  app.post("/reasons", { preHandler: [requirePermission("admin.reasons.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { label, requiresNote } = request.body as { label: string; requiresNote?: boolean };
 
@@ -1404,7 +1408,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ALLOWANCE POLICY ────────────────────────────────────────────────────────
-  app.get("/allowance-policy", async (request, reply) => {
+  app.get("/allowance-policy", { preHandler: [requirePermission("admin.allowance_policy.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const policy = await withTenant(institutionId, (tx) =>
       AllowanceEngine.getOrCreatePolicy(institutionId, tx),
@@ -1422,7 +1426,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put("/allowance-policy", async (request, reply) => {
+  app.put("/allowance-policy", { preHandler: [requirePermission("admin.allowance_policy.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const body = request.body as any;
 
@@ -1485,7 +1489,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── INSTITUTION CONFIG ───────────────────────────────────────────────────
-  app.get("/institution-config", async (request, reply) => {
+  app.get("/institution-config", { preHandler: [requirePermission("admin.institution_config.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const config = await withTenant(institutionId, (tx) =>
@@ -1494,7 +1498,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(config);
   });
 
-  app.put("/institution-config", async (request, reply) => {
+  app.put("/institution-config", { preHandler: [requirePermission("admin.institution_config.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = updateInstitutionConfigSchema.safeParse(request.body);
@@ -1546,7 +1550,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ACADEMIC CALENDAR ────────────────────────────────────────────────────
-  app.get("/academic-calendar", async (request, reply) => {
+  app.get("/academic-calendar", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { startDate, endDate } = request.query as { startDate?: string; endDate?: string };
 
@@ -1574,7 +1578,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(days);
   });
 
-  app.put("/academic-calendar/day", async (request, reply) => {
+  app.put("/academic-calendar/day", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = upsertAcademicCalendarDaySchema.safeParse(request.body);
@@ -1624,7 +1628,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(day);
   });
 
-  app.delete("/academic-calendar/day/:date", async (request, reply) => {
+  app.delete("/academic-calendar/day/:date", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { date } = request.params as { date: string };
 
@@ -1678,7 +1682,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ADMIN PASS REVOCATION ────────────────────────────────────────────────
-  app.post("/passes/:passId/revoke", async (request, reply) => {
+  app.post("/passes/:passId/revoke", { preHandler: [requirePermission("campus_movement.pass.revoke")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
     const { reason } = request.body as { reason?: string };
@@ -1762,7 +1766,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────
-  app.post("/emergency-override", async (request, reply) => {
+  app.post("/emergency-override", { preHandler: [requirePermission("campus_movement.pass.override")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId, justification } = request.body as { passId: string; justification: string };
 
@@ -1805,7 +1809,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── AUDIT LOGS ────────────────────────────────────────────────────────────
-  app.get("/audit-logs", async (request, reply) => {
+  app.get("/audit-logs", { preHandler: [requirePermission("campus_movement.audit.view")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { page = "1", limit = "50", action } = request.query as Record<string, string>;
 

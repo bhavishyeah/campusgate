@@ -5,11 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
-    institutionMembership: {
-      findUnique: vi.fn(() =>
-        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
-      ),
-    },
+    institutionMembership: { findUnique: vi.fn() },
     hodProfile: { findFirst: vi.fn() },
     studentProfile: { findFirst: vi.fn() },
     gatePass: { findFirst: vi.fn(), updateMany: vi.fn() },
@@ -25,9 +21,22 @@ vi.mock("@campusgate/db", () => {
 });
 
 import { prisma } from "@campusgate/db";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { hodRoutes } from "../hod.js";
 import { adminRoutes } from "../admin.js";
 import { studentRoutes } from "../student.js";
+
+// Build the membership roles[].role.permissions[].permission.key shape the
+// authenticate middleware selects, so the flipped (§7) routes resolve a real
+// permission set for the token's role.
+function membershipRoles(...roleKeys: string[]) {
+  return roleKeys.map((key) => ({
+    role: {
+      key,
+      permissions: (ROLE_PERMISSIONS[key] ?? []).map((k) => ({ permission: { key: k } })),
+    },
+  }));
+}
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -53,6 +62,21 @@ function authHeader(token: string) {
 describe("Pass revocation and summaries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    const roleByUser: Record<string, string> = { "u-hod": "HOD", "u-admin": "ADMIN", "u-student": "STUDENT" };
+    (prisma as any).institutionMembership.findUnique.mockImplementation(
+      ({ where }: { where: { userId_institutionId: { userId: string } } }) => {
+        const userId = where.userId_institutionId.userId;
+        const roleKey = roleByUser[userId];
+        if (!roleKey) return Promise.resolve(null);
+        return Promise.resolve({
+          id: `mbr-${userId}`,
+          membershipStatus: "ACTIVE",
+          permissionsVersion: 0,
+          roles: membershipRoles(roleKey),
+        });
+      },
+    );
 
     mockedPrisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
       const id = where.id;

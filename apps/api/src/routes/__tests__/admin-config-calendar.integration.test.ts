@@ -5,11 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
-    institutionMembership: {
-      findUnique: vi.fn(() =>
-        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
-      ),
-    },
+    institutionMembership: { findUnique: vi.fn() },
     institutionConfig: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
     academicCalendarDay: { findMany: vi.fn(), upsert: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
     auditLog: { create: vi.fn() },
@@ -23,7 +19,27 @@ vi.mock("@campusgate/db", () => {
 });
 
 import { prisma } from "@campusgate/db";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { adminRoutes } from "../admin.js";
+
+// An ADMIN membership in the roles[].role.permissions[].permission.key shape
+// authenticate selects, so the flipped (§7) admin routes resolve the admin.* /
+// campus_movement.* key set.
+function adminMembership() {
+  return {
+    id: "mbr-test",
+    membershipStatus: "ACTIVE",
+    permissionsVersion: 0,
+    roles: [
+      {
+        role: {
+          key: "ADMIN",
+          permissions: (ROLE_PERMISSIONS.ADMIN ?? []).map((k) => ({ permission: { key: k } })),
+        },
+      },
+    ],
+  };
+}
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -47,6 +63,8 @@ function authHeader(token: string) {
 describe("Admin config/calendar routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    (prisma as any).institutionMembership.findUnique.mockResolvedValue(adminMembership());
 
     mockedPrisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
       if (where.id === "u-admin") {

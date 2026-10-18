@@ -5,11 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@campusgate/db", () => {
   const prisma = {
     user: { findUnique: vi.fn() },
-    institutionMembership: {
-      findUnique: vi.fn(() =>
-        Promise.resolve({ id: "mbr-test", membershipStatus: "ACTIVE", permissionsVersion: 0, roles: [] }),
-      ),
-    },
+    institutionMembership: { findUnique: vi.fn() },
     gate: { findMany: vi.fn(), findFirst: vi.fn() },
     gateEvent: { count: vi.fn() },
   };
@@ -22,7 +18,26 @@ vi.mock("@campusgate/db", () => {
 });
 
 import { prisma } from "@campusgate/db";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { adminRoutes } from "../admin.js";
+
+// An ADMIN membership so the flipped (§7) /admin/gates* routes resolve the
+// admin.gates.manage key.
+function adminMembership() {
+  return {
+    id: "mbr-test",
+    membershipStatus: "ACTIVE",
+    permissionsVersion: 0,
+    roles: [
+      {
+        role: {
+          key: "ADMIN",
+          permissions: (ROLE_PERMISSIONS.ADMIN ?? []).map((k) => ({ permission: { key: k } })),
+        },
+      },
+    ],
+  };
+}
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -47,6 +62,8 @@ describe("Gate health monitoring routes", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-03T12:00:00.000Z"));
+
+    (prisma as any).institutionMembership.findUnique.mockResolvedValue(adminMembership());
 
     mockedPrisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
       if (where.id === "u-admin") {
