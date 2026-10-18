@@ -181,6 +181,7 @@ export async function hodRoutes(app: FastifyInstance) {
     const override = await prisma.emergencyOverride.create({
       data: {
         gatePassId: passId,
+        institutionId,
         overriddenById: userId,
         justification,
       },
@@ -190,6 +191,7 @@ export async function hodRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "EMERGENCY_OVERRIDE",
         targetId: passId,
         targetType: "GatePass",
@@ -252,6 +254,7 @@ export async function hodRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "PASS_APPROVED",
         targetId: pass.id,
         targetType: "GatePass",
@@ -312,6 +315,7 @@ export async function hodRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "PASS_REJECTED",
         targetId: pass.id,
         targetType: "GatePass",
@@ -385,6 +389,7 @@ export async function hodRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "PASS_REVOKED",
         targetId: pass.id,
         targetType: "GatePass",

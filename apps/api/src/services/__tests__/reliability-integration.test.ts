@@ -105,14 +105,16 @@ describe('Reliability Integration Tests', () => {
       const movementNumber = 6;
       await ReliabilityEngine.recordSnapshot(
         'student-1',
+        'inst-1',
         score.overall,
         movementNumber
       );
 
-      // Verify snapshot was created with correct data
+      // Verify snapshot was created with correct data (now tenant-stamped)
       expect(mockedPrisma.reliabilityScoreSnapshot.create).toHaveBeenCalledWith({
         data: {
           studentId: 'student-1',
+          institutionId: 'inst-1',
           score: score.overall,
           movementNumber: 6,
         },

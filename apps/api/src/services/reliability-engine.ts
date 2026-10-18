@@ -319,12 +319,14 @@ export class ReliabilityEngine {
    */
   static async recordSnapshot(
     studentId: string,
+    institutionId: string,
     score: number,
     movementNumber: number
   ): Promise<void> {
     await prisma.reliabilityScoreSnapshot.create({
       data: {
         studentId,
+        institutionId,
         score,
         movementNumber,
       },

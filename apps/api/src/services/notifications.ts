@@ -9,10 +9,20 @@ interface NotificationPayload {
 }
 
 export async function notifyUser(userId: string, payload: NotificationPayload) {
+  // Derive the tenant from the recipient user (notifications are tenant-owned).
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { institutionId: true },
+  });
+  if (!user) {
+    throw new Error(`notifyUser: user ${userId} not found`);
+  }
+
   // Persist notification
   const notification = await prisma.notification.create({
     data: {
       userId,
+      institutionId: user.institutionId,
       title: payload.title,
       body: payload.body,
       type: payload.type,

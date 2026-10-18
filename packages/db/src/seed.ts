@@ -137,7 +137,7 @@ async function main() {
       accountStatus: "ACTIVE",
       institutionId: institution.id,
       hodProfile: {
-        create: { name: "Dr. Sharma", departmentId: bca.id },
+        create: { name: "Dr. Sharma", departmentId: bca.id, institutionId: institution.id },
       },
     },
   });
@@ -157,8 +157,9 @@ async function main() {
       guardProfile: {
         create: {
           name: "Rajesh Kumar",
+          institutionId: institution.id,
           assignedGates: {
-            create: [{ gateId: mainGate.id }],
+            create: [{ gateId: mainGate.id, institutionId: institution.id }],
           },
         },
       },
@@ -182,6 +183,7 @@ async function main() {
           name: "Bhavishya Verma",
           enrollmentNo: "BCA2024001",
           departmentId: bca.id,
+          institutionId: institution.id,
           program: "BCA",
           semester: 4,
           section: "A",

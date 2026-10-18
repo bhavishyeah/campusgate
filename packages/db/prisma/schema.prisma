@@ -158,6 +158,16 @@ model Institution {
   academicCalendarDays AcademicCalendarDay[]
   guardShifts          GuardShift[]
   emergencyAlerts      EmergencyAlert[]
+  studentProfiles      StudentProfile[]
+  hodProfiles          HodProfile[]
+  guardProfiles        GuardProfile[]
+  gatePasses           GatePass[]
+  gateEvents           GateEvent[]
+  guardGateAssignments GuardGateAssignment[]
+  emergencyOverrides   EmergencyOverride[]
+  reliabilitySnapshots ReliabilityScoreSnapshot[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
 
   @@map("institutions")
 }
@@ -177,6 +187,7 @@ model Department {
   hods     HodProfile[]
 
   @@unique([institutionId, code])
+  @@unique([id, institutionId])
   @@map("departments")
 }
 
@@ -208,66 +219,79 @@ model User {
   sessions               Session[]
   securityEvents         SecurityEvent[]
 
+  @@unique([id, institutionId])
   @@map("users")
 }
 
 // ─── STUDENT PROFILE ────────────────────────────────────────────────────────
 
 model StudentProfile {
-  id           String     @id @default(cuid())
-  userId       String     @unique
-  user         User       @relation(fields: [userId], references: [id])
-  enrollmentNo String     @unique
-  rollNumber   String?
-  name         String
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id])
-  program      String
-  semester     Int
-  section      String?
-  dob          String?
-  phone        String?
-  address      String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id])
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  enrollmentNo  String      @unique
+  rollNumber    String?
+  name          String
+  departmentId  String
+  department    Department  @relation(fields: [departmentId], references: [id])
+  program       String
+  semester      Int
+  section       String?
+  dob           String?
+  phone         String?
+  address       String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   gatePasses           GatePass[]
   reliabilitySnapshots ReliabilityScoreSnapshot[]
 
+  @@unique([id, institutionId])
+  @@index([institutionId])
   @@map("student_profiles")
 }
 
 // ─── HOD PROFILE ────────────────────────────────────────────────────────────
 
 model HodProfile {
-  id           String     @id @default(cuid())
-  userId       String     @unique
-  user         User       @relation(fields: [userId], references: [id])
-  name         String
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id])
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  name          String
+  departmentId  String
+  department    Department  @relation(fields: [departmentId], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   approvedPasses GatePass[] @relation("ApprovedBy")
 
+  @@unique([id, institutionId])
+  @@index([institutionId])
   @@map("hod_profiles")
 }
 
 // ─── GUARD PROFILE ──────────────────────────────────────────────────────────
 
 model GuardProfile {
-  id        String   @id @default(cuid())
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id])
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id])
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  name          String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   assignedGates GuardGateAssignment[]
   gateEvents    GateEvent[]
   shifts        GuardShift[]
 
+  @@unique([id, institutionId])
+  @@index([institutionId])
   @@map("guard_profiles")
 }
 
@@ -288,20 +312,24 @@ model Gate {
   shifts         GuardShift[]
 
   @@unique([institutionId, name])
+  @@unique([id, institutionId])
   @@map("gates")
 }
 
 // ─── GUARD ↔ GATE (many-to-many) ───────────────────────────────────────────
 
 model GuardGateAssignment {
-  id        String       @id @default(cuid())
-  guardId   String
-  guard     GuardProfile @relation(fields: [guardId], references: [id])
-  gateId    String
-  gate      Gate         @relation(fields: [gateId], references: [id])
-  createdAt DateTime     @default(now())
+  id            String       @id @default(cuid())
+  guardId       String
+  guard         GuardProfile @relation(fields: [guardId], references: [id])
+  gateId        String
+  gate          Gate         @relation(fields: [gateId], references: [id])
+  institutionId String
+  institution   Institution  @relation(fields: [institutionId], references: [id])
+  createdAt     DateTime     @default(now())
 
   @@unique([guardId, gateId])
+  @@index([institutionId])
   @@map("guard_gate_assignments")
 }
 
@@ -319,6 +347,7 @@ model ExitReason {
 
   gatePasses GatePass[]
 
+  @@unique([id, institutionId])
   @@map("exit_reasons")
 }
 
@@ -327,6 +356,8 @@ model ExitReason {
 model GatePass {
   id             String         @id @default(cuid())
   passNumber     String         @unique
+  institutionId  String
+  institution    Institution    @relation(fields: [institutionId], references: [id])
   studentId      String
   student        StudentProfile @relation(fields: [studentId], references: [id])
   reasonId       String
@@ -360,26 +391,31 @@ model GatePass {
   gateEvents        GateEvent[]
   emergencyOverride EmergencyOverride?
 
+  @@unique([id, institutionId])
   @@index([studentId, status])
   @@index([status, createdAt])
+  @@index([institutionId])
   @@map("gate_passes")
 }
 
 // ─── GATE EVENTS ────────────────────────────────────────────────────────────
 
 model GateEvent {
-  id        String        @id @default(cuid())
-  passId    String
-  pass      GatePass      @relation(fields: [passId], references: [id])
-  gateId    String
-  gate      Gate          @relation(fields: [gateId], references: [id])
-  guardId   String
-  guard     GuardProfile  @relation(fields: [guardId], references: [id])
-  eventType GateEventType
-  timestamp DateTime      @default(now())
-  method    String        @default("QR_SCAN")
+  id            String        @id @default(cuid())
+  passId        String
+  pass          GatePass      @relation(fields: [passId], references: [id])
+  gateId        String
+  gate          Gate          @relation(fields: [gateId], references: [id])
+  guardId       String
+  guard         GuardProfile  @relation(fields: [guardId], references: [id])
+  institutionId String
+  institution   Institution   @relation(fields: [institutionId], references: [id])
+  eventType     GateEventType
+  timestamp     DateTime      @default(now())
+  method        String        @default("QR_SCAN")
 
   @@index([passId, eventType])
+  @@index([institutionId])
   @@map("gate_events")
 }
 
@@ -413,33 +449,39 @@ model GuardShift {
 // ─── AUDIT LOG ──────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id         String      @id @default(cuid())
-  actorId    String
-  actor      User        @relation("AuditActor", fields: [actorId], references: [id])
-  action     AuditAction
-  targetId   String?
-  targetType String?
-  metadata   Json?
-  timestamp  DateTime    @default(now())
+  id            String      @id @default(cuid())
+  actorId       String
+  actor         User        @relation("AuditActor", fields: [actorId], references: [id])
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  action        AuditAction
+  targetId      String?
+  targetType    String?
+  metadata      Json?
+  timestamp     DateTime    @default(now())
 
   @@index([actorId, timestamp])
   @@index([action, timestamp])
+  @@index([institutionId])
   @@map("audit_logs")
 }
 
 // ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
 
 model Notification {
-  id        String   @id @default(cuid())
-  userId    String
-  title     String
-  body      String
-  type      String
-  data      Json?
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id            String      @id @default(cuid())
+  userId        String
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  title         String
+  body          String
+  type          String
+  data          Json?
+  read          Boolean     @default(false)
+  createdAt     DateTime    @default(now())
 
   @@index([userId, read, createdAt])
+  @@index([institutionId])
   @@map("notifications")
 }
 
@@ -495,14 +537,17 @@ model AllowancePolicy {
 // ─── EMERGENCY OVERRIDE ─────────────────────────────────────────────────────
 
 model EmergencyOverride {
-  id             String   @id @default(cuid())
-  gatePassId     String   @unique
-  gatePass       GatePass @relation(fields: [gatePassId], references: [id])
+  id             String      @id @default(cuid())
+  gatePassId     String      @unique
+  gatePass       GatePass    @relation(fields: [gatePassId], references: [id])
+  institutionId  String
+  institution    Institution @relation(fields: [institutionId], references: [id])
   overriddenById String
-  overriddenBy   User     @relation("OverrideActor", fields: [overriddenById], references: [id])
+  overriddenBy   User        @relation("OverrideActor", fields: [overriddenById], references: [id])
   justification  String // min 10 characters
-  createdAt      DateTime @default(now())
+  createdAt      DateTime    @default(now())
 
+  @@index([institutionId])
   @@map("emergency_overrides")
 }
 
@@ -535,11 +580,14 @@ model ReliabilityScoreSnapshot {
   id             String         @id @default(cuid())
   studentId      String
   student        StudentProfile @relation(fields: [studentId], references: [id])
+  institutionId  String
+  institution    Institution    @relation(fields: [institutionId], references: [id])
   score          Float // 0.0–5.0
   movementNumber Int // sequential movement count at time of snapshot
   computedAt     DateTime       @default(now())
 
   @@index([studentId, computedAt])
+  @@index([institutionId])
   @@map("reliability_score_snapshots")
 }
 

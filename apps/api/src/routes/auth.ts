@@ -258,6 +258,7 @@ export async function authRoutes(app: FastifyInstance) {
             name,
             enrollmentNo,
             departmentId,
+            institutionId: department.institutionId,
             program,
             semester,
             section,

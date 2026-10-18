@@ -173,6 +173,7 @@ export async function studentRoutes(app: FastifyInstance) {
     const gatePass = await prisma.gatePass.create({
       data: {
         passNumber,
+        institutionId: request.user.institutionId,
         studentId: student.id,
         reasonId: parsed.data.reasonId,
         customReason: parsed.data.customReason,
@@ -188,6 +189,7 @@ export async function studentRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId: request.user.institutionId,
         action: "PASS_REQUESTED",
         targetId: gatePass.id,
         targetType: "GatePass",
@@ -260,6 +262,7 @@ export async function studentRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId: request.user.institutionId,
         action: "PASS_CANCELLED",
         targetId: passId,
         targetType: "GatePass",

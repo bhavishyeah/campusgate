@@ -17,3 +17,4 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 export * from "@prisma/client";
 export type { PrismaClient } from "@prisma/client";
+export { withTenant } from "./with-tenant.js";

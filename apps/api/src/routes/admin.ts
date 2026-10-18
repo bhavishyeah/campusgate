@@ -426,6 +426,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "EMERGENCY_DECLARED",
         targetId: alert.id,
         targetType: "EmergencyAlert",
@@ -492,6 +493,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "EMERGENCY_RESOLVED",
         targetId: resolved.id,
         targetType: "EmergencyAlert",
@@ -586,6 +588,7 @@ export async function adminRoutes(app: FastifyInstance) {
         await tx.studentProfile.create({
           data: {
             userId: newUser.id,
+            institutionId,
             name,
             enrollmentNo,
             departmentId,
@@ -596,15 +599,15 @@ export async function adminRoutes(app: FastifyInstance) {
         });
       } else if (role === "HOD" && departmentId) {
         await tx.hodProfile.create({
-          data: { userId: newUser.id, name, departmentId },
+          data: { userId: newUser.id, institutionId, name, departmentId },
         });
       } else if (role === "GUARD") {
         const guard = await tx.guardProfile.create({
-          data: { userId: newUser.id, name },
+          data: { userId: newUser.id, institutionId, name },
         });
         if (gateIds && gateIds.length > 0) {
           await tx.guardGateAssignment.createMany({
-            data: gateIds.map((gateId) => ({ guardId: guard.id, gateId })),
+            data: gateIds.map((gateId) => ({ guardId: guard.id, gateId, institutionId })),
           });
         }
       }
@@ -615,6 +618,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "USER_CREATED",
         targetId: user.id,
         targetType: "User",
@@ -648,6 +652,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "USER_REACTIVATED",
         targetId: id,
         targetType: "User",
@@ -676,6 +681,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "USER_DEACTIVATED",
         targetId: id,
         targetType: "User",
@@ -703,6 +709,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "USER_REACTIVATED",
         targetId: id,
         targetType: "User",
@@ -769,6 +776,7 @@ export async function adminRoutes(app: FastifyInstance) {
                 enrollmentNo: data.enrollmentNo,
                 rollNumber: data.rollNumber,
                 departmentId: dept.id,
+                institutionId,
                 program: data.program,
                 semester: data.semester,
                 section: data.section,
@@ -789,6 +797,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "BULK_IMPORT",
         targetType: "User",
         metadata: { created: results.created, skipped: results.skipped },
@@ -964,6 +973,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "DEPARTMENT_CREATED",
         targetId: dept.id,
         targetType: "Department",
@@ -1141,6 +1151,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "GATE_CREATED",
         targetId: gate.id,
         targetType: "Gate",
@@ -1260,6 +1271,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "SHIFT_CREATED",
         targetId: shift.id,
         targetType: "GuardShift",
@@ -1292,6 +1304,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "REASON_CREATED",
         targetId: reason.id,
         targetType: "ExitReason",
@@ -1365,6 +1378,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "ALLOWANCE_POLICY_UPDATED",
         targetId: policy.id,
         targetType: "AllowancePolicy",
@@ -1419,6 +1433,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "INSTITUTION_CONFIG_UPDATED",
         targetId: config.id,
         targetType: "InstitutionConfig",
@@ -1491,6 +1506,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "ACADEMIC_CALENDAR_UPDATED",
         targetId: day.id,
         targetType: "AcademicCalendarDay",
@@ -1537,6 +1553,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "ACADEMIC_CALENDAR_UPDATED",
         targetId: existing.id,
         targetType: "AcademicCalendarDay",
@@ -1598,6 +1615,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "PASS_REVOKED",
         targetId: pass.id,
         targetType: "GatePass",
@@ -1639,12 +1657,13 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     const override = await prisma.emergencyOverride.create({
-      data: { gatePassId: passId, overriddenById: userId, justification },
+      data: { gatePassId: passId, institutionId, overriddenById: userId, justification },
     });
 
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "EMERGENCY_OVERRIDE",
         targetId: passId,
         targetType: "GatePass",

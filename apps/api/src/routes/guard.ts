@@ -125,6 +125,7 @@ export async function guardRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "SHIFT_STARTED",
         targetId: shift.id,
         targetType: "GuardShift",
@@ -175,6 +176,7 @@ export async function guardRoutes(app: FastifyInstance) {
     await prisma.auditLog.create({
       data: {
         actorId: userId,
+        institutionId,
         action: "SHIFT_ENDED",
         targetId: shift.id,
         targetType: "GuardShift",
@@ -245,6 +247,7 @@ export async function guardRoutes(app: FastifyInstance) {
           await prisma.auditLog.create({
             data: {
               actorId: pass.student.userId,
+              institutionId,
               action: "PASS_EXPIRED",
               targetId: pass.id,
               targetType: "GatePass",
@@ -414,6 +417,7 @@ export async function guardRoutes(app: FastifyInstance) {
         await tx.gateEvent.create({
           data: {
             passId: pass.id,
+            institutionId,
             gateId: parsed.data.gateId,
             guardId: guard.id,
             eventType: "EXIT",
@@ -428,6 +432,7 @@ export async function guardRoutes(app: FastifyInstance) {
       await prisma.auditLog.create({
         data: {
           actorId: userId,
+          institutionId,
           action: "GATE_EXIT",
           targetId: parsed.data.passId,
           targetType: "GatePass",
@@ -541,6 +546,7 @@ export async function guardRoutes(app: FastifyInstance) {
         await tx.gateEvent.create({
           data: {
             passId: pass.id,
+            institutionId,
             gateId: parsed.data.gateId,
             guardId: guard.id,
             eventType: "RETURN",
@@ -554,6 +560,7 @@ export async function guardRoutes(app: FastifyInstance) {
       await prisma.auditLog.create({
         data: {
           actorId: userId,
+          institutionId,
           action: "GATE_RETURN",
           targetId: parsed.data.passId,
           targetType: "GatePass",
@@ -600,7 +607,7 @@ export async function guardRoutes(app: FastifyInstance) {
               where: { studentId: pass.studentId, status: "COMPLETED" },
             });
 
-            await ReliabilityEngine.recordSnapshot(pass.studentId, score.overall, movementCount);
+            await ReliabilityEngine.recordSnapshot(pass.studentId, passInstitutionId, score.overall, movementCount);
           }
         } catch (err) {
           // Log but don't fail the request
