@@ -37,8 +37,22 @@ against project `vybsvmvcdmoomuoxvmbc`:
 
 | Purpose | Connection | Port | Prisma field |
 |---|---|---|---|
-| **App runtime** (many short-lived queries) | Transaction pooler (Supavisor) | 6543 | `DATABASE_URL` (+ **required** `?pgbouncer=true`) |
+| **App runtime** (many short-lived queries, tenant-scoped via `campass_app`) | Transaction pooler (Supavisor) | 6543 | `DATABASE_URL` (+ **required** `?pgbouncer=true`) |
 | **Migrations / DDL** (one long session) | Session pooler (IPv4 fallback for IPv6-only direct) | 5432 | `directUrl` |
+| **Privileged runtime** (auth-bootstrap + platform/Super-Admin reads, RLS-bypass `postgres`) | Session pooler | 5432 | `PRIVILEGED_DATABASE_URL` (B-2; falls back to `DIRECT_URL` then `DATABASE_URL` if unset) |
+
+> **⚠ KNOWN ISSUE (observed during B-2 live testing).** The privileged runtime client
+> uses the **session pooler on port 5432**, and the `authenticate` middleware calls it on
+> **every** request. On the current (IPv6-constrained) network, port 5432 is **slow and
+> intermittently unreachable** (6–12s response times, occasional `P1001 Can't reach
+> database server`), while the transaction pooler (6543) is consistently fast. Logins and
+> tenant-scoped reads succeed, but authenticated requests occasionally 500 on a 5432 blip.
+> **Mitigations to evaluate (later):** (a) route the privileged client's identity lookups
+> through a 6543-style pooled connection where session-level features aren't needed;
+> (b) add a short Prisma connection retry/backoff for P1001 on the privileged client;
+> (c) in production (Railway, not IPv6-constrained) confirm whether 5432 is reliable — this
+> may be a local-network artifact. Does NOT affect correctness or isolation; it is a
+> reliability/latency concern on this network.
 
 Prisma schema shape (target):
 
