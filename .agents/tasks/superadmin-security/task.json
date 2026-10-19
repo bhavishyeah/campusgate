@@ -1,0 +1,7 @@
+{
+  "task_id": "task-superadmin-security",
+  "task_description": "CAMPASS Phase 0 Super Admin & platform security: implement docs/superadmin-security.md sections 2, 4, 5, 6 exactly as the APPROVED design (.agents/tasks/superadmin-security/design.md). Adds a new Prisma migration (audit_events + support_grants + User MFA fields + RLS + append-only trigger + campass_app GRANT refresh), a shared audit-action catalogue + single recordAuditEvent writer with migration of all 28 existing audit_logs write sites, break-glass withSupportGrant on a campass_app NOBYPASSRLS per-access read-only transaction, real TOTP MFA + stateless step-up, audit explorer scopes, and extended escape/meta tests. Work on main, no worktree, app must keep working at every step, no push/deploy. B-1 and identity_rbac_b2 migration SQL FROZEN.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

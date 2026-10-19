@@ -1,0 +1,32 @@
+{
+  "project_type": "Turborepo monorepo (npm workspaces): apps/api (Fastify + Prisma backend), packages/db (Prisma schema + clients + withTenant), packages/shared (catalogues + zod), plus apps/web.",
+  "language": "TypeScript (NodeNext ESM). Import specifiers between local .ts files use the .js extension.",
+  "build_system": "npm workspaces + Turborepo. Root: `npm run build` runs `turbo build`. API: `cd apps/api && npm run build` = `prisma generate --schema=../../packages/db/prisma/schema.prisma && tsc`. Node >=20. Package manager npm@11.6.2.",
+  "test_framework": "Vitest 4 (globals enabled). apps/api/vitest.config.ts include = ['src/**/*.test.ts', 'src/**/*.property.test.ts']; *.integration.test.ts matches *.test.ts so it runs. Mocked suites mock @campusgate/db; the *.integration.test.ts suites hit LIVE Supabase.",
+  "build_command": "npm run build  (root, Turborepo). Also: cd apps/api && npm run build.",
+  "test_command": "cd apps/api && npx vitest run   (runs all 142 current tests incl. live-DB integration suites).",
+  "verification_instructions": "1) From packages/db apply the new migration: `cd packages/db && npx prisma migrate dev --name superadmin_security` (DDL runs as postgres via DIRECT_URL against live Supabase), then `npx prisma generate`. 2) Root `npm run build` must pass. 3) `cd apps/api && npx vitest run` must keep ALL 142 baseline tests green plus the new tests. 4) REQUIRED live smoke: build then `node apps/api/dist/server.js` against Supabase and confirm startup + a grant create/access/accessed audit round-trip. Integration suites require apps/api/.env (campass_app, 6543) and packages/db/.env (DIRECT_URL postgres, 5432).",
+  "snapshot_or_generated_files": "Prisma client is generated (not committed) by `prisma generate` during build. A new migration directory packages/db/prisma/migrations/<timestamp>_superadmin_security/migration.sql is created and committed. No other generated-but-committed files.",
+  "environment_constraints": "Work on `main`, NO worktree. Do NOT push or deploy. Never commit .env (apps/api/.env, packages/db/.env hold live Supabase secrets). B-1 (20261018110658_tenancy_isolation_rls) and identity_rbac_b2 (20261018171747_identity_rbac_b2) migration SQL are FROZEN — never edit; add a NEW migration only. campass_app must NEVER be granted BYPASSRLS. Commit specific files only; clean up temp scripts. Windows/PowerShell host.",
+  "contribution_requirements": "Keep the app building and runnable at every feature boundary. Preserve live tenancy (withTenant/RLS) + RBAC (authz engine requirePermission/can/requireModuleActive), the Phase-0 compatibility shim, and the legacy `role` JWT claim. New tenant-readable tables follow the tenancy checklist + escape-suite coverage. Reuse the existing authz engine + shared catalogues; add exactly one new permission key (admin.support.revoke). Do NOT build module entitlement/activation or any section 9 deferred item.",
+  "key_patterns": "Hand-authored migrations with ordered sections, DO $$ RLS blocks, and a guarded `IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='campass_app')` GRANT refresh at the end (see the two existing migrations). RLS policies use current_setting('app.current_institution_id', true); new policies wrap it in nullif(..., '') to fail-closed on empty-string. Audit writes happen INSIDE the tenant withTenant tx (campass_app has INSERT on audit_events; UPDATE/DELETE revoked). privilegedPrisma = postgres role (BYPASSRLS) for platform/pre-tenant/cross-tenant. request.auth is populated once by the top-level authenticate hook; handlers read userId/roles[0]/membershipId/institutionId from it (legacy request.user.role is the role-snapshot fallback). The catalogue-sync meta-test statically parses migration SQL seed blocks delimited by `INSERT INTO \"permissions\"`...`ON CONFLICT` and `INSERT INTO \"role_permissions\"`...`AS m(`.",
+  "relevant_files": [
+    ".agents/tasks/superadmin-security/design.md  (APPROVED — source of truth)",
+    ".agents/tasks/superadmin-security/impl-plan.md  (ordered plan; mirrors these FEATs)",
+    "docs/superadmin-security.md (sections 2,4,5,6), docs/tenancy.md (RLS + 5.4 break-glass), docs/identity-rbac.md, docs/database.md",
+    "packages/db/prisma/schema.prisma (models + AuditAction enum: 28 values)",
+    "packages/db/src/index.ts (prisma, privilegedPrisma, withTenant — add breakGlassPrisma + withSupportGrant here)",
+    "packages/db/prisma/migrations/20261018110658_tenancy_isolation_rls/migration.sql (FROZEN pattern reference)",
+    "packages/db/prisma/migrations/20261018171747_identity_rbac_b2/migration.sql (FROZEN pattern + seed-block markers reference)",
+    "packages/shared/src/permissions.ts (PERMISSIONS, ROLE_PERMISSIONS), packages/shared/src/index.ts (barrel)",
+    "apps/api/src/services/authz.ts, apps/api/src/services/authz-engine.ts (requirePermission/can/requireModuleActive)",
+    "apps/api/src/middleware/auth.ts (authenticate, requireSuperAdmin, RequestAuth, SUPER_ADMIN no request.tenant)",
+    "apps/api/src/routes/platform.ts (behind requireSuperAdmin; add grant endpoints + MFA gate + platform audit explorer)",
+    "apps/api/src/routes/admin.ts (17 audit writes incl. EMERGENCY_OVERRIDE@1790, GET /audit-logs@~1810), guard.ts (5), hod.ts (4 incl. EMERGENCY_OVERRIDE@219), student.ts (2)",
+    "apps/api/src/services/pass-lifecycle.ts (typed on AuditAction; revoke filter uses PASS_REVOKED)",
+    "apps/api/src/routes/__tests__/tenant-escape.integration.test.ts + helpers/tenant-escape-setup.ts (RLS_TABLES, meta-test, live-DB setup)",
+    "apps/api/src/services/__tests__/catalogue-sync.test.ts (pinned to identity_rbac_b2 MIGRATION_DIR — GENERALIZE to a union)",
+    "apps/api/package.json (add otplib + qrcode pinned; qrcode already in node_modules, otplib not)"
+  ],
+  "directory_structure": "apps/api/src: routes/ (admin.ts, guard.ts, hod.ts, student.ts, platform.ts, auth.ts, mfa.ts[new]), middleware/ (auth.ts, step-up.ts[new]), services/ (authz.ts, authz-engine.ts, audit.ts[new], support-grant.ts[new], mfa.ts[new], pass-lifecycle.ts), routes/__tests__/ (integration suites + helpers/), services/__tests__/ (unit + catalogue-sync). packages/db: prisma/schema.prisma, prisma/migrations/, src/index.ts. packages/shared/src: permissions.ts, audit-actions.ts[new], constants.ts, validation.ts, index.ts. docs/ holds the specs."
+}

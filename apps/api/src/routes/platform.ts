@@ -3,9 +3,24 @@ import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
 import { privilegedPrisma, InstitutionStatus } from "@campusgate/db";
 import { requireSuperAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../services/authz-engine.js";
+import { requirePlatformMfa, requireStepUp } from "../middleware/step-up.js";
+import { recordAuditEvent } from "../services/audit.js";
+import {
+  createSupportGrant,
+  createSupportGrantSchema,
+  listSupportGrants,
+  revokeSupportGrantAsPlatform,
+  breakGlassReadTenant,
+  readPlatformAuditEvents,
+} from "../services/support-grant.js";
 
 export async function platformRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireSuperAdmin());
+  // Mandatory-MFA gate for platform accounts, AFTER requireSuperAdmin (design
+  // §5.3). A platform.* holder without mfaEnabled is 403'd on every platform
+  // route except the MFA-enrollment endpoints (which live on the mfa plugin).
+  app.addHook("preHandler", requirePlatformMfa());
 
   // Platform overview stats
   app.get("/stats", async (_request, reply) => {
@@ -148,4 +163,121 @@ export async function platformRoutes(app: FastifyInstance) {
 
     return reply.send(updated);
   });
+
+  // ─── SUPPORT GRANTS (break-glass) ──────────────────────────────────────────
+
+  const actorOf = (request: {
+    auth?: { userId: string; roles: string[] };
+    user: { userId: string; role: string };
+    id: string;
+  }) => ({
+    userId: request.auth?.userId ?? request.user.userId,
+    roleKey: request.auth?.roles[0] ?? request.user.role,
+    requestRef: request.id,
+  });
+
+  // Create a grant — requires platform.support.grant AND a fresh step-up token
+  // bound to action class support_grant.create (design §7.1).
+  app.post(
+    "/support-grants",
+    {
+      preHandler: [
+        requirePermission("platform.support.grant"),
+        requireStepUp("support_grant.create"),
+      ],
+    },
+    async (request, reply) => {
+      const parsed = createSupportGrantSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid body", details: parsed.error.flatten() });
+      }
+
+      const result = await createSupportGrant(parsed.data, actorOf(request));
+      if (!result.ok) {
+        return reply.status(404).send({ error: "Institution not found" });
+      }
+      return reply.status(201).send(result.grant);
+    },
+  );
+
+  // Revoke a grant (platform path; lower-risk than create, so no step-up).
+  app.delete(
+    "/support-grants/:id",
+    { preHandler: [requirePermission("platform.support.grant")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { reason } = (request.body ?? {}) as { reason?: string };
+      const updated = await revokeSupportGrantAsPlatform(id, reason, actorOf(request));
+      if (!updated) return reply.status(404).send({ error: "Support grant not found" });
+      return reply.send(updated);
+    },
+  );
+
+  // List grants (platform operator view) + opportunistic expiry.
+  app.get(
+    "/support-grants",
+    { preHandler: [requirePermission("platform.support.grant")] },
+    async (request, reply) => {
+      const { institutionId, status } = request.query as {
+        institutionId?: string;
+        status?: string;
+      };
+      const grants = await listSupportGrants(
+        {
+          institutionId,
+          status: status as Parameters<typeof listSupportGrants>[0]["status"],
+        },
+        actorOf(request),
+      );
+      return reply.send(grants);
+    },
+  );
+
+  // Break-glass read proxy — the granted tenant's recent audit_events + passes.
+  app.get(
+    "/support-grants/:id/tenant/overview",
+    { preHandler: [requirePermission("platform.support.grant")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const result = await breakGlassReadTenant(id, actorOf(request));
+      if (!result.ok) {
+        if (result.reason === "auditWriteFailed") {
+          return reply.status(500).send({ error: "Audit write failed" });
+        }
+        if (result.reason === "institutionSuspended") {
+          return reply.status(403).send({ error: "Institution suspended" });
+        }
+        return reply.status(403).send({ error: "Break-glass access denied" });
+      }
+      return reply.send(result.data);
+    },
+  );
+
+  // Super-Admin audit explorer: scope=platform (institutionId null) or
+  // scope=grant (validate ACTIVE grant, filter to its tenant).
+  app.get(
+    "/audit-events",
+    { preHandler: [requirePermission("platform.security.respond")] },
+    async (request, reply) => {
+      const { scope = "platform", grantId, limit } = request.query as {
+        scope?: "platform" | "grant";
+        grantId?: string;
+        limit?: string;
+      };
+      if (scope !== "platform" && scope !== "grant") {
+        return reply.status(400).send({ error: "scope must be platform or grant" });
+      }
+      const result = await readPlatformAuditEvents(
+        { scope, grantId, limit: limit ? parseInt(limit, 10) : undefined },
+        actorOf(request),
+      );
+      if (!result.ok) {
+        if (result.reason === "missingGrantId") {
+          return reply.status(400).send({ error: "grantId is required for scope=grant" });
+        }
+        return reply.status(403).send({ error: "Grant access denied" });
+      }
+      return reply.send({ events: result.events });
+    },
+  );
 }

@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import websocket from "@fastify/websocket";
 import { authRoutes } from "./routes/auth.js";
+import { mfaRoutes } from "./routes/mfa.js";
 import { studentRoutes } from "./routes/student.js";
 import { hodRoutes } from "./routes/hod.js";
 import { guardRoutes } from "./routes/guard.js";
@@ -37,6 +38,7 @@ await app.register(websocket);
 
 // Routes
 await app.register(authRoutes, { prefix: "/api/auth" });
+await app.register(mfaRoutes, { prefix: "/api/auth/mfa" });
 await app.register(studentRoutes, { prefix: "/api/student" });
 await app.register(hodRoutes, { prefix: "/api/hod" });
 await app.register(guardRoutes, { prefix: "/api/guard" });

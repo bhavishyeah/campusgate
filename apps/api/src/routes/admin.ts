@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
 import ExcelJS from "exceljs";
-import { withTenant } from "@campusgate/db";
+import { withTenant, privilegedPrisma } from "@campusgate/db";
 import {
   createUserSchema,
   bulkImportStudentSchema,
@@ -1921,11 +1921,18 @@ export async function adminRoutes(app: FastifyInstance) {
       where.action = actionKey;
     }
 
-    const [logs, total] = await withTenant(institutionId, (tx) =>
+    // Read the audit rows under RLS WITHOUT a relational include on actorUser.
+    // A break-glass `.accessed` row's actor is a PLATFORM user whose `users` row
+    // is invisible to this tenant's RLS; a required-relation `include` would make
+    // Prisma throw when that row is joined (the actor resolves to null), which
+    // would 500 exactly the break-glass-transparency rows the tenant MUST see
+    // (design §4.4). Instead select the rows under RLS, then resolve the actor
+    // summary separately on privilegedPrisma and attach it, preserving the
+    // existing { logs: [{ ...row, actorUser }], pagination } response shape.
+    const [rows, total] = await withTenant(institutionId, (tx) =>
       Promise.all([
         tx.auditEvent.findMany({
           where,
-          include: { actorUser: { select: { id: true, email: true, role: true } } },
           orderBy: { timestamp: "desc" },
           skip: (pageNum - 1) * limitNum,
           take: limitNum,
@@ -1934,9 +1941,81 @@ export async function adminRoutes(app: FastifyInstance) {
       ]),
     );
 
+    const actorIds = [...new Set(rows.map((r) => r.actorUserId))];
+    const actors = actorIds.length
+      ? await privilegedPrisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, email: true, role: true },
+        })
+      : [];
+    const actorById = new Map(actors.map((a) => [a.id, a]));
+    const logs = rows.map((r) => ({ ...r, actorUser: actorById.get(r.actorUserId) ?? null }));
+
     return reply.send({
       logs,
       pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
     });
   });
+
+  // ─── SUPPORT GRANTS (tenant transparency + revoke) ─────────────────────────
+
+  // Tenant admin revokes a break-glass grant into THEIR institution (design
+  // §7.2). Gated on the dedicated write permission admin.support.revoke (NOT the
+  // read key). The grant is loaded on privilegedPrisma (support_grants is a
+  // platform table; campass_app has SELECT only, no write); a grant into another
+  // tenant returns 404 (avoid existence disclosure).
+  app.post(
+    "/support-grants/:id/revoke",
+    { preHandler: [requirePermission("admin.support.revoke")] },
+    async (request, reply) => {
+      const { userId, institutionId } = request.user;
+      const { id } = request.params as { id: string };
+      const { reason } = (request.body ?? {}) as { reason?: string };
+
+      const grant = await privilegedPrisma.supportGrant.findUnique({ where: { id } });
+      if (!grant || grant.institutionId !== institutionId) {
+        return reply.status(404).send({ error: "Support grant not found" });
+      }
+
+      const updated = await privilegedPrisma.supportGrant.update({
+        where: { id },
+        data: {
+          status: "REVOKED",
+          revokedAt: new Date(),
+          revokedByUserId: userId,
+          revokedReason: reason ?? null,
+        },
+      });
+
+      await recordAuditEvent({
+        action: "platform.support_grant.revoked",
+        result: "SUCCESS",
+        actorUserId: userId,
+        actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+        institutionId,
+        actorMembershipId: request.auth?.membershipId ?? null,
+        supportGrantId: grant.id,
+        resourceType: "SupportGrant",
+        resourceId: grant.id,
+        requestRef: request.id,
+      });
+
+      return reply.send(updated);
+    },
+  );
+
+  // Tenant admin reads grants affecting THEIR institution (design §7.3). Read is
+  // correctly gated on the READ permission. Reads via withTenant so the
+  // support_grants_tenant_read RLS policy scopes to the caller's tenant.
+  app.get(
+    "/support-grants",
+    { preHandler: [requirePermission("campus_movement.audit.view")] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const grants = await withTenant(institutionId, (tx) =>
+        tx.supportGrant.findMany({ orderBy: { createdAt: "desc" } }),
+      );
+      return reply.send(grants);
+    },
+  );
 }

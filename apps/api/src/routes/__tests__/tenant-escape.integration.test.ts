@@ -16,6 +16,8 @@ import {
   disconnect,
   seeded,
   RLS_TABLES,
+  EXPECTED_POLICIES,
+  DEFAULT_POLICIES,
   PREFIX,
 } from "./helpers/tenant-escape-setup.js";
 
@@ -209,14 +211,15 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       RLS_TABLES as unknown as string[],
     );
 
+    // Per-table expected-policy map (design §9.3): the two FEAT-003 tables carry
+    // their own load-bearing policies, everything else the standard pair. No
+    // inert *_platform_all policy is asserted (none is created).
     for (const table of RLS_TABLES) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
-      expect(names, `${table} missing tenant_isolation_select`).toContain(
-        "tenant_isolation_select",
-      );
-      expect(names, `${table} missing tenant_isolation_modify`).toContain(
-        "tenant_isolation_modify",
-      );
+      const expected = EXPECTED_POLICIES[table] ?? DEFAULT_POLICIES;
+      for (const policy of expected) {
+        expect(names, `${table} missing ${policy}`).toContain(policy);
+      }
     }
   }, 60_000);
 });

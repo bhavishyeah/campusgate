@@ -248,6 +248,10 @@ export async function cleanup(): Promise<void> {
   // B-2 tenant-owned RBAC tables first (child -> parent), so the new RESTRICT
   // composite FKs (membership_roles -> institution_memberships -> users) do not
   // block the user/department/institution deletes below.
+  // NOTE: the escape suite itself seeds no audit_events / support_grants rows
+  // (the FEAT-003 superadmin-security integration suite is self-contained under
+  // its own prefix and cleans up its own rows). Nothing to delete here for the
+  // two new tables.
   await withRetry(() => adminClient.membershipRole.deleteMany({ where }));
   await withRetry(() => adminClient.institutionMembership.deleteMany({ where }));
   await withRetry(() => adminClient.gateEvent.deleteMany({ where }));
@@ -325,4 +329,25 @@ export const RLS_TABLES = [
   "audit_logs",
   "institution_memberships",
   "membership_roles",
+  // FEAT-003 new tables (design §9.3).
+  "audit_events",
+  "support_grants",
+] as const;
+
+/**
+ * Per-table expected RLS policy-name set (design §9.3). The standard tenant pair
+ * is {tenant_isolation_select, tenant_isolation_modify}; the two FEAT-003 tables
+ * are special cases. NO inert *_platform_all TO-postgres policy is listed (they
+ * are not created — a BYPASSRLS role ignores them). Only load-bearing policies
+ * that bind campass_app appear here.
+ */
+export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
+  audit_events: ["tenant_isolation_select", "audit_events_tenant_insert"],
+  support_grants: ["support_grants_tenant_read"],
+};
+
+/** The default policy pair every non-special table must carry. */
+export const DEFAULT_POLICIES = [
+  "tenant_isolation_select",
+  "tenant_isolation_modify",
 ] as const;

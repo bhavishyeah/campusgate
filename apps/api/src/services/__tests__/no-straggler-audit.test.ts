@@ -31,6 +31,10 @@ function tsSourceFiles(root: string): string[] {
       if (!entry.endsWith(".ts")) continue;
       // Exclude test files: a mocked auditLog.create spy there is legitimate.
       if (entry.includes(".test.ts") || entry.includes(".property.test.ts")) continue;
+      // Exclude test-infrastructure helpers under any __tests__ directory: their
+      // setup/teardown legitimately deletes rows (e.g. the escape-suite cleanup
+      // removing seeded audit_events) and is not a production write site.
+      if (full.split(/[\\/]/).includes("__tests__")) continue;
       out.push(full);
     }
   }
