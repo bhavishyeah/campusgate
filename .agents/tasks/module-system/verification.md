@@ -149,3 +149,42 @@ restored to `false`; all temp scripts deleted.
   routes are permission-gated only (not self-gated). `GET /admin/support-grants`
   carve-out left ungated. No force-activate/bypass path exists.
 - `.env` files left untouched and will NOT be committed.
+
+## 7. Iteration 2 — review finding fix (blocking)
+
+Finding (`impl-review.json`): two operational `campus_movement.*` admin routes
+carried `requirePermission` but not `requireModuleActive("campus_movement")`, so a
+suspended `campus_movement` still let an admin revoke passes and issue emergency
+overrides — a partial-enforcement hole. The equivalent HOD routes were already
+gated, so this was an inconsistency, not a design question.
+
+Fix (behavior-preserving relative to the approved design — these routes are in the
+`campus_movement.*` namespace and §7.3/A6 require the guard; they are not the
+`GET /admin/support-grants` carve-out):
+
+- `apps/api/src/routes/admin.ts` — added `requireModuleActive("campus_movement")`
+  after `requirePermission(...)` in the `preHandler` arrays of
+  `POST /passes/:passId/revoke` (`campus_movement.pass.revoke`, ~L1768) and
+  `POST /emergency-override` (`campus_movement.pass.override`, ~L1857).
+- `apps/api/src/routes/__tests__/admin-module-suspended.integration.test.ts` (NEW,
+  3 tests) — pins the wiring with the mocked-`@campusgate/db` pattern: with
+  `institutionModule.findUnique → { state: "SUSPENDED" }`, both routes return
+  **403** `{ error: "Module not active: campus_movement" }` and the guard fires
+  BEFORE the handler (no `gatePass`/`emergencyOverride` prisma call happens); with
+  `state: "ACTIVE"` both routes pass the guard through to the handler.
+
+Re-verification (all run on `main`, all exited 0):
+
+```
+npm ci                                                             # 786 pkgs, OK
+cd packages/shared && npx tsc                                      # OK
+(root) npx prisma generate --schema=packages/db/prisma/schema.prisma   # OK
+cd apps/api && npx tsc                                             # OK
+(root) npm run build   # turbo -> Tasks: 3 successful, 3 total
+cd apps/api && npx vitest run
+# -> Test Files  26 passed (26)
+# ->      Tests  214 passed (214)   (was 211; +3 for the new pin suite)
+```
+
+No new dependency added; no schema/migration/seed change in this iteration (the
+live migration + backfill from §1 remain applied). `.env` files untouched.

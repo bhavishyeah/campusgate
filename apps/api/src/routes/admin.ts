@@ -1765,7 +1765,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ADMIN PASS REVOCATION ────────────────────────────────────────────────
-  app.post("/passes/:passId/revoke", { preHandler: [requirePermission("campus_movement.pass.revoke")] }, async (request, reply) => {
+  app.post("/passes/:passId/revoke", { preHandler: [requirePermission("campus_movement.pass.revoke"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
     const { reason } = request.body as { reason?: string };
@@ -1854,7 +1854,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── ADMIN EMERGENCY OVERRIDE ─────────────────────────────────────────────
-  app.post("/emergency-override", { preHandler: [requirePermission("campus_movement.pass.override")] }, async (request, reply) => {
+  app.post("/emergency-override", { preHandler: [requirePermission("campus_movement.pass.override"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId, justification } = request.body as { passId: string; justification: string };
 
