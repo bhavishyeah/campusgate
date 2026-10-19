@@ -8,6 +8,7 @@ import { notifyDepartmentHods } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import { getStudentInTenant } from "../services/authz.js";
+import { recordAuditEvent } from "../services/audit.js";
 import { buildPassTimeline, computeOutsideDurationMinutes } from "../services/pass-lifecycle.js";
 
 export async function studentRoutes(app: FastifyInstance) {
@@ -211,16 +212,21 @@ export async function studentRoutes(app: FastifyInstance) {
       });
 
       // Create audit log
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.requested",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_REQUESTED",
-          targetId: gatePass.id,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: gatePass.id,
+          requestRef: request.id,
           metadata: { passNumber: gatePass.passNumber },
         },
-      });
+        tx,
+      );
 
       // Notify HODs in student's department
       await notifyDepartmentHods(
@@ -298,15 +304,20 @@ export async function studentRoutes(app: FastifyInstance) {
         data: { status: "CANCELLED" },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.cancelled",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_CANCELLED",
-          targetId: passId,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: passId,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return { updated };
     });
@@ -387,11 +398,20 @@ export async function studentRoutes(app: FastifyInstance) {
 
       if (!pass) return { notFoundPass: true as const };
 
-      const logs = await tx.auditLog.findMany({
+      const logs = await tx.auditEvent.findMany({
         where: {
-          targetType: "GatePass",
-          targetId: pass.id,
-          action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          action: {
+            in: [
+              "campus_movement.pass.requested",
+              "campus_movement.pass.approved",
+              "campus_movement.pass.rejected",
+              "campus_movement.pass.revoked",
+              "campus_movement.pass.cancelled",
+              "campus_movement.pass.expired",
+            ],
+          },
         },
         orderBy: { timestamp: "asc" },
       });

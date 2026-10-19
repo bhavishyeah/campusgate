@@ -1,4 +1,4 @@
-import type { PassStatus, AuditAction } from "@campusgate/db";
+import type { PassStatus, AuditResult } from "@campusgate/db";
 
 type GateEventLike = {
   eventType: "EXIT" | "RETURN";
@@ -7,7 +7,8 @@ type GateEventLike = {
 };
 
 type AuditLogLike = {
-  action: AuditAction;
+  action: string;
+  result?: AuditResult;
   timestamp: Date;
   metadata?: any;
 };
@@ -92,7 +93,7 @@ export function buildPassTimeline(pass: PassLike, logs: AuditLogLike[]): Timelin
 
   if (pass.status === "REVOKED") {
     const revokeLog = logs
-      .filter((l) => l.action === "PASS_REVOKED")
+      .filter((l) => l.action === "campus_movement.pass.revoked")
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
 
     items.push({

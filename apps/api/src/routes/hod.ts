@@ -8,6 +8,7 @@ import { notifyUser } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import { getHodInTenant } from "../services/authz.js";
+import { recordAuditEvent } from "../services/audit.js";
 import { buildPassTimeline, computeOutsideDurationMinutes } from "../services/pass-lifecycle.js";
 
 export async function hodRoutes(app: FastifyInstance) {
@@ -216,16 +217,21 @@ export async function hodRoutes(app: FastifyInstance) {
       });
 
       // Create audit log entry (Req 5.3)
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.override",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "EMERGENCY_OVERRIDE",
-          targetId: passId,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: passId,
+          requestRef: request.id,
           metadata: { justification, studentId: pass.studentId },
         },
-      });
+        tx,
+      );
 
       return { override };
     });
@@ -284,16 +290,21 @@ export async function hodRoutes(app: FastifyInstance) {
       });
 
       // Audit
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.approved",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_APPROVED",
-          targetId: pass.id,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          requestRef: request.id,
           metadata: { studentId: pass.studentId, passNumber: pass.passNumber },
         },
-      });
+        tx,
+      );
 
       // Notify student
       await notifyUser(
@@ -356,16 +367,21 @@ export async function hodRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.rejected",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_REJECTED",
-          targetId: pass.id,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          requestRef: request.id,
           metadata: { reason: parsed.data.rejectionReason },
         },
-      });
+        tx,
+      );
 
       // Notify student
       await notifyUser(
@@ -441,20 +457,25 @@ export async function hodRoutes(app: FastifyInstance) {
         qrExpiresAt: null,
       };
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.revoked",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_REVOKED",
-          targetId: pass.id,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          requestRef: request.id,
           metadata: {
             reason: parsed.data.reason,
             previousStatus,
             newStatus: "REVOKED",
           },
         },
-      });
+        tx,
+      );
 
       await notifyUser(
         pass.student.userId,
@@ -504,11 +525,20 @@ export async function hodRoutes(app: FastifyInstance) {
 
       if (!pass) return { notFoundPass: true as const };
 
-      const logs = await tx.auditLog.findMany({
+      const logs = await tx.auditEvent.findMany({
         where: {
-          targetType: "GatePass",
-          targetId: pass.id,
-          action: { in: ["PASS_REQUESTED", "PASS_APPROVED", "PASS_REJECTED", "PASS_REVOKED", "PASS_CANCELLED", "PASS_EXPIRED"] },
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          action: {
+            in: [
+              "campus_movement.pass.requested",
+              "campus_movement.pass.approved",
+              "campus_movement.pass.rejected",
+              "campus_movement.pass.revoked",
+              "campus_movement.pass.cancelled",
+              "campus_movement.pass.expired",
+            ],
+          },
         },
         orderBy: { timestamp: "asc" },
       });

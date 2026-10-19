@@ -11,9 +11,13 @@ import {
   resolveEmergencySchema,
   updateInstitutionConfigSchema,
   upsertAcademicCalendarDaySchema,
+  AUDIT_ACTION_KEY_SET,
+  LEGACY_AUDIT_ACTION_MAP,
+  type LegacyAuditAction,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission } from "../services/authz-engine.js";
+import { recordAuditEvent } from "../services/audit.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import {
   notifyUser,
@@ -434,20 +438,25 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.emergency.declared",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "EMERGENCY_DECLARED",
-          targetId: alert.id,
-          targetType: "EmergencyAlert",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "EmergencyAlert",
+          resourceId: alert.id,
+          requestRef: request.id,
           metadata: {
             type: alert.type,
             title: alert.title,
             affectedArea: alert.affectedArea,
           },
         },
-      });
+        tx,
+      );
 
       await notifyInstitution(
         institutionId,
@@ -508,18 +517,23 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.emergency.resolved",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "EMERGENCY_RESOLVED",
-          targetId: resolved.id,
-          targetType: "EmergencyAlert",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "EmergencyAlert",
+          resourceId: resolved.id,
+          requestRef: request.id,
           metadata: {
             resolutionNote: parsed.data.resolutionNote,
           },
         },
-      });
+        tx,
+      );
 
       await notifyInstitution(
         institutionId,
@@ -644,16 +658,21 @@ export async function adminRoutes(app: FastifyInstance) {
         }
       }
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.user.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "USER_CREATED",
-          targetId: newUser.id,
-          targetType: "User",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "User",
+          resourceId: newUser.id,
+          requestRef: request.id,
           metadata: { role, email },
         },
-      });
+        tx,
+      );
 
       return { user: newUser };
     });
@@ -684,16 +703,21 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { accountStatus: "ACTIVE" },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.user.reactivated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "USER_REACTIVATED",
-          targetId: id,
-          targetType: "User",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "User",
+          resourceId: id,
+          requestRef: request.id,
           metadata: { reason: "registration_approved" },
         },
-      });
+        tx,
+      );
 
       return { ok: true as const };
     });
@@ -719,15 +743,20 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { accountStatus: "INACTIVE" },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.user.deactivated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "USER_DEACTIVATED",
-          targetId: id,
-          targetType: "User",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "User",
+          resourceId: id,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return { ok: true as const };
     });
@@ -753,15 +782,20 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { accountStatus: "ACTIVE" },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.user.reactivated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "USER_REACTIVATED",
-          targetId: id,
-          targetType: "User",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "User",
+          resourceId: id,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return { ok: true as const };
     });
@@ -849,15 +883,20 @@ export async function adminRoutes(app: FastifyInstance) {
         }
       }
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.students.imported",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "BULK_IMPORT",
-          targetType: "User",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "User",
+          requestRef: request.id,
           metadata: { created: results.created, skipped: results.skipped },
         },
-      });
+        tx,
+      );
     });
 
     return reply.send(results);
@@ -1033,15 +1072,20 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { name, code, institutionId },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.department.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "DEPARTMENT_CREATED",
-          targetId: created.id,
-          targetType: "Department",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "Department",
+          resourceId: created.id,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return created;
     });
@@ -1227,15 +1271,20 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { name, location, institutionId },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.gate.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "GATE_CREATED",
-          targetId: created.id,
-          targetType: "Gate",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "Gate",
+          resourceId: created.id,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return created;
     });
@@ -1348,16 +1397,21 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.shift.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "SHIFT_CREATED",
-          targetId: shift.id,
-          targetType: "GuardShift",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GuardShift",
+          resourceId: shift.id,
+          requestRef: request.id,
           metadata: { guardId, gateId, scheduledStartAt, scheduledEndAt },
         },
-      });
+        tx,
+      );
 
       return { shift };
     });
@@ -1391,15 +1445,20 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { label, requiresNote: requiresNote || false, institutionId },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.reason.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "REASON_CREATED",
-          targetId: created.id,
-          targetType: "ExitReason",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "ExitReason",
+          resourceId: created.id,
+          requestRef: request.id,
         },
-      });
+        tx,
+      );
 
       return created;
     });
@@ -1471,16 +1530,21 @@ export async function adminRoutes(app: FastifyInstance) {
       });
 
       // Audit
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.allowance_policy.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "ALLOWANCE_POLICY_UPDATED",
-          targetId: upserted.id,
-          targetType: "AllowancePolicy",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AllowancePolicy",
+          resourceId: upserted.id,
+          requestRef: request.id,
           metadata: body,
         },
-      });
+        tx,
+      );
 
       return upserted;
     });
@@ -1532,16 +1596,21 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.institution_config.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "INSTITUTION_CONFIG_UPDATED",
-          targetId: upserted.id,
-          targetType: "InstitutionConfig",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "InstitutionConfig",
+          resourceId: upserted.id,
+          requestRef: request.id,
           metadata: payload,
         },
-      });
+        tx,
+      );
 
       return upserted;
     });
@@ -1611,16 +1680,21 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.academic_calendar.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "ACADEMIC_CALENDAR_UPDATED",
-          targetId: upserted.id,
-          targetType: "AcademicCalendarDay",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicCalendarDay",
+          resourceId: upserted.id,
+          requestRef: request.id,
           metadata: { date: upserted.date, dayType: upserted.dayType },
         },
-      });
+        tx,
+      );
 
       return upserted;
     });
@@ -1660,16 +1734,21 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "admin.academic_calendar.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "ACADEMIC_CALENDAR_UPDATED",
-          targetId: existing.id,
-          targetType: "AcademicCalendarDay",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicCalendarDay",
+          resourceId: existing.id,
+          requestRef: request.id,
           metadata: { deleted: true, date: normalizedDate },
         },
-      });
+        tx,
+      );
 
       return { ok: true as const };
     });
@@ -1726,20 +1805,25 @@ export async function adminRoutes(app: FastifyInstance) {
         qrExpiresAt: null,
       };
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.revoked",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "PASS_REVOKED",
-          targetId: pass.id,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: pass.id,
+          requestRef: request.id,
           metadata: {
             reason: reason.trim(),
             previousStatus,
             newStatus: "REVOKED",
           },
         },
-      });
+        tx,
+      );
 
       await notifyUser(
         pass.student.userId,
@@ -1787,16 +1871,21 @@ export async function adminRoutes(app: FastifyInstance) {
         data: { gatePassId: passId, institutionId, overriddenById: userId, justification },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.pass.override",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "EMERGENCY_OVERRIDE",
-          targetId: passId,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: passId,
+          requestRef: request.id,
           metadata: { justification, studentId: pass.studentId },
         },
-      });
+        tx,
+      );
 
       return { override };
     });
@@ -1816,21 +1905,32 @@ export async function adminRoutes(app: FastifyInstance) {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
 
-    const where: any = {
-      actor: { institutionId },
-    };
-    if (action) where.action = action;
+    // Rely on RLS (tenant_isolation_select: institutionId = GUC) for tenant
+    // scoping under withTenant — NO actor.institutionId join (design §4.4): the
+    // actor join would hide break-glass rows whose actor is a PLATFORM user.
+    const where: any = {};
+    if (action) {
+      let actionKey: string | undefined;
+      if (AUDIT_ACTION_KEY_SET.has(action)) {
+        actionKey = action;
+      } else if (action in LEGACY_AUDIT_ACTION_MAP) {
+        actionKey = LEGACY_AUDIT_ACTION_MAP[action as LegacyAuditAction];
+      } else {
+        return reply.status(400).send({ error: "unknown action filter" });
+      }
+      where.action = actionKey;
+    }
 
     const [logs, total] = await withTenant(institutionId, (tx) =>
       Promise.all([
-        tx.auditLog.findMany({
+        tx.auditEvent.findMany({
           where,
-          include: { actor: { select: { id: true, email: true, role: true } } },
+          include: { actorUser: { select: { id: true, email: true, role: true } } },
           orderBy: { timestamp: "desc" },
           skip: (pageNum - 1) * limitNum,
           take: limitNum,
         }),
-        tx.auditLog.count({ where }),
+        tx.auditEvent.count({ where }),
       ]),
     );
 

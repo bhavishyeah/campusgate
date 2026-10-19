@@ -8,7 +8,7 @@ vi.mock("@campusgate/db", () => {
     institutionMembership: { findUnique: vi.fn() },
     institutionConfig: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
     academicCalendarDay: { findMany: vi.fn(), upsert: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
-    auditLog: { create: vi.fn() },
+    auditEvent: { create: vi.fn() },
   };
   return {
     prisma,
@@ -47,7 +47,7 @@ const mockedPrisma = prisma as unknown as {
   user: { findUnique: MockFn };
   institutionConfig: { findUnique: MockFn; create: MockFn; upsert: MockFn };
   academicCalendarDay: { findMany: MockFn; upsert: MockFn; findUnique: MockFn; delete: MockFn };
-  auditLog: { create: MockFn };
+  auditEvent: { create: MockFn };
 };
 
 async function makeApp() {
@@ -114,7 +114,7 @@ describe("Admin config/calendar routes", () => {
     await app.register(adminRoutes, { prefix: "/api/admin" });
 
     mockedPrisma.institutionConfig.upsert.mockResolvedValue({ id: "cfg-1" });
-    mockedPrisma.auditLog.create.mockResolvedValue({});
+    mockedPrisma.auditEvent.create.mockResolvedValue({});
 
     const token = app.jwt.sign({ userId: "u-admin", role: "ADMIN", institutionId: "inst-1" });
 
@@ -173,7 +173,7 @@ describe("Admin config/calendar routes", () => {
       date: new Date("2026-10-12T00:00:00.000Z"),
       dayType: "HOLIDAY",
     });
-    mockedPrisma.auditLog.create.mockResolvedValue({});
+    mockedPrisma.auditEvent.create.mockResolvedValue({});
     mockedPrisma.academicCalendarDay.findUnique.mockResolvedValue({
       id: "acd-1",
       institutionId: "inst-1",

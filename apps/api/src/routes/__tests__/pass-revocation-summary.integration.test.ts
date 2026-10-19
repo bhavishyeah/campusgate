@@ -9,7 +9,7 @@ vi.mock("@campusgate/db", () => {
     hodProfile: { findFirst: vi.fn() },
     studentProfile: { findFirst: vi.fn() },
     gatePass: { findFirst: vi.fn(), updateMany: vi.fn() },
-    auditLog: { create: vi.fn(), findMany: vi.fn() },
+    auditEvent: { create: vi.fn(), findMany: vi.fn() },
     notification: { create: vi.fn() },
   };
   return {
@@ -45,7 +45,7 @@ const mockedPrisma = prisma as unknown as {
   hodProfile: { findFirst: MockFn };
   studentProfile: { findFirst: MockFn };
   gatePass: { findFirst: MockFn; updateMany: MockFn };
-  auditLog: { create: MockFn; findMany: MockFn };
+  auditEvent: { create: MockFn; findMany: MockFn };
   notification: { create: MockFn };
 };
 
@@ -124,7 +124,7 @@ describe("Pass revocation and summaries", () => {
       student: { userId: "u-student", name: "Test Student" },
     });
     mockedPrisma.gatePass.updateMany.mockResolvedValue({ count: 1 });
-    mockedPrisma.auditLog.create.mockResolvedValue({});
+    mockedPrisma.auditEvent.create.mockResolvedValue({});
 
     const token = app.jwt.sign({ userId: "u-hod", role: "HOD", institutionId: "inst-1" });
 
@@ -155,7 +155,7 @@ describe("Pass revocation and summaries", () => {
       student: { userId: "u-student", name: "Test Student" },
     });
     mockedPrisma.gatePass.updateMany.mockResolvedValue({ count: 1 });
-    mockedPrisma.auditLog.create.mockResolvedValue({});
+    mockedPrisma.auditEvent.create.mockResolvedValue({});
 
     const token = app.jwt.sign({ userId: "u-admin", role: "ADMIN", institutionId: "inst-1" });
 
@@ -239,7 +239,7 @@ describe("Pass revocation and summaries", () => {
         { eventType: "RETURN", timestamp: new Date("2026-10-01T11:00:00.000Z"), gate: { name: "Main Gate" } },
       ],
     });
-    mockedPrisma.auditLog.findMany.mockResolvedValue([]);
+    mockedPrisma.auditEvent.findMany.mockResolvedValue([]);
 
     const token = app.jwt.sign({ userId: "u-student", role: "STUDENT", institutionId: "inst-1" });
 

@@ -11,6 +11,7 @@ import { authenticate } from "../middleware/auth.js";
 import { requirePermission } from "../services/authz-engine.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { getGuardInTenant } from "../services/authz.js";
+import { recordAuditEvent } from "../services/audit.js";
 import { notifyUser } from "../services/notifications.js";
 import type { Prisma } from "@campusgate/db";
 
@@ -136,16 +137,21 @@ export async function guardRoutes(app: FastifyInstance) {
         include: { gate: true },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.shift.started",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "SHIFT_STARTED",
-          targetId: shift.id,
-          targetType: "GuardShift",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GuardShift",
+          resourceId: shift.id,
+          requestRef: request.id,
           metadata: { gateId: shift.gateId },
         },
-      });
+        tx,
+      );
 
       return { started };
     });
@@ -191,16 +197,21 @@ export async function guardRoutes(app: FastifyInstance) {
         include: { gate: true },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.shift.ended",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "SHIFT_ENDED",
-          targetId: shift.id,
-          targetType: "GuardShift",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GuardShift",
+          resourceId: shift.id,
+          requestRef: request.id,
           metadata: { gateId: shift.gateId },
         },
-      });
+        tx,
+      );
 
       return { ended };
     });
@@ -270,16 +281,21 @@ export async function guardRoutes(app: FastifyInstance) {
         });
 
         if (expiredNow.count > 0) {
-          await tx.auditLog.create({
-            data: {
-              actorId: pass.student.userId,
+          await recordAuditEvent(
+            {
+              action: "campus_movement.pass.expired",
+              result: "SUCCESS",
+              actorUserId: pass.student.userId,
+              actorRoleKey: request.auth?.roles[0] ?? request.user.role,
               institutionId,
-              action: "PASS_EXPIRED",
-              targetId: pass.id,
-              targetType: "GatePass",
+              actorMembershipId: request.auth?.membershipId,
+              resourceType: "GatePass",
+              resourceId: pass.id,
+              requestRef: request.id,
               metadata: { previousStatus: pass.status },
             },
-          });
+            tx,
+          );
 
           await notifyUser(
             pass.student.userId,
@@ -460,17 +476,22 @@ export async function guardRoutes(app: FastifyInstance) {
         },
       });
 
-      // Audit inside the same tenant tx (AuditLog is tenant-owned)
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      // Audit inside the same tenant tx (campass_app has INSERT on audit_events)
+      await recordAuditEvent(
+        {
+          action: "campus_movement.gate.exit",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "GATE_EXIT",
-          targetId: parsed.data.passId,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: parsed.data.passId,
+          requestRef: request.id,
           metadata: { gateId: parsed.data.gateId },
         },
-      });
+        tx,
+      );
 
       return { result: updatedPass };
     });
@@ -597,16 +618,21 @@ export async function guardRoutes(app: FastifyInstance) {
       });
 
       // Audit inside the same tenant tx (AuditLog is tenant-owned)
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
+      await recordAuditEvent(
+        {
+          action: "campus_movement.gate.return",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
           institutionId,
-          action: "GATE_RETURN",
-          targetId: parsed.data.passId,
-          targetType: "GatePass",
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "GatePass",
+          resourceId: parsed.data.passId,
+          requestRef: request.id,
           metadata: { gateId: parsed.data.gateId, overdueMinutes: updatedPass.overdueMinutes },
         },
-      });
+        tx,
+      );
 
       return { result: updatedPass };
     });
