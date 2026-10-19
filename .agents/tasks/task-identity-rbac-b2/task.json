@@ -1,0 +1,7 @@
+{
+  "task_id": "task-identity-rbac-b2",
+  "task_description": "Implement CAMPASS Phase 0 Identity & RBAC (decision B2), identity-rbac.md §3–§8, on main with no worktree. Add the membership/role/permission model + a hand-authored RLS migration + seed, a shared permission catalogue, the dual-shape JWT + authenticate pipeline, a central authz engine, and migrate GatePass/campus_movement routes to requirePermission behind a compatibility shim so the app keeps working at every step. User.role and User.institutionId are kept for the shim; the B-1 tenancy migration is never altered; campass_app never gets BYPASSRLS.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}
