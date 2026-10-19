@@ -2,7 +2,25 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
 import { PERMISSIONS, ROLE_PERMISSIONS } from "@campusgate/shared";
 
-const prisma = new PrismaClient();
+/**
+ * The seed writes to RLS-forced tenant tables (departments, gates, profiles, and
+ * the B-2 institution_memberships / membership_roles) WITHOUT a tenant context,
+ * so it must run on a connection that bypasses RLS — the `postgres` owner role
+ * over the SESSION pooler (DIRECT_URL, port 5432).
+ *
+ * It must NOT default to DATABASE_URL: in this repo packages/db/.env's
+ * DATABASE_URL is `postgres` over the TRANSACTION pooler (port 6543,
+ * pgbouncer=true), and RLS is still ENFORCED on that path even for the owner
+ * role — every FORCE-RLS insert fails closed with a 42501 policy violation
+ * (verified). The privileged escape-suite adminClient uses DIRECT_URL for the
+ * same reason. Fall back to DATABASE_URL only so a non-pooled deploy that sets
+ * just DATABASE_URL to a direct owner connection still seeds.
+ */
+const seedDatabaseUrl = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+
+const prisma = new PrismaClient(
+  seedDatabaseUrl ? { datasources: { db: { url: seedDatabaseUrl } } } : undefined,
+);
 
 /** Human-friendly template role names, keyed by the template role key. */
 const TEMPLATE_ROLE_NAMES: Record<string, string> = {
