@@ -114,6 +114,12 @@ enum InstitutionStatus {
   SUSPENDED
 }
 
+enum ModuleState {
+  ENTITLED
+  ACTIVE
+  SUSPENDED
+}
+
 enum WeekStartDay {
   MONDAY
   TUESDAY
@@ -190,6 +196,7 @@ model Institution {
   roles                Role[]
   auditEvents          AuditEvent[]
   supportGrants        SupportGrant[]
+  institutionModules   InstitutionModule[]
 
   @@map("institutions")
 }
@@ -631,6 +638,38 @@ model SupportGrant {
   @@index([institutionId, status])
   @@index([grantedToUserId, status])
   @@map("support_grants")
+}
+
+// ─── MODULE ENTITLEMENT / ACTIVATION (CAMPASS booster model, architecture.md §5) ─
+// TENANT-OWNED lifecycle row for one (institution, module) pair. The four states
+// in architecture.md §5.2 are NOT_ENTITLED -> ENTITLED -> ACTIVE <-> SUSPENDED;
+// NOT_ENTITLED is modelled as the ABSENCE of a row, so the enum holds only the
+// three states a row can be in. Platform grants/revokes entitlement (privileged
+// path); the tenant admin activates/suspends under RLS. who/when fields carry
+// actor ids only (no composite FK — a platform actor has no membership in this
+// tenant, mirroring AuditEvent.actorUserId).
+model InstitutionModule {
+  id            String      @id @default(cuid())
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  moduleKey     String // validated against MODULE_KEYS in @campusgate/shared
+  state         ModuleState @default(ENTITLED)
+
+  entitledAt  DateTime  @default(now())
+  activatedAt DateTime?
+  suspendedAt DateTime?
+
+  settings Json? // optional per-institution module config (future required-config hook)
+
+  entitledByUserId  String?
+  activatedByUserId String?
+  suspendedByUserId String?
+  updatedAt         DateTime @updatedAt
+
+  @@unique([institutionId, moduleKey])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@map("institution_modules")
 }
 
 // ─── NOTIFICATIONS ──────────────────────────────────────────────────────────

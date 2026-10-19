@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { PermissionKey } from "@campusgate/shared";
+import { privilegedPrisma } from "@campusgate/db";
+import type { PermissionKey, ModuleKey } from "@campusgate/shared";
 import type { RequestAuth } from "../middleware/auth.js";
 
 /**
@@ -77,13 +78,52 @@ export function requirePermission(permission: PermissionKey) {
 }
 
 /**
- * Module-active guard. Phase-0 permissive stub — it always allows. It assumes
- * `authenticate` ran via the top-level hook and makes no decision of its own.
+ * Module-active guard (design §7). Real server-side enforcement backed by the
+ * tenant-owned `institution_modules` table: the route proceeds only when the
+ * caller's institution has `moduleKey` in state ACTIVE. Wired onto the
+ * `campus_movement.*` GatePass routes IN ADDITION to `requirePermission`; it
+ * assumes the top-level `authenticate` hook already populated `request.auth`.
+ *
+ * Reads via `privilegedPrisma` with a hard token-derived `institutionId` filter
+ * (NEVER request input), not a second `withTenant` transaction — the guard runs
+ * once per request on the latency-sensitive hot path and is a cheap single
+ * indexed point lookup (§7.1). Cross-tenant safety rests on `institutionId`
+ * coming only from the verified token.
+ *
+ * Status contract (§7.2):
+ *  - request.auth unset   -> 401 (wiring bug; same defensive branch as requirePermission)
+ *  - state read throws     -> 500, fail CLOSED (never a silent allow)
+ *  - no row / not ACTIVE   -> 403 { error: "Module not active: <key>" }
  */
-export function requireModuleActive(_moduleKey: string) {
-  // PHASE-0 STUB: permits all; real module-activation enforcement lands in the module-entitlement phase
-  return async (_request: FastifyRequest, _reply: FastifyReply) => {
-    // intentionally no-op: always permits
+export function requireModuleActive(moduleKey: ModuleKey) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.auth) {
+      request.log.error(
+        { moduleKey, method: request.method, url: request.routeOptions?.url ?? request.url },
+        "requireModuleActive: request.auth unset — top-level authenticate hook missing or misordered",
+      );
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    const { institutionId } = request.auth; // from the verified token ONLY
+    let row: { state: string } | null;
+    try {
+      row = await privilegedPrisma.institutionModule.findUnique({
+        where: { institutionId_moduleKey: { institutionId, moduleKey } },
+        select: { state: true },
+      });
+    } catch (err) {
+      request.log.error({ err, moduleKey, institutionId }, "requireModuleActive: state read failed");
+      return reply.status(500).send({ error: "Module state unavailable" }); // fail CLOSED
+    }
+
+    if (!row || row.state !== "ACTIVE") {
+      request.log.info(
+        { moduleKey, institutionId, state: row?.state ?? "NOT_ENTITLED" },
+        "requireModuleActive: denied — module not active",
+      );
+      return reply.status(403).send({ error: `Module not active: ${moduleKey}` });
+    }
   };
 }
 

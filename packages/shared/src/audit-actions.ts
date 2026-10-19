@@ -56,6 +56,11 @@ export const AUDIT_ACTIONS = [
   { key: "platform.support_grant.expired", module: "platform", description: "Support grant expired" },
   { key: "platform.mfa.enrolled", module: "platform", description: "Platform MFA enrolled" },
   { key: "platform.mfa.step_up", module: "platform", description: "Platform MFA step-up assertion" },
+  { key: "platform.module.entitled", module: "platform", description: "Platform granted a module entitlement to an institution" },
+  { key: "platform.module.revoked", module: "platform", description: "Platform revoked a module entitlement" },
+  // admin.module.* (2)
+  { key: "admin.module.activated", module: "admin", description: "Institution activated a module" },
+  { key: "admin.module.suspended", module: "admin", description: "Institution suspended a module" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

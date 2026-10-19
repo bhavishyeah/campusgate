@@ -26,6 +26,8 @@ vi.mock("@campusgate/db", () => {
     department: { findMany: vi.fn(() => Promise.resolve([])) },
     gate: { findMany: vi.fn(() => Promise.resolve([])) },
     auditLog: { findMany: vi.fn(() => Promise.resolve([])), count: vi.fn(() => Promise.resolve(0)) },
+    // requireModuleActive point-read: campus_movement is ACTIVE (backfilled).
+    institutionModule: { findUnique: vi.fn(() => Promise.resolve({ state: "ACTIVE" })) },
   };
   return {
     prisma,

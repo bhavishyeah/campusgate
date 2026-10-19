@@ -88,6 +88,7 @@ export interface SeededTenant {
   gatePassId: string;
   membershipId: string;
   membershipRoleId: string;
+  institutionModuleId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -139,6 +140,7 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const gatePassId = id(`pass_${key}`);
   const membershipId = id(`mbr_${key}`);
   const membershipRoleId = id(`mrl_${key}`);
+  const institutionModuleId = id(`imod_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -222,6 +224,20 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // The new tenant-owned module-system table. Seeded via the RLS-bypassing
+  // adminClient so the read-escape test can later prove the campass_app client
+  // CANNOT see the other tenant's row.
+  await adminClient.institutionModule.create({
+    data: {
+      id: institutionModuleId,
+      institutionId,
+      moduleKey: "campus_movement",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -232,6 +248,7 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     gatePassId,
     membershipId,
     membershipRoleId,
+    institutionModuleId,
   };
 }
 
@@ -254,6 +271,9 @@ export async function cleanup(): Promise<void> {
   // two new tables.
   await withRetry(() => adminClient.membershipRole.deleteMany({ where }));
   await withRetry(() => adminClient.institutionMembership.deleteMany({ where }));
+  // institution_modules: child-first (before the institution delete) because the
+  // tenant-root FK is ON DELETE RESTRICT.
+  await withRetry(() => adminClient.institutionModule.deleteMany({ where }));
   await withRetry(() => adminClient.gateEvent.deleteMany({ where }));
   await withRetry(() => adminClient.emergencyOverride.deleteMany({ where }));
   await withRetry(() => adminClient.gatePass.deleteMany({ where }));
@@ -287,6 +307,7 @@ export async function countRemainingTestRows(): Promise<number> {
   const counters: Array<() => Promise<number>> = [
     () => adminClient.membershipRole.count({ where }),
     () => adminClient.institutionMembership.count({ where }),
+    () => adminClient.institutionModule.count({ where }),
     () => adminClient.gatePass.count({ where }),
     () => adminClient.studentProfile.count({ where }),
     () => adminClient.user.count({ where }),
@@ -332,6 +353,8 @@ export const RLS_TABLES = [
   // FEAT-003 new tables (design §9.3).
   "audit_events",
   "support_grants",
+  // Module-system table (design §9.1) — uses the default policy pair.
+  "institution_modules",
 ] as const;
 
 /**

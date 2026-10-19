@@ -152,6 +152,106 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     ).rejects.toBeTruthy();
   }, 60_000);
 
+  it("3d. institution_modules read escape: tenant A cannot see tenant B's module row", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.institutionModule.findUnique({ where: { id: B.institutionModuleId } }),
+    );
+    expect(foreign).toBeNull();
+
+    // Unscoped list under A still returns only A's rows, never B's.
+    const own = await withTenant(A.institutionId, (tx) =>
+      tx.institutionModule.findMany({}),
+    );
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.institutionModuleId);
+    }
+  }, 60_000);
+
+  it("3e. institution_modules spoofed-tenant insert: A cannot insert a row stamped institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.institutionModule.create({
+          data: {
+            id: `${PREFIX}SPOOF_IMOD`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            moduleKey: "student_management",
+            state: "ENTITLED",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3f. institution_modules spoofed-tenant update: A cannot flip B's row to A", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows (count 0), never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.institutionModule.updateMany({
+        where: { id: B.institutionModuleId },
+        data: { state: "SUSPENDED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    // Confirm via admin that B's row is untouched.
+    const bRow = await adminClient.institutionModule.findUnique({
+      where: { id: B.institutionModuleId },
+    });
+    expect(bRow!.state).toBe("ACTIVE");
+  }, 60_000);
+
+  it("3g. institution_modules buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const rows = await withTenant(A.institutionId, (tx) =>
+      tx.institutionModule.findMany({}),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.institutionId).toBe(A.institutionId);
+    expect(rows.some((r: { id: string }) => r.id === B.institutionModuleId)).toBe(false);
+
+    const aCount = await adminClient.institutionModule.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(rows.length).toBe(aCount);
+  }, 60_000);
+
+  it("3h. institution_modules fail-closed: three GUC states all yield zero visible rows", async () => {
+    const A = seeded.A!;
+
+    // (i) no tenant context set (appClient outside withTenant) => GUC unset => NULL => no rows
+    const unset = await appClient.institutionModule.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unset.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      return tx.institutionModule.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    });
+    expect(empty.length).toBe(0);
+
+    // (iii) wrong-tenant GUC => A's context cannot see B's rows (covered by 3d/3g);
+    //       prove the complementary direction: A's own row IS visible under A's GUC.
+    const aVisible = await withTenant(A.institutionId, (tx) =>
+      tx.institutionModule.findMany({}),
+    );
+    expect(aVisible.some((r: { id: string }) => r.id === A.institutionModuleId)).toBe(true);
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;

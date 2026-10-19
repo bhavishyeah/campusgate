@@ -178,6 +178,11 @@ export const PERMISSIONS = [
     module: "admin",
     description: "Tenant admin revokes a break-glass support grant into their institution",
   },
+  {
+    key: "admin.modules.manage",
+    module: "admin",
+    description: "Activate / suspend / view the institution's modules",
+  },
 
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
@@ -263,6 +268,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "admin.institution_config.manage",
     "admin.academic_calendar.manage",
     "admin.support.revoke",
+    "admin.modules.manage",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

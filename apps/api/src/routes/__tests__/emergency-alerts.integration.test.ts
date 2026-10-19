@@ -8,6 +8,8 @@ vi.mock("@campusgate/db", () => {
     institutionMembership: { findUnique: vi.fn() },
     emergencyAlert: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
     auditLog: { create: vi.fn() },
+    // requireModuleActive point-read: campus_movement is ACTIVE (backfilled).
+    institutionModule: { findUnique: vi.fn(() => Promise.resolve({ state: "ACTIVE" })) },
   };
   return {
     prisma,

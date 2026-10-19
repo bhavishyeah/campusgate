@@ -26,6 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEEDING_MIGRATION_DIRS = [
   "20261018171747_identity_rbac_b2",
   "20261019053533_superadmin_security",
+  "20261019093119_module_system",
 ];
 
 function migrationSql(dir: string): string {

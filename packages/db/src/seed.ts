@@ -307,6 +307,25 @@ async function main() {
   await ensureMembership(studentUser.id, studentUser.institutionId, "STUDENT", roleIdByKey);
   console.log("  ✓ Demo user memberships ensured (superadmin excluded)");
 
+  // ─── Module system: campus_movement ENTITLED+ACTIVE for the demo tenant ─────
+  // Mirrors the module_system migration's backfill so a fresh/dev DB has the
+  // only operational Phase-0 module ACTIVE for the demo tenant (otherwise the
+  // now-wired requireModuleActive guard would 403 every GatePass route). Upsert
+  // against the demo `institution` object the seed itself created — NOT the
+  // PLATFORM institution, which is never module-gated.
+  await prisma.institutionModule.upsert({
+    where: { institutionId_moduleKey: { institutionId: institution.id, moduleKey: "campus_movement" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      moduleKey: "campus_movement",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+  console.log("  ✓ campus_movement module entitled + activated for demo tenant");
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
   console.log("   Admin:   admin@demo.edu / admin123");

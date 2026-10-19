@@ -14,10 +14,14 @@ import {
   AUDIT_ACTION_KEY_SET,
   LEGACY_AUDIT_ACTION_MAP,
   type LegacyAuditAction,
+  MODULES,
+  MODULE_KEY_SET,
+  type ModuleKey,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
-import { requirePermission } from "../services/authz-engine.js";
+import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { recordAuditEvent } from "../services/audit.js";
+import { activate, suspend } from "../services/module-system.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import {
   notifyUser,
@@ -32,7 +36,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
-  app.get("/stats", { preHandler: [requirePermission("campus_movement.analytics.view")] }, async (request, reply) => {
+  app.get("/stats", { preHandler: [requirePermission("campus_movement.analytics.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const today = new Date(new Date().setHours(0, 0, 0, 0));
@@ -91,7 +95,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── MOVEMENT ANALYTICS ───────────────────────────────────────────────────
-  app.get("/analytics", { preHandler: [requirePermission("campus_movement.analytics.view")] }, async (request, reply) => {
+  app.get("/analytics", { preHandler: [requirePermission("campus_movement.analytics.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { from, to } = request.query as { from?: string; to?: string };
 
@@ -372,7 +376,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── EMERGENCY ALERTS ─────────────────────────────────────────────────────
-  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
+  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const active = await withTenant(institutionId, (tx) =>
@@ -388,7 +392,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(active);
   });
 
-  app.get("/emergency", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
+  app.get("/emergency", { preHandler: [requirePermission("campus_movement.emergency.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { limit = "20" } = request.query as { limit?: string };
     const take = Math.min(100, Math.max(1, parseInt(limit || "20", 10) || 20));
@@ -408,7 +412,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(alerts);
   });
 
-  app.post("/emergency/declare", { preHandler: [requirePermission("campus_movement.emergency.declare")] }, async (request, reply) => {
+  app.post("/emergency/declare", { preHandler: [requirePermission("campus_movement.emergency.declare"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = declareEmergencySchema.safeParse(request.body);
@@ -486,7 +490,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.status(201).send(result.alert);
   });
 
-  app.post("/emergency/:id/resolve", { preHandler: [requirePermission("campus_movement.emergency.resolve")] }, async (request, reply) => {
+  app.post("/emergency/:id/resolve", { preHandler: [requirePermission("campus_movement.emergency.resolve"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { id } = request.params as { id: string };
 
@@ -1898,7 +1902,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ─── AUDIT LOGS ────────────────────────────────────────────────────────────
-  app.get("/audit-logs", { preHandler: [requirePermission("campus_movement.audit.view")] }, async (request, reply) => {
+  app.get("/audit-logs", { preHandler: [requirePermission("campus_movement.audit.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { page = "1", limit = "50", action } = request.query as Record<string, string>;
 
@@ -2016,6 +2020,137 @@ export async function adminRoutes(app: FastifyInstance) {
         tx.supportGrant.findMany({ orderBy: { createdAt: "desc" } }),
       );
       return reply.send(grants);
+    },
+  );
+
+  // ─── MODULE ACTIVATION (tenant admin; design §6.2) ─────────────────────────
+  // NOT module-gated themselves (gating module management on the module being
+  // active would be circular). Permission-gated via admin.modules.manage only.
+
+  // List own module matrix: every MODULES key with the institution's effective
+  // state (NOT_ENTITLED where no row). Iterate the STATIC catalogue; the findMany
+  // takes NO explicit filter — RLS scopes it to the caller's own institution.
+  app.get(
+    "/modules",
+    { preHandler: [requirePermission("admin.modules.manage")] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const rows = await withTenant(institutionId, (tx) =>
+        tx.institutionModule.findMany({
+          select: { moduleKey: true, state: true, entitledAt: true, activatedAt: true, suspendedAt: true },
+        }),
+      );
+      const byKey = new Map(rows.map((r) => [r.moduleKey, r]));
+      const modules = MODULES.map((m) => {
+        const row = byKey.get(m.key);
+        return {
+          moduleKey: m.key,
+          name: m.name,
+          state: row?.state ?? "NOT_ENTITLED",
+          entitledAt: row?.entitledAt ?? null,
+          activatedAt: row?.activatedAt ?? null,
+          suspendedAt: row?.suspendedAt ?? null,
+        };
+      });
+      return reply.send({ institutionId, modules });
+    },
+  );
+
+  // Activate a module: ENTITLED/SUSPENDED -> ACTIVE (dependency-validated).
+  app.post(
+    "/modules/:moduleKey/activate",
+    { preHandler: [requirePermission("admin.modules.manage")] },
+    async (request, reply) => {
+      const { userId, institutionId } = request.user;
+      const { moduleKey } = request.params as { moduleKey: string };
+      if (!MODULE_KEY_SET.has(moduleKey)) {
+        return reply.status(400).send({ error: "Unknown moduleKey" });
+      }
+      const key = moduleKey as ModuleKey;
+
+      const result = await withTenant(institutionId, async (tx) => {
+        const r = await activate(tx, institutionId, key, userId);
+        if (r.ok) {
+          await recordAuditEvent(
+            {
+              action: "admin.module.activated",
+              result: "SUCCESS",
+              actorUserId: userId,
+              actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+              institutionId,
+              actorMembershipId: request.auth?.membershipId,
+              resourceType: "InstitutionModule",
+              resourceId: key,
+              requestRef: request.id,
+              metadata: { moduleKey: key },
+            },
+            tx,
+          );
+        }
+        return r;
+      });
+
+      if (!result.ok) {
+        if (result.reason === "NOT_ENTITLED") {
+          return reply.status(404).send({ error: "Module not entitled for this institution" });
+        }
+        return reply.status(409).send({
+          error: "Module dependencies not satisfied",
+          moduleKey: key,
+          missingDependencies: result.missingDependencies,
+        });
+      }
+      return reply.send({ institutionId, moduleKey: key, state: "ACTIVE" });
+    },
+  );
+
+  // Suspend a module: ACTIVE -> SUSPENDED (history preserved; dependents warned).
+  app.post(
+    "/modules/:moduleKey/suspend",
+    { preHandler: [requirePermission("admin.modules.manage")] },
+    async (request, reply) => {
+      const { userId, institutionId } = request.user;
+      const { moduleKey } = request.params as { moduleKey: string };
+      if (!MODULE_KEY_SET.has(moduleKey)) {
+        return reply.status(400).send({ error: "Unknown moduleKey" });
+      }
+      const key = moduleKey as ModuleKey;
+
+      const result = await withTenant(institutionId, async (tx) => {
+        const r = await suspend(tx, institutionId, key, userId);
+        if (r.ok) {
+          await recordAuditEvent(
+            {
+              action: "admin.module.suspended",
+              result: "SUCCESS",
+              actorUserId: userId,
+              actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+              institutionId,
+              actorMembershipId: request.auth?.membershipId,
+              resourceType: "InstitutionModule",
+              resourceId: key,
+              requestRef: request.id,
+              metadata: {
+                moduleKey: key,
+                affectedDependents: r.affectedDependents.join(","),
+                affectedDependentsCount: r.affectedDependents.length,
+              },
+            },
+            tx,
+          );
+        }
+        return r;
+      });
+
+      if (!result.ok) {
+        return reply.status(409).send({ error: "Module is not ACTIVE", moduleKey: key });
+      }
+      return reply.send({
+        institutionId,
+        moduleKey: key,
+        state: "SUSPENDED",
+        warnings: { affectedDependents: result.affectedDependents },
+      });
     },
   );
 }

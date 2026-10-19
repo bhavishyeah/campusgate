@@ -8,7 +8,7 @@ import {
   endGuardShiftSchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
-import { requirePermission } from "../services/authz-engine.js";
+import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { getGuardInTenant } from "../services/authz.js";
 import { recordAuditEvent } from "../services/audit.js";
@@ -34,7 +34,7 @@ export async function guardRoutes(app: FastifyInstance) {
   };
 
   // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
-  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
+  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const active = await withTenant(institutionId, (tx) =>
@@ -48,7 +48,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── SHIFT STATUS ───────────────────────────────────────────────────────────
-  app.get("/shift/current", { preHandler: [requirePermission("campus_movement.shift.manage_own")] }, async (request, reply) => {
+  app.get("/shift/current", { preHandler: [requirePermission("campus_movement.shift.manage_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {
@@ -81,7 +81,7 @@ export async function guardRoutes(app: FastifyInstance) {
     return reply.send(result);
   });
 
-  app.post("/shift/start", { preHandler: [requirePermission("campus_movement.shift.manage_own")] }, async (request, reply) => {
+  app.post("/shift/start", { preHandler: [requirePermission("campus_movement.shift.manage_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = startGuardShiftSchema.safeParse(request.body);
@@ -163,7 +163,7 @@ export async function guardRoutes(app: FastifyInstance) {
     return reply.send({ message: "Shift started", shift: result.started });
   });
 
-  app.post("/shift/end", { preHandler: [requirePermission("campus_movement.shift.manage_own")] }, async (request, reply) => {
+  app.post("/shift/end", { preHandler: [requirePermission("campus_movement.shift.manage_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = endGuardShiftSchema.safeParse(request.body);
@@ -224,7 +224,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── VERIFY QR TOKEN ───────────────────────────────────────────────────────
-  app.post("/verify", { preHandler: [requirePermission("campus_movement.gate.verify")] }, async (request, reply) => {
+  app.post("/verify", { preHandler: [requirePermission("campus_movement.gate.verify"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const parsed = verifyQrSchema.safeParse(request.body);
@@ -397,7 +397,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── MARK EXIT ─────────────────────────────────────────────────────────────
-  app.post("/mark-exit", { preHandler: [requirePermission("campus_movement.gate.mark_exit")] }, async (request, reply) => {
+  app.post("/mark-exit", { preHandler: [requirePermission("campus_movement.gate.mark_exit"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = markExitSchema.safeParse(request.body);
@@ -538,7 +538,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── MARK RETURN ───────────────────────────────────────────────────────────
-  app.post("/mark-return", { preHandler: [requirePermission("campus_movement.gate.mark_return")] }, async (request, reply) => {
+  app.post("/mark-return", { preHandler: [requirePermission("campus_movement.gate.mark_return"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = markReturnSchema.safeParse(request.body);
@@ -706,7 +706,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── MANUAL LOOKUP ─────────────────────────────────────────────────────────
-  app.get("/lookup", { preHandler: [requirePermission("campus_movement.gate.lookup")] }, async (request, reply) => {
+  app.get("/lookup", { preHandler: [requirePermission("campus_movement.gate.lookup"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const { query } = request.query as { query?: string };
 
@@ -742,7 +742,7 @@ export async function guardRoutes(app: FastifyInstance) {
   });
 
   // ─── GUARD ACTIVITY (today) ────────────────────────────────────────────────
-  app.get("/activity", { preHandler: [requirePermission("campus_movement.gate.lookup")] }, async (request, reply) => {
+  app.get("/activity", { preHandler: [requirePermission("campus_movement.gate.lookup"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {

@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { withTenant } from "@campusgate/db";
 import { approvePassSchema, rejectPassSchema, revokePassSchema, QR_TOKEN_VALIDITY_MINUTES } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
-import { requirePermission } from "../services/authz-engine.js";
+import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { notifyUser } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
@@ -18,7 +18,7 @@ export async function hodRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
 
   // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
-  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
+  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const active = await withTenant(institutionId, (tx) =>
@@ -32,7 +32,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── GET PENDING REQUESTS (for HOD's department) ───────────────────────────
-  app.get("/requests", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { status = "PENDING" } = request.query as { status?: string };
 
@@ -73,7 +73,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── GET SINGLE REQUEST DETAIL ─────────────────────────────────────────────
-  app.get("/requests/:passId", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests/:passId", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -121,7 +121,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── GET STUDENT RELIABILITY SCORE FOR A REQUEST ─────────────────────────
-  app.get("/requests/:passId/reliability", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests/:passId/reliability", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -152,7 +152,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── GET STUDENT ALLOWANCE FOR A REQUEST ─────────────────────────────────
-  app.get("/requests/:passId/allowance", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests/:passId/allowance", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -184,7 +184,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── EMERGENCY OVERRIDE ───────────────────────────────────────────────────
-  app.post("/emergency-override", { preHandler: [requirePermission("campus_movement.pass.override")] }, async (request, reply) => {
+  app.post("/emergency-override", { preHandler: [requirePermission("campus_movement.pass.override"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId, justification } = request.body as { passId: string; justification: string };
 
@@ -247,7 +247,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── APPROVE REQUEST ───────────────────────────────────────────────────────
-  app.post("/approve", { preHandler: [requirePermission("campus_movement.pass.approve")] }, async (request, reply) => {
+  app.post("/approve", { preHandler: [requirePermission("campus_movement.pass.approve"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = approvePassSchema.safeParse(request.body);
@@ -334,7 +334,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── REJECT REQUEST ────────────────────────────────────────────────────────
-  app.post("/reject", { preHandler: [requirePermission("campus_movement.pass.reject")] }, async (request, reply) => {
+  app.post("/reject", { preHandler: [requirePermission("campus_movement.pass.reject"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = rejectPassSchema.safeParse(request.body);
@@ -411,7 +411,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── REVOKE PASS ──────────────────────────────────────────────────────────
-  app.post("/revoke", { preHandler: [requirePermission("campus_movement.pass.revoke")] }, async (request, reply) => {
+  app.post("/revoke", { preHandler: [requirePermission("campus_movement.pass.revoke"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = revokePassSchema.safeParse(request.body);
@@ -505,7 +505,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── REQUEST TIMELINE ──────────────────────────────────────────────────────
-  app.get("/requests/:passId/timeline", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests/:passId/timeline", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -558,7 +558,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── REQUEST SUMMARY ───────────────────────────────────────────────────────
-  app.get("/requests/:passId/summary", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/requests/:passId/summary", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -628,7 +628,7 @@ export async function hodRoutes(app: FastifyInstance) {
   });
 
   // ─── DASHBOARD STATS ───────────────────────────────────────────────────────
-  app.get("/stats", { preHandler: [requirePermission("campus_movement.pass.view_department")] }, async (request, reply) => {
+  app.get("/stats", { preHandler: [requirePermission("campus_movement.pass.view_department"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {

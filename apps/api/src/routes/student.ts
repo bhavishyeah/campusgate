@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { withTenant } from "@campusgate/db";
 import { createGatePassSchema, PASS_NUMBER_PREFIX } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
-import { requirePermission } from "../services/authz-engine.js";
+import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { notifyDepartmentHods } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
@@ -18,7 +18,7 @@ export async function studentRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
 
   // ─── GET ACTIVE EMERGENCY ALERT ───────────────────────────────────────────
-  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view")] }, async (request, reply) => {
+  app.get("/emergency/active", { preHandler: [requirePermission("campus_movement.emergency.view"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
 
     const active = await withTenant(institutionId, (tx) =>
@@ -32,7 +32,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET EXIT REASONS ────────────────────────────────────────────────────────
-  app.get("/reasons", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/reasons", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { institutionId } = request.user;
     const reasons = await withTenant(institutionId, (tx) =>
       tx.exitReason.findMany({
@@ -44,7 +44,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET ALLOWANCE SUMMARY ─────────────────────────────────────────────────
-  app.get("/allowance", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/allowance", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     try {
@@ -68,7 +68,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET DASHBOARD (current movement state) ────────────────────────────────
-  app.get("/dashboard", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/dashboard", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {
@@ -134,7 +134,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── CREATE GATE PASS REQUEST ──────────────────────────────────────────────
-  app.post("/gate-pass", { preHandler: [requirePermission("campus_movement.pass.request")] }, async (request, reply) => {
+  app.post("/gate-pass", { preHandler: [requirePermission("campus_movement.pass.request"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = createGatePassSchema.safeParse(request.body);
@@ -251,7 +251,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET ACTIVE PASS (with QR) ────────────────────────────────────────────
-  app.get("/active-pass", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/active-pass", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {
@@ -285,7 +285,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── CANCEL PENDING REQUEST ────────────────────────────────────────────────
-  app.post("/gate-pass/:passId/cancel", { preHandler: [requirePermission("campus_movement.pass.cancel")] }, async (request, reply) => {
+  app.post("/gate-pass/:passId/cancel", { preHandler: [requirePermission("campus_movement.pass.cancel"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -333,7 +333,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── PASS HISTORY ──────────────────────────────────────────────────────────
-  app.get("/history", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/history", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { page = "1", limit = "10" } = request.query as Record<string, string>;
 
@@ -381,7 +381,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET PASS TIMELINE ─────────────────────────────────────────────────────
-  app.get("/gate-pass/:passId/timeline", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/gate-pass/:passId/timeline", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -431,7 +431,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET PASS SUMMARY ──────────────────────────────────────────────────────
-  app.get("/gate-pass/:passId/summary", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/gate-pass/:passId/summary", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { passId } = request.params as { passId: string };
 
@@ -499,7 +499,7 @@ export async function studentRoutes(app: FastifyInstance) {
   });
 
   // ─── GET RELIABILITY SCORE ─────────────────────────────────────────────────
-  app.get("/reliability", { preHandler: [requirePermission("campus_movement.pass.view_own")] }, async (request, reply) => {
+  app.get("/reliability", { preHandler: [requirePermission("campus_movement.pass.view_own"), requireModuleActive("campus_movement")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const result = await withTenant(institutionId, async (tx) => {

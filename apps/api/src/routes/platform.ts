@@ -2,10 +2,16 @@ import type { FastifyInstance } from "fastify";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
 import { privilegedPrisma, InstitutionStatus } from "@campusgate/db";
+import {
+  MODULES,
+  MODULE_KEY_SET,
+  type ModuleKey,
+} from "@campusgate/shared";
 import { requireSuperAdmin } from "../middleware/auth.js";
 import { requirePermission } from "../services/authz-engine.js";
 import { requirePlatformMfa, requireStepUp } from "../middleware/step-up.js";
 import { recordAuditEvent } from "../services/audit.js";
+import { entitle, revoke } from "../services/module-system.js";
 import {
   createSupportGrant,
   createSupportGrantSchema,
@@ -278,6 +284,127 @@ export async function platformRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Grant access denied" });
       }
       return reply.send({ events: result.events });
+    },
+  );
+
+  // ─── MODULE ENTITLEMENTS (platform grants / revokes; design §6.1) ──────────
+
+  // Grant an entitlement: NOT_ENTITLED -> ENTITLED (idempotent if already present).
+  app.post(
+    "/institutions/:id/modules",
+    { preHandler: [requirePermission("platform.entitlements.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { moduleKey } = (request.body ?? {}) as { moduleKey?: string };
+
+      if (!moduleKey || !MODULE_KEY_SET.has(moduleKey)) {
+        return reply.status(400).send({ error: "Unknown moduleKey" });
+      }
+
+      const institution = await privilegedPrisma.institution.findUnique({ where: { id } });
+      if (!institution) return reply.status(404).send({ error: "Institution not found" });
+
+      const key = moduleKey as ModuleKey;
+      const result = await entitle(privilegedPrisma, id, key, request.auth!.userId);
+
+      await recordAuditEvent({
+        action: "platform.module.entitled",
+        result: "SUCCESS",
+        actorUserId: request.auth!.userId,
+        actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+        institutionId: id, // target tenant, so it surfaces in that tenant's Audit Explorer
+        actorMembershipId: null,
+        resourceType: "InstitutionModule",
+        resourceId: key,
+        requestRef: request.id,
+        metadata: { moduleKey: key, idempotentNoop: !result.ok },
+      });
+
+      return reply.send({ institutionId: id, moduleKey: key, state: "ENTITLED" });
+    },
+  );
+
+  // Revoke an entitlement: delete the row (absence = NOT_ENTITLED). Blocks 409 if
+  // any ACTIVE/SUSPENDED module in the target institution declares it as a dep.
+  app.delete(
+    "/institutions/:id/modules/:moduleKey",
+    { preHandler: [requirePermission("platform.entitlements.manage")] },
+    async (request, reply) => {
+      const { id, moduleKey } = request.params as { id: string; moduleKey: string };
+
+      if (!MODULE_KEY_SET.has(moduleKey)) {
+        return reply.status(400).send({ error: "Unknown moduleKey" });
+      }
+
+      const key = moduleKey as ModuleKey;
+      const result = await revoke(privilegedPrisma, id, key);
+
+      if (!result.ok) {
+        if (result.reason === "NOT_ENTITLED") {
+          return reply.status(404).send({ error: "Module not entitled for this institution" });
+        }
+        return reply.status(409).send({
+          error: "Module has active or suspended dependents",
+          moduleKey: key,
+          blockingDependents: result.blockingDependents,
+        });
+      }
+
+      await recordAuditEvent({
+        action: "platform.module.revoked",
+        result: "SUCCESS",
+        actorUserId: request.auth!.userId,
+        actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+        institutionId: id,
+        actorMembershipId: null,
+        resourceType: "InstitutionModule",
+        resourceId: key,
+        requestRef: request.id,
+        metadata: {
+          moduleKey: key,
+          affectedDependents: result.affectedDependents.join(","),
+          affectedDependentsCount: result.affectedDependents.length,
+        },
+      });
+
+      return reply.send({
+        institutionId: id,
+        moduleKey: key,
+        state: "NOT_ENTITLED",
+        warnings: { affectedDependents: result.affectedDependents },
+      });
+    },
+  );
+
+  // List an institution's module matrix: every MODULES key with its effective
+  // state (NOT_ENTITLED where no row). Iterate the STATIC catalogue so
+  // NOT_ENTITLED keys are never dropped; the findMany filter is MANDATORY
+  // (privilegedPrisma bypasses RLS — an unfiltered scan would leak cross-tenant).
+  app.get(
+    "/institutions/:id/modules",
+    { preHandler: [requirePermission("platform.entitlements.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const rows = await privilegedPrisma.institutionModule.findMany({
+        where: { institutionId: id },
+        select: { moduleKey: true, state: true, entitledAt: true, activatedAt: true, suspendedAt: true },
+      });
+      const byKey = new Map(rows.map((r) => [r.moduleKey, r]));
+
+      const modules = MODULES.map((m) => {
+        const row = byKey.get(m.key);
+        return {
+          moduleKey: m.key,
+          name: m.name,
+          state: row?.state ?? "NOT_ENTITLED",
+          entitledAt: row?.entitledAt ?? null,
+          activatedAt: row?.activatedAt ?? null,
+          suspendedAt: row?.suspendedAt ?? null,
+        };
+      });
+
+      return reply.send({ institutionId: id, modules });
     },
   );
 }
