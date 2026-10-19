@@ -77,6 +77,19 @@ enum AuditAction {
   ACADEMIC_CALENDAR_UPDATED
 }
 
+enum AuditResult {
+  SUCCESS
+  DENIED
+  ERROR
+}
+
+enum SupportGrantStatus {
+  REQUESTED
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
 enum PolicyPeriod {
   DAILY
   WEEKLY
@@ -175,6 +188,8 @@ model Institution {
   auditLogs            AuditLog[]
   memberships          InstitutionMembership[]
   roles                Role[]
+  auditEvents          AuditEvent[]
+  supportGrants        SupportGrant[]
 
   @@map("institutions")
 }
@@ -212,9 +227,11 @@ model User {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
   lastLoginAt   DateTime?
-  phone         String?
-  mfaEnabled    Boolean       @default(false)
-  mfaSecret     String?
+  phone            String?
+  mfaEnabled       Boolean       @default(false)
+  mfaSecret        String?
+  mfaRecoveryCodes Json?
+  mfaEnrolledAt    DateTime?
 
   studentProfile StudentProfile?
   hodProfile     HodProfile?
@@ -229,6 +246,11 @@ model User {
   sessions               Session[]
   securityEvents         SecurityEvent[]
   memberships            InstitutionMembership[]
+
+  // Super Admin & platform security (FEAT-001)
+  auditEvents            AuditEvent[]   @relation("AuditEventActor")
+  supportGrantsGranted   SupportGrant[] @relation("SupportGrantGrantee")
+  supportGrantsRevoked   SupportGrant[] @relation("SupportGrantRevoker")
 
   @@unique([id, institutionId])
   @@map("users")
@@ -551,6 +573,64 @@ model AuditLog {
   @@index([action, timestamp])
   @@index([institutionId])
   @@map("audit_logs")
+}
+
+// ─── AUDIT EVENT v2 (Super Admin & platform security, FEAT-001) ─────────────
+// Generic string-keyed audit table (action validated against the shared
+// catalogue, not a pg enum) with a NULLABLE institutionId for platform actions.
+// Single-column FKs: the actor can be a platform user with no membership and
+// rows may precede/cross tenant context, so no composite tenant FK here.
+model AuditEvent {
+  id                String        @id @default(cuid())
+  institutionId     String?
+  institution       Institution?  @relation(fields: [institutionId], references: [id])
+  actorUserId       String
+  actorUser         User          @relation("AuditEventActor", fields: [actorUserId], references: [id])
+  actorMembershipId String?
+  actorRoleKey      String
+  action            String
+  resourceType      String
+  resourceId        String?
+  result            AuditResult
+  supportGrantId    String?
+  supportGrant      SupportGrant? @relation(fields: [supportGrantId], references: [id])
+  requestRef        String?
+  metadata          Json?
+  timestamp         DateTime      @default(now())
+
+  @@index([institutionId, timestamp])
+  @@index([actorUserId, timestamp])
+  @@index([action, timestamp])
+  @@index([supportGrantId])
+  @@map("audit_events")
+}
+
+// ─── SUPPORT GRANT (break-glass, FEAT-001) ──────────────────────────────────
+// PLATFORM-owned, single-tenant, purpose-bound, time-limited, revocable,
+// tenant-visible, fully audited break-glass authorization record.
+model SupportGrant {
+  id              String             @id @default(cuid())
+  institutionId   String
+  institution     Institution        @relation(fields: [institutionId], references: [id])
+  grantedToUserId String
+  grantedToUser   User               @relation("SupportGrantGrantee", fields: [grantedToUserId], references: [id])
+  purpose         String
+  scope           Json?
+  status          SupportGrantStatus @default(REQUESTED)
+  requestedAt     DateTime           @default(now())
+  activatedAt     DateTime?
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  revokedByUserId String?
+  revokedByUser   User?              @relation("SupportGrantRevoker", fields: [revokedByUserId], references: [id])
+  revokedReason   String?
+  createdAt       DateTime           @default(now())
+
+  auditEvents     AuditEvent[]
+
+  @@index([institutionId, status])
+  @@index([grantedToUserId, status])
+  @@map("support_grants")
 }
 
 // ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
