@@ -95,6 +95,13 @@ export interface SeededTenant {
   academicTermId: string;
   programId: string;
   calendarDayId: string;
+  // FEAT-003 SIS tables (design §9.3). student_documents is seeded (standard
+  // pair, child of the seeded studentProfile); student_profile_history is NOT
+  // seeded — its BEFORE UPDATE OR DELETE trigger blocks even adminClient in the
+  // shared teardown (the audit_events / academic_calendar_day_revisions
+  // precedent). Its append-only behaviour is proven by the self-contained case
+  // in the escape suite + the SIS regression suite.
+  studentDocumentId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -151,6 +158,7 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const academicTermId = id(`aterm_${key}`);
   const programId = id(`prog_${key}`);
   const calendarDayId = id(`acd_${key}`);
+  const studentDocumentId = id(`sdoc_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -183,6 +191,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
       departmentId,
       program: "TEST",
       semester: 1,
+      // FEAT-003: the generalized columns — status defaults ACTIVE at the DB,
+      // set explicitly here so the escape seed exercises the generalized row
+      // shape (the structured session/term/program links are set below, after
+      // those parents exist).
+      status: "ACTIVE",
     },
   });
 
@@ -308,6 +321,31 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Now the session/term/program exist, link the generalized studentProfile row
+  // to them (optional structured links — design §3.4). This proves the escape
+  // seed exercises a FULLY-populated generalized row (status + all three links),
+  // not just the additive-nullable default state.
+  await adminClient.studentProfile.update({
+    where: { id: studentProfileId },
+    data: { programId, academicSessionId, currentTermId: academicTermId },
+  });
+
+  // FEAT-003 student_documents (standard RLS pair). Seeded via the RLS-bypassing
+  // adminClient, a child of the seeded studentProfile (composite same-tenant FK
+  // is ON DELETE RESTRICT), so the read/spoofed-write/foreign-parent escape
+  // tests can later prove campass_app CANNOT see or forge the other tenant's row.
+  await adminClient.studentDocument.create({
+    data: {
+      id: studentDocumentId,
+      institutionId,
+      studentProfileId,
+      kind: "ID_PROOF",
+      title: `${PREFIX}Doc ${key}`,
+      storageKey: id(`store_${key}`),
+      uploadedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -323,6 +361,7 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     academicTermId,
     programId,
     calendarDayId,
+    studentDocumentId,
   };
 }
 
@@ -348,17 +387,15 @@ export async function cleanup(): Promise<void> {
   // institution_modules: child-first (before the institution delete) because the
   // tenant-root FK is ON DELETE RESTRICT.
   await withRetry(() => adminClient.institutionModule.deleteMany({ where }));
-  // FEAT-003 academics MUTABLE tables, child-first so the composite RESTRICT FKs
-  // do not block: calendar days (dept-scoped -> departments RESTRICT) + terms
-  // (-> sessions RESTRICT) before the sessions, programs (-> departments RESTRICT)
-  // before the departments, and all before the institution. The append-only
-  // academic_calendar_day_revisions table is intentionally NOT deleted here (the
-  // trigger blocks even adminClient; the suite seeds no revision rows — the
-  // audit_events precedent).
-  await withRetry(() => adminClient.academicCalendarDay.deleteMany({ where }));
-  await withRetry(() => adminClient.academicTerm.deleteMany({ where }));
-  await withRetry(() => adminClient.academicSession.deleteMany({ where }));
-  await withRetry(() => adminClient.program.deleteMany({ where }));
+  // FEAT-003: the generalized student_profiles row carries composite same-tenant
+  // FKs to programs/academic_sessions/academic_terms with ON DELETE SET NULL.
+  // A SET NULL on a COMPOSITE FK nulls BOTH columns, including the NOT NULL
+  // institutionId — so deleting those academic parents while a student still
+  // links to them raises a null-constraint violation. The student_profiles row
+  // (and its student_documents child — composite FK ON DELETE RESTRICT) must
+  // therefore be removed BEFORE the programs/sessions/terms it links to. Gate
+  // passes + their events reference student_profiles (RESTRICT), so those come
+  // out first, then documents, then the student rows.
   await withRetry(() => adminClient.gateEvent.deleteMany({ where }));
   await withRetry(() => adminClient.emergencyOverride.deleteMany({ where }));
   await withRetry(() => adminClient.gatePass.deleteMany({ where }));
@@ -368,7 +405,22 @@ export async function cleanup(): Promise<void> {
   await withRetry(() => adminClient.guardGateAssignment.deleteMany({ where }));
   await withRetry(() => adminClient.gate.deleteMany({ where }));
   await withRetry(() => adminClient.exitReason.deleteMany({ where }));
+  // student_documents (composite FK -> student_profiles ON DELETE RESTRICT) then
+  // the student rows themselves — BEFORE the academic parents below.
+  // student_profile_history is intentionally NOT deleted here — the append-only
+  // BEFORE UPDATE OR DELETE trigger blocks even adminClient; the escape suite
+  // seeds no history row (the audit_events / revision precedent).
+  await withRetry(() => adminClient.studentDocument.deleteMany({ where }));
   await withRetry(() => adminClient.studentProfile.deleteMany({ where }));
+  // FEAT-003 academics MUTABLE tables, now safe to delete (no student links left):
+  // calendar days (dept-scoped -> departments RESTRICT) + terms (-> sessions
+  // RESTRICT) before the sessions, programs (-> departments RESTRICT) before the
+  // departments, and all before the institution. The append-only
+  // academic_calendar_day_revisions table is intentionally NOT deleted here.
+  await withRetry(() => adminClient.academicCalendarDay.deleteMany({ where }));
+  await withRetry(() => adminClient.academicTerm.deleteMany({ where }));
+  await withRetry(() => adminClient.academicSession.deleteMany({ where }));
+  await withRetry(() => adminClient.program.deleteMany({ where }));
   await withRetry(() => adminClient.hodProfile.deleteMany({ where }));
   await withRetry(() => adminClient.guardProfile.deleteMany({ where }));
   await withRetry(() => adminClient.user.deleteMany({ where }));
@@ -399,6 +451,10 @@ export async function countRemainingTestRows(): Promise<number> {
     () => adminClient.academicTerm.count({ where }),
     () => adminClient.academicSession.count({ where }),
     () => adminClient.program.count({ where }),
+    // FEAT-003 student_documents (standard pair, seeded + torn down here). The
+    // append-only student_profile_history is NOT seeded/counted — audit_events
+    // precedent.
+    () => adminClient.studentDocument.count({ where }),
     () => adminClient.gatePass.count({ where }),
     () => adminClient.studentProfile.count({ where }),
     () => adminClient.user.count({ where }),
@@ -452,6 +508,10 @@ export const RLS_TABLES = [
   "academic_terms",
   "programs",
   "academic_calendar_day_revisions",
+  // FEAT-003 SIS tables (design §9.3). student_documents uses the default modify
+  // pair; student_profile_history is append-only (EXPECTED_POLICIES below).
+  "student_profile_history",
+  "student_documents",
 ] as const;
 
 /**
@@ -469,6 +529,13 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   academic_calendar_day_revisions: [
     "tenant_isolation_select",
     "academic_calendar_day_revisions_tenant_insert",
+  ],
+  // FEAT-003: student_profile_history is append-only (design §4.3/§10.1) — the
+  // SELECT + INSERT pair, NO modify policy. student_documents is deliberately
+  // ABSENT here so it falls through to DEFAULT_POLICIES (the standard pair).
+  student_profile_history: [
+    "tenant_isolation_select",
+    "student_profile_history_tenant_insert",
   ],
 };
 

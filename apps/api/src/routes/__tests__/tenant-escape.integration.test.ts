@@ -426,6 +426,209 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
   // The policy meta-test (case 6) still asserts the append-only policy pair + the
   // absence of a modify policy on this table.
 
+  // ─── FEAT-003 SIS tables (design §9.3/§10.1) ───────────────────────────────
+  // student_documents (standard pair): cross-tenant read denied, spoofed-tenant
+  // write rejected, foreign-parent composite-FK violation, buggy-query backstop,
+  // three-GUC-state fail-closed. student_profile_history (append-only) is covered
+  // by its own self-contained case (3w) + the policy meta-test — it is NOT seeded
+  // in the shared setup (the trigger blocks the shared teardown).
+
+  it("3q. student_documents read escape: tenant A cannot see tenant B's document", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.studentDocument.findUnique({ where: { id: B.studentDocumentId } }),
+    );
+    expect(foreign).toBeNull();
+
+    const own = await withTenant(A.institutionId, (tx) => tx.studentDocument.findMany({}));
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.studentDocumentId);
+    }
+  }, 60_000);
+
+  it("3r. student_documents nested-include escape: B's docs never leak through A's studentProfile", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Reading the student profile WITH a documents include under A returns only
+    // A's own doc, never B's (RLS applies to the nested relation read too).
+    const profile = await withTenant(A.institutionId, (tx) =>
+      tx.studentProfile.findFirst({
+        where: { id: A.studentProfileId },
+        include: { documents: true },
+      }),
+    );
+    expect(profile).toBeTruthy();
+    for (const doc of profile!.documents) {
+      expect(doc.institutionId).toBe(A.institutionId);
+      expect(doc.id).not.toBe(B.studentDocumentId);
+    }
+  }, 60_000);
+
+  it("3s. student_documents spoofed-tenant insert: A cannot stamp a doc institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.studentDocument.create({
+          data: {
+            id: `${PREFIX}SPOOF_SDOC`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            studentProfileId: B.studentProfileId,
+            kind: "OTHER",
+            title: `${PREFIX}spoof`,
+            storageKey: `${PREFIX}spoof_store`,
+            uploadedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3t. student_documents foreign-parent: A cannot create a doc referencing B's studentProfile", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, studentProfileId) makes it
+    // physically impossible to reference B's student under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.studentDocument.create({
+          data: {
+            id: `${PREFIX}FOREIGN_SDOC`,
+            institutionId: A.institutionId,
+            studentProfileId: B.studentProfileId, // B's student under A's tenant
+            kind: "OTHER",
+            title: `${PREFIX}foreign-parent`,
+            storageKey: `${PREFIX}foreign_store`,
+            uploadedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3u. student_documents buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const rows = await withTenant(A.institutionId, (tx) => tx.studentDocument.findMany({}));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.institutionId).toBe(A.institutionId);
+    expect(rows.some((r: { id: string }) => r.id === B.studentDocumentId)).toBe(false);
+
+    const aCount = await adminClient.studentDocument.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(rows.length).toBe(aCount);
+  }, 60_000);
+
+  it("3v. student_profiles buggy-query backstop: generalized row unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The generalized student_profiles row (status + structured links) is still
+    // RLS-isolated — an unfiltered read under A never leaks B's student.
+    const rows = await withTenant(A.institutionId, (tx) => tx.studentProfile.findMany({}));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.institutionId).toBe(A.institutionId);
+    expect(rows.some((r: { id: string }) => r.id === B.studentProfileId)).toBe(false);
+  }, 60_000);
+
+  it("3w. student_documents + generalized student_profiles fail-closed: unset / empty-string GUC yield zero rows", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetDocs = await appClient.studentDocument.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetDocs.length).toBe(0);
+    const unsetProfiles = await appClient.studentProfile.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetProfiles.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const d = await tx.studentDocument.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const p = await tx.studentProfile.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return d.length + p.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.studentDocument.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.studentDocumentId)).toBe(true);
+  }, 60_000);
+
+  it("3x. student_profile_history APPEND-ONLY (self-contained, one tenant): insert OK, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+
+    // Self-contained: insert a history row under A, assert campass_app can read
+    // it, then assert UPDATE and DELETE are BOTH denied (REVOKE + trigger). The
+    // row is left in place — the shared teardown deletes the parent studentProfile
+    // via adminClient AFTER this, but the append-only trigger would block even
+    // that, so we remove it here within THIS test's own trigger-disable scope
+    // (mirrors the academics-behavioral suite's clearAcademics pattern).
+    const histId = `${PREFIX}SPH_A`;
+    await withTenant(A.institutionId, (tx) =>
+      tx.studentProfileHistory.create({
+        data: {
+          id: histId,
+          institutionId: A.institutionId,
+          studentProfileId: A.studentProfileId,
+          changeType: "UPDATED",
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable by campass_app under A's context.
+    const readBack = await withTenant(A.institutionId, (tx) =>
+      tx.studentProfileHistory.findUnique({ where: { id: histId } }),
+    );
+    expect(readBack).toBeTruthy();
+
+    // UPDATE denied (REVOKE UPDATE + the BEFORE UPDATE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.studentProfileHistory.update({ where: { id: histId }, data: { reason: "mutate" } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // DELETE denied (REVOKE DELETE + the BEFORE DELETE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.studentProfileHistory.delete({ where: { id: histId } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // The row survived both attempts.
+    const still = await adminClient.studentProfileHistory.findUnique({ where: { id: histId } });
+    expect(still).toBeTruthy();
+
+    // Clean up this suite-local history row within a scoped trigger-disable so
+    // the shared teardown's studentProfile delete (RESTRICT parent) is not
+    // blocked. This is the ONLY place the escape suite touches this table.
+    await adminClient.$executeRawUnsafe(
+      `ALTER TABLE "student_profile_history" DISABLE TRIGGER "student_profile_history_no_update_delete"`,
+    );
+    try {
+      await adminClient.studentProfileHistory.deleteMany({
+        where: { institutionId: { startsWith: PREFIX } },
+      });
+    } finally {
+      await adminClient.$executeRawUnsafe(
+        `ALTER TABLE "student_profile_history" ENABLE TRIGGER "student_profile_history_no_update_delete"`,
+      );
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -499,11 +702,28 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     // Append-only tables must NOT carry a FOR-ALL modify policy (design §4.3):
     // their immutability is the INSERT-only policy + REVOKE + trigger. Assert the
     // revision table (and the audit_events precedent) have no tenant_isolation_modify.
-    for (const table of ["academic_calendar_day_revisions", "audit_events"]) {
+    // FEAT-003: student_profile_history joins the append-only set (no modify
+    // policy); student_documents is the standard pair (asserted via the
+    // EXPECTED_POLICIES/DEFAULT_POLICIES loop above, so it IS expected to carry
+    // tenant_isolation_modify).
+    for (const table of [
+      "academic_calendar_day_revisions",
+      "audit_events",
+      "student_profile_history",
+    ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(
         "tenant_isolation_modify",
       );
     }
+
+    // And student_documents MUST carry the standard modify policy (it is a
+    // normal mutable tenant-owned table, not append-only).
+    const docPolicies = policies
+      .filter((p) => p.tablename === "student_documents")
+      .map((p) => p.policyname);
+    expect(docPolicies, "student_documents must have the standard modify policy").toContain(
+      "tenant_isolation_modify",
+    );
   }, 60_000);
 });
