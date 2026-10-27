@@ -61,7 +61,7 @@ export const AUDIT_ACTIONS = [
   // admin.module.* (2)
   { key: "admin.module.activated", module: "admin", description: "Institution activated a module" },
   { key: "admin.module.suspended", module: "admin", description: "Institution suspended a module" },
-  // academics.* (12)
+  // academics.* (11)
   { key: "academics.session.created", module: "academics", description: "Academic session created" },
   { key: "academics.session.updated", module: "academics", description: "Academic session updated" },
   { key: "academics.session.activated", module: "academics", description: "Academic session activated" },
