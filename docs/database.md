@@ -259,6 +259,39 @@ Values are operational decisions; recorded as placeholders so they are not forgo
 
 ---
 
+## 6a. Operational notes & deferred housekeeping
+
+Tracked decisions and known debt from Phase 0, so nothing is silently lost.
+
+- **Legacy `audit_logs` is kept as read-only history.** The enum-based `audit_logs`
+  table is superseded by the generic `audit_events` (AuditLog v2). All new auditable
+  actions write to `audit_events` via `recordAuditEvent`; `audit_logs` is NOT dropped —
+  it is retained as historical record and is no longer written to. (Decision: keep as
+  history, do not archive/drop, 2026-10-19.)
+
+- **`_prisma_migrations` ledger drift (deferred, cosmetic).** The production ledger has
+  two metadata-only defects that predate the module work and do NOT affect data or the
+  running app: (1) the `20261018110658_tenancy_isolation_rls` recorded checksum differs
+  from the committed `migration.sql` (drift from an edit-after-apply during B-1 dev);
+  (2) a rolled-back duplicate row for `20261018171747_identity_rbac_b2` (leftover from a
+  local `migrate dev` + prod `migrate deploy` both touching it). `prisma migrate deploy`
+  (production) tolerates both; only local `prisma migrate dev` is affected. Reconcile
+  when a stable DB connection is available (recompute B-1's checksum from the committed
+  file + update that one row; delete the rolled-back duplicate row — metadata only, no
+  data touched). Low priority.
+
+- **Migration practice (standard going forward):** NEVER run `prisma migrate dev`
+  against the shared Supabase DB (that caused the ledger drift above). Generate migrations
+  locally with `prisma migrate dev --create-only`, then apply with `prisma migrate deploy`.
+  Production (Railway) applies migrations via `prisma migrate deploy` on start.
+
+- **Remaining deferred cleanup (separate, not in this pass):** removing the legacy
+  `role` enum + `User.role`/`User.institutionId` and the legacy JWT `role` claim is an
+  AUTH-CRITICAL change (the shim and `platform.ts` still depend on it) and must be its
+  own reviewed workstream with full auth re-verification — NOT lumped into housekeeping.
+
+---
+
 ## 7. Checklist (DB move + Phase 0 readiness)
 
 - [ ] Supabase project created; pooled + direct URLs captured. ⚠ VERIFY ports/modes.

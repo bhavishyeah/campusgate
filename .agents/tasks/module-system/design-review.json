@@ -1,0 +1,27 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "location": "design.md §4 (audit serialization)",
+      "problem": "sanitizeMetadata (apps/api/src/services/audit.ts) also drops any key matching /password|token|secret|mfa|qr/i in addition to dropping arrays/objects. The chosen field names affectedDependents/affectedDependentsCount are safe, but the design never names this secret-key filter, so a future rename containing one of those substrings would silently lose the audit field again.",
+      "fix": "Add one sentence to §4 noting the scalar field names must also avoid the password|token|secret|mfa|qr substrings; rely on the §9.2 persisted-row assertion as the regression guard."
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "location": "design.md §3 (module-system.ts) and §6.2 (route mapping)",
+      "problem": "activate()/suspend()/entitle()/revoke() are described in prose but have no signatures or typed result shape, unlike requireModuleActive (full body) and the audit serialization (concrete snippet). The route-layer 404/409 mapping depends on an unstated return contract (union vs throw vs {ok,...}).",
+      "fix": "Add the four service signatures and an ActivateResult-style discriminated-union result type to §3 so the §6.2 handlers have an unambiguous contract to map to 404/409."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "location": "design.md §6.2 (activate/suspend endpoints) and §1.1 (settings column)",
+      "problem": "A nullable settings Json column is added and named as the future required-config seam, but the Phase-0 activate/suspend endpoints do not state whether they accept, ignore, or reject a settings body. POST /activate with a settings payload has no defined behavior.",
+      "fix": "State in §6.2 that Phase-0 activate/suspend take no body (or ignore settings), and that settings is written only by a future config step, so there is no half-wired write path."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\module-system\\design-review.md"
+}
