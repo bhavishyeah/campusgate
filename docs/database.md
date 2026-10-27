@@ -269,16 +269,25 @@ Tracked decisions and known debt from Phase 0, so nothing is silently lost.
   it is retained as historical record and is no longer written to. (Decision: keep as
   history, do not archive/drop, 2026-10-19.)
 
-- **`_prisma_migrations` ledger drift (deferred, cosmetic).** The production ledger has
-  two metadata-only defects that predate the module work and do NOT affect data or the
-  running app: (1) the `20261018110658_tenancy_isolation_rls` recorded checksum differs
-  from the committed `migration.sql` (drift from an edit-after-apply during B-1 dev);
-  (2) a rolled-back duplicate row for `20261018171747_identity_rbac_b2` (leftover from a
-  local `migrate dev` + prod `migrate deploy` both touching it). `prisma migrate deploy`
-  (production) tolerates both; only local `prisma migrate dev` is affected. Reconcile
-  when a stable DB connection is available (recompute B-1's checksum from the committed
-  file + update that one row; delete the rolled-back duplicate row — metadata only, no
-  data touched). Low priority.
+- **`_prisma_migrations` ledger — reconciled 2026-10-19.** A rolled-back duplicate row
+  for `20261018171747_identity_rbac_b2` (steps=0, left over from a local `migrate dev` +
+  prod `migrate deploy` both touching it) was deleted via a guarded one-off write
+  (re-verified the stale signature + confirmed a healthy `finished` row existed before
+  deleting; no data table touched). `prisma migrate status` now reports "Database schema
+  is up to date" with no duplicates.
+  - **Correction to an earlier note:** the B-1 (`tenancy_isolation_rls`) "checksum
+    mismatch" flagged in prior sessions was a **false alarm** — a Windows CRLF artifact
+    in how the file was hashed locally. Prisma stores the checksum over **LF-normalized**
+    content; B-1's recorded checksum matches the LF hash and is correct. It was left
+    untouched (correctly).
+  - `20261019053533_superadmin_security`'s recorded checksum does not match the current
+    committed file bytes (reflects the exact SQL deployed during FEAT-001's
+    create-only/deploy iterations). This is harmless — `migrate status` is clean and
+    `migrate deploy` tolerates it. If it ever blocks a local `migrate dev`, use
+    `prisma migrate resolve` (never a manual checksum overwrite). Left as-is deliberately.
+  - **Note on free-tier auto-pause:** Supabase pauses the project after inactivity; the
+    pooler then returns `FATAL: tenant/user ... not found` until the project is resumed
+    from the dashboard. This is not a credentials or network fault.
 
 - **Migration practice (standard going forward):** NEVER run `prisma migrate dev`
   against the shared Supabase DB (that caused the ledger drift above). Generate migrations
