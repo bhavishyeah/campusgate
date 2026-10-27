@@ -89,6 +89,12 @@ export interface SeededTenant {
   membershipId: string;
   membershipRoleId: string;
   institutionModuleId: string;
+  // FEAT-003 academics tables (design §10.1). The append-only revision table is
+  // NOT seeded here (the trigger blocks even adminClient — audit_events precedent).
+  academicSessionId: string;
+  academicTermId: string;
+  programId: string;
+  calendarDayId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -141,6 +147,10 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const membershipId = id(`mbr_${key}`);
   const membershipRoleId = id(`mrl_${key}`);
   const institutionModuleId = id(`imod_${key}`);
+  const academicSessionId = id(`asess_${key}`);
+  const academicTermId = id(`aterm_${key}`);
+  const programId = id(`prog_${key}`);
+  const calendarDayId = id(`acd_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -238,6 +248,66 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // FEAT-003 academics tenant-owned tables (design §10.1). Seeded via the
+  // RLS-bypassing adminClient so the read-escape tests can later prove the
+  // campass_app client CANNOT see the other tenant's rows. A session (+1 term),
+  // a program under the seeded department, and ONE department-scoped calendar
+  // entry are created. The append-only academic_calendar_day_revisions table is
+  // deliberately NOT seeded here (the BEFORE UPDATE OR DELETE trigger blocks even
+  // adminClient in the shared teardown — exactly the audit_events precedent); its
+  // escape behaviour is covered by the self-contained calendar-revision test.
+  const sessionStart = new Date("2026-07-01T00:00:00.000Z");
+  const sessionEnd = new Date("2027-06-30T00:00:00.000Z");
+
+  await adminClient.academicSession.create({
+    data: {
+      id: academicSessionId,
+      institutionId,
+      name: `${PREFIX}Session ${key}`,
+      structureType: "SEMESTER",
+      status: "UPCOMING",
+      startDate: sessionStart,
+      endDate: sessionEnd,
+    },
+  });
+
+  await adminClient.academicTerm.create({
+    data: {
+      id: academicTermId,
+      institutionId,
+      academicSessionId,
+      name: `${PREFIX}Term ${key}`,
+      ordinal: 1,
+      status: "UPCOMING",
+      startDate: sessionStart,
+      endDate: new Date("2026-12-31T00:00:00.000Z"),
+    },
+  });
+
+  await adminClient.program.create({
+    data: {
+      id: programId,
+      institutionId,
+      departmentId,
+      name: `${PREFIX}Program ${key}`,
+      code: id(`PROG_${key}`),
+      duration: 6,
+      durationUnit: "TERMS",
+    },
+  });
+
+  await adminClient.academicCalendarDay.create({
+    data: {
+      id: calendarDayId,
+      institutionId,
+      date: new Date("2026-09-01T00:00:00.000Z"),
+      dayType: "EXAM_DAY",
+      note: `${PREFIX}dept-scoped ${key}`,
+      departmentId,
+      academicSessionId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -249,6 +319,10 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     membershipId,
     membershipRoleId,
     institutionModuleId,
+    academicSessionId,
+    academicTermId,
+    programId,
+    calendarDayId,
   };
 }
 
@@ -274,6 +348,17 @@ export async function cleanup(): Promise<void> {
   // institution_modules: child-first (before the institution delete) because the
   // tenant-root FK is ON DELETE RESTRICT.
   await withRetry(() => adminClient.institutionModule.deleteMany({ where }));
+  // FEAT-003 academics MUTABLE tables, child-first so the composite RESTRICT FKs
+  // do not block: calendar days (dept-scoped -> departments RESTRICT) + terms
+  // (-> sessions RESTRICT) before the sessions, programs (-> departments RESTRICT)
+  // before the departments, and all before the institution. The append-only
+  // academic_calendar_day_revisions table is intentionally NOT deleted here (the
+  // trigger blocks even adminClient; the suite seeds no revision rows — the
+  // audit_events precedent).
+  await withRetry(() => adminClient.academicCalendarDay.deleteMany({ where }));
+  await withRetry(() => adminClient.academicTerm.deleteMany({ where }));
+  await withRetry(() => adminClient.academicSession.deleteMany({ where }));
+  await withRetry(() => adminClient.program.deleteMany({ where }));
   await withRetry(() => adminClient.gateEvent.deleteMany({ where }));
   await withRetry(() => adminClient.emergencyOverride.deleteMany({ where }));
   await withRetry(() => adminClient.gatePass.deleteMany({ where }));
@@ -308,6 +393,12 @@ export async function countRemainingTestRows(): Promise<number> {
     () => adminClient.membershipRole.count({ where }),
     () => adminClient.institutionMembership.count({ where }),
     () => adminClient.institutionModule.count({ where }),
+    // FEAT-003 academics mutable tables (the revision table is append-only and
+    // not seeded here, so it is not counted — audit_events precedent).
+    () => adminClient.academicCalendarDay.count({ where }),
+    () => adminClient.academicTerm.count({ where }),
+    () => adminClient.academicSession.count({ where }),
+    () => adminClient.program.count({ where }),
     () => adminClient.gatePass.count({ where }),
     () => adminClient.studentProfile.count({ where }),
     () => adminClient.user.count({ where }),
@@ -355,6 +446,12 @@ export const RLS_TABLES = [
   "support_grants",
   // Module-system table (design §9.1) — uses the default policy pair.
   "institution_modules",
+  // FEAT-003 academics tables (design §9/§10.1). sessions/terms/programs use the
+  // default modify pair; the revision table is append-only (EXPECTED_POLICIES).
+  "academic_sessions",
+  "academic_terms",
+  "programs",
+  "academic_calendar_day_revisions",
 ] as const;
 
 /**
@@ -367,6 +464,12 @@ export const RLS_TABLES = [
 export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   audit_events: ["tenant_isolation_select", "audit_events_tenant_insert"],
   support_grants: ["support_grants_tenant_read"],
+  // FEAT-003: the calendar-revision table is append-only (design §4.3/§10.1) —
+  // the audit_events pair, NOT the default modify pair.
+  academic_calendar_day_revisions: [
+    "tenant_isolation_select",
+    "academic_calendar_day_revisions_tenant_insert",
+  ],
 };
 
 /** The default policy pair every non-special table must carry. */

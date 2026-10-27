@@ -252,6 +252,180 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     expect(aVisible.some((r: { id: string }) => r.id === A.institutionModuleId)).toBe(true);
   }, 60_000);
 
+  // ─── FEAT-003 academics tables (design §10.1) ──────────────────────────────
+  // academic_sessions / academic_terms / programs: cross-tenant read denied,
+  // spoofed/cross-tenant write denied, buggy-query backstop, three-GUC-state
+  // fail-closed. The append-only academic_calendar_day_revisions table is covered
+  // separately (its self-contained test) + the UPDATE/DELETE assertions below.
+
+  it("3i. academic_sessions read escape: tenant A cannot see tenant B's session", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.academicSession.findUnique({ where: { id: B.academicSessionId } }),
+    );
+    expect(foreign).toBeNull();
+
+    const own = await withTenant(A.institutionId, (tx) => tx.academicSession.findMany({}));
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.academicSessionId);
+    }
+  }, 60_000);
+
+  it("3j. academic_terms read escape: tenant A cannot see tenant B's term", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.academicTerm.findUnique({ where: { id: B.academicTermId } }),
+    );
+    expect(foreign).toBeNull();
+
+    const own = await withTenant(A.institutionId, (tx) => tx.academicTerm.findMany({}));
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.academicTermId);
+    }
+  }, 60_000);
+
+  it("3k. programs read escape: tenant A cannot see tenant B's program", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.program.findUnique({ where: { id: B.programId } }),
+    );
+    expect(foreign).toBeNull();
+
+    const own = await withTenant(A.institutionId, (tx) => tx.program.findMany({}));
+    expect(own.length).toBeGreaterThan(0);
+    for (const row of own) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.programId);
+    }
+  }, 60_000);
+
+  it("3l. academic_sessions spoofed insert: A cannot stamp a session institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.academicSession.create({
+          data: {
+            id: `${PREFIX}SPOOF_SESS`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            name: `${PREFIX}SPOOF Session`,
+            structureType: "SEMESTER",
+            startDate: new Date("2026-07-01T00:00:00.000Z"),
+            endDate: new Date("2027-06-30T00:00:00.000Z"),
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3m. academic_terms composite-FK: A cannot create a term referencing B's session", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, academicSessionId) makes it
+    // physically impossible to reference B's session under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.academicTerm.create({
+          data: {
+            id: `${PREFIX}ILLEGAL_TERM`,
+            institutionId: A.institutionId,
+            academicSessionId: B.academicSessionId, // B's session under A's tenant
+            name: `${PREFIX}Illegal Term`,
+            ordinal: 9,
+            startDate: new Date("2026-07-01T00:00:00.000Z"),
+            endDate: new Date("2026-12-31T00:00:00.000Z"),
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3n. programs spoofed update: A cannot flip B's program to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.program.updateMany({
+        where: { id: B.programId },
+        data: { status: "INACTIVE" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.program.findUnique({ where: { id: B.programId } });
+    expect(bRow!.status).toBe("ACTIVE");
+  }, 60_000);
+
+  it("3o. academics buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const sessions = await withTenant(A.institutionId, (tx) => tx.academicSession.findMany({}));
+    for (const r of sessions) expect(r.institutionId).toBe(A.institutionId);
+    expect(sessions.some((r: { id: string }) => r.id === B.academicSessionId)).toBe(false);
+
+    const terms = await withTenant(A.institutionId, (tx) => tx.academicTerm.findMany({}));
+    for (const r of terms) expect(r.institutionId).toBe(A.institutionId);
+    expect(terms.some((r: { id: string }) => r.id === B.academicTermId)).toBe(false);
+
+    const programs = await withTenant(A.institutionId, (tx) => tx.program.findMany({}));
+    for (const r of programs) expect(r.institutionId).toBe(A.institutionId);
+    expect(programs.some((r: { id: string }) => r.id === B.programId)).toBe(false);
+  }, 60_000);
+
+  it("3p. academics fail-closed: unset / empty-string GUC yield zero rows for every new table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetSessions = await appClient.academicSession.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetSessions.length).toBe(0);
+    const unsetTerms = await appClient.academicTerm.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetTerms.length).toBe(0);
+    const unsetPrograms = await appClient.program.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetPrograms.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const s = await tx.academicSession.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const t = await tx.academicTerm.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const p = await tx.program.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return s.length + t.length + p.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) wrong-tenant direction already covered; prove A's own rows ARE visible under A.
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.academicSession.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.academicSessionId)).toBe(true);
+  }, 60_000);
+
+  // NOTE: the academic_calendar_day_revisions APPEND-ONLY assertion (campass_app
+  // cannot UPDATE/DELETE a revision) is deliberately NOT in this shared escape
+  // suite — seeding a revision here would leave an append-only row that RESTRICTs
+  // the shared cleanup()'s institution delete (the exact reason design §10.1 keeps
+  // revisions OUT of the escape seed, mirroring audit_events). That coverage lives
+  // in the self-contained academics-behavioral suite ("§10.4 revision append-only
+  // + fail-closed"), which manages the trigger within its own prefix/DDL scope.
+  // The policy meta-test (case 6) still asserts the append-only policy pair + the
+  // absence of a modify policy on this table.
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -320,6 +494,16 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       for (const policy of expected) {
         expect(names, `${table} missing ${policy}`).toContain(policy);
       }
+    }
+
+    // Append-only tables must NOT carry a FOR-ALL modify policy (design §4.3):
+    // their immutability is the INSERT-only policy + REVOKE + trigger. Assert the
+    // revision table (and the audit_events precedent) have no tenant_isolation_modify.
+    for (const table of ["academic_calendar_day_revisions", "audit_events"]) {
+      const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
+      expect(names, `${table} must NOT have a modify policy`).not.toContain(
+        "tenant_isolation_modify",
+      );
     }
   }, 60_000);
 });
