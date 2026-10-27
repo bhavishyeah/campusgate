@@ -1,0 +1,7 @@
+{
+  "task_id": "task-phase1-academics",
+  "task_description": "CAMPASS Phase 1 — Shared Institutional Data. Implement the APPROVED design at .agents/tasks/phase1-academics/design.md: academic sessions/terms, program hierarchy, generalized academic calendar (nullable department scope + append-only revision history) as a read service, admin CRUD + session/term lifecycle (exactly-one-ACTIVE, preserve-history by construction, promotion seam modelled not executed), non-admin read endpoints, the phase1_academics migration (RLS FORCE + fail-closed/append-only policies + composite FKs + partial uniques + campass_app GRANT refresh, FROZEN migrations untouched), shared permission/audit catalogue additions, seed extensions, and the full escape + behavioral test suite. Additive only; the allowance-engine's live calendar read must not break. Work on main, no worktree; do not push or deploy.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

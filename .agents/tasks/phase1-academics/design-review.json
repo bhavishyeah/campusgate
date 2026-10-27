@@ -1,0 +1,38 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "title": "Revision-table append-only trigger name does not match the audit_events precedent it claims to mirror byte-for-byte",
+      "location": "design.md §4.3 / §8 step 7 / §10.1",
+      "problem": "The design names the trigger academic_calendar_day_revisions_append_only and says it is 'identical in shape to audit_events_append_only'. In the live precedent (superadmin_security/migration.sql) the FUNCTION is audit_events_append_only and the TRIGGER is audit_events_no_update_delete. Reusing the function-style name for the trigger is cosmetic but makes the cited precedent hard to follow.",
+      "fix": "Name the function academic_calendar_day_revisions_append_only() and the trigger academic_calendar_day_revisions_no_update_delete (function + distinctly-named trigger, as the real precedent does); update §4.3/§8/§10.1 to the trigger name.",
+      "blocking": false
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "title": "requireModuleActive omission on the new student.ts reads is correct but not called out at the route, inviting implementation drift",
+      "location": "design.md §5.5 (routes placed on student.ts)",
+      "problem": "Every existing route on apps/api/src/routes/student.ts pairs requirePermission with requireModuleActive('campus_movement') (verified). §5.5 correctly lists only requirePermission('academics.view') + withTenant per Decision A (academics is never module-gated), but does not explicitly flag that these routes must OMIT the requireModuleActive hook their peers carry. A coder mirroring the file could add it, wrongly gating the academics reads for every tenant (permanently, if keyed to academic_sessions which nothing activates).",
+      "fix": "Add one explicit sentence to §5.5: 'These routes carry NO requireModuleActive hook, unlike every peer route on student.ts, because academics is foundational, not a gated module (Decision A).' Add a code comment at the route.",
+      "blocking": false
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "Soft-validation warnings response envelope shape is unspecified",
+      "location": "design.md §3.3, §5.1, §10.2",
+      "problem": "The design introduces a non-fatal 'warnings' array (a new response convention not present in any live handler) and specifies when warnings are emitted but not the success-plus-warnings envelope shape or whether machine-readable codes accompany the human strings. Two callers (UI vs tests) could assume different shapes.",
+      "fix": "Pin the envelope in §5.1, e.g. '{ <resource>, warnings: Array<{ code: string; message: string }> }' with warnings=[] when none apply, and have §10.2 assert on warnings[].code.",
+      "blocking": false
+    }
+  ],
+  "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "NIT": 3
+  },
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase1-academics\\design-review.md"
+}
