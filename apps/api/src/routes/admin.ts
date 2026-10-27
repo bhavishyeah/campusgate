@@ -27,6 +27,7 @@ import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { recordAuditEvent } from "../services/audit.js";
 import { activate, suspend } from "../services/module-system.js";
+import { resolveImportRow } from "../services/student-sis.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
 import { CalendarService } from "../services/calendar-service.js";
 import {
@@ -840,13 +841,15 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Maximum 500 students per import" });
     }
 
-    const results = { created: 0, skipped: 0, errors: [] as string[] };
+    // `updated` counts rows resolved to an existing student by enrollmentNo and
+    // updated in place (the no-duplicate-identity re-import rule — design §7.3).
+    const results = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
 
     await withTenant(institutionId, async (tx) => {
       for (const row of students) {
         const parsed = bulkImportStudentSchema.safeParse(row);
         if (!parsed.success) {
-          results.errors.push(`Row ${results.created + results.skipped + 1}: Invalid data`);
+          results.errors.push(`Row ${results.created + results.updated + results.skipped + 1}: Invalid data`);
           results.skipped++;
           continue;
         }
@@ -863,14 +866,72 @@ export async function adminRoutes(app: FastifyInstance) {
           continue;
         }
 
-        // Check existing
-        const existing = await tx.user.findUnique({ where: { email: data.email } });
-        if (existing) {
-          results.errors.push(`${data.enrollmentNo}: Email already exists`);
+        // Resolve-first by enrollmentNo (the identity key) BEFORE the email
+        // check, then decide update/create/skip (design §7.3). The
+        // enrollmentNo UNIQUE index remains the hard backstop in the catch.
+        const existingByEnrollmentNo = await tx.studentProfile.findFirst({
+          where: { enrollmentNo: data.enrollmentNo, institutionId },
+          select: { id: true },
+        });
+        const existingEmailUser = await tx.user.findUnique({
+          where: { email: data.email },
+          select: { id: true },
+        });
+
+        const resolution = resolveImportRow(existingByEnrollmentNo, existingEmailUser, {
+          enrollmentNo: data.enrollmentNo,
+          email: data.email,
+        });
+
+        if (resolution.action === "skip") {
+          results.errors.push(resolution.reason);
           results.skipped++;
           continue;
         }
 
+        // Best-effort structured program resolution (§3.4 — never fails the row).
+        const programMatch = await tx.program.findFirst({
+          where: { institutionId, OR: [{ code: data.courseCode }, { code: data.program }, { name: data.program }] },
+          select: { id: true },
+        });
+        const programId = programMatch?.id ?? null;
+
+        if (resolution.action === "update") {
+          try {
+            await tx.studentProfile.update({
+              where: { id: resolution.studentProfileId },
+              data: {
+                name: data.name,
+                rollNumber: data.rollNumber,
+                section: data.section,
+                program: data.program,
+                semester: data.semester,
+                phone: data.phone,
+                address: data.address,
+                dob: data.dob,
+                ...(programId ? { programId } : {}),
+              },
+            });
+            // A re-imported (updated) row records an UPDATED history row.
+            await tx.studentProfileHistory.create({
+              data: {
+                institutionId,
+                studentProfileId: resolution.studentProfileId,
+                changeType: "UPDATED",
+                actorUserId: userId,
+                actorMembershipId: request.auth?.membershipId ?? null,
+                reason: "bulk-import re-import update",
+              },
+            });
+            results.updated++;
+          } catch {
+            results.errors.push(`${data.enrollmentNo}: Update failed`);
+            results.skipped++;
+          }
+          continue;
+        }
+
+        // action === "create"
         try {
           await tx.user.create({
             data: {
@@ -892,6 +953,8 @@ export async function adminRoutes(app: FastifyInstance) {
                   dob: data.dob,
                   phone: data.phone,
                   address: data.address,
+                  status: "ACTIVE",
+                  ...(programId ? { programId } : {}),
                 },
               },
             },
@@ -905,7 +968,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
       await recordAuditEvent(
         {
-          action: "admin.students.imported",
+          action: "students.student.imported",
           result: "SUCCESS",
           actorUserId: userId,
           actorRoleKey: request.auth?.roles[0] ?? request.user.role,
@@ -913,7 +976,7 @@ export async function adminRoutes(app: FastifyInstance) {
           actorMembershipId: request.auth?.membershipId,
           resourceType: "User",
           requestRef: request.id,
-          metadata: { created: results.created, skipped: results.skipped },
+          metadata: { created: results.created, updated: results.updated, skipped: results.skipped },
         },
         tx,
       );

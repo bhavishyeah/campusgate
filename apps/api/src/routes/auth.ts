@@ -303,7 +303,17 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Enrollment number already registered" });
     }
 
-    // Create user + student profile (awaiting admin approval)
+    // Best-effort structured program resolution (§3.4 / §7.2 — never fatal; a
+    // null structured link is a legal state). The free-text `program` column is
+    // the operational source of truth and is always written below.
+    const matchedProgram = await privilegedPrisma.program.findFirst({
+      where: { institutionId: department.institutionId, OR: [{ code: program }, { name: program }] },
+      select: { id: true },
+    });
+
+    // Create user + student profile (awaiting admin approval). Student lifecycle
+    // `status` defaults ACTIVE at the DB (tracks the student lifecycle, not the
+    // PENDING_APPROVAL account lifecycle — §7.2/§7.5); no code change needed.
     const user = await privilegedPrisma.user.create({
       data: {
         email,
@@ -320,6 +330,7 @@ export async function authRoutes(app: FastifyInstance) {
             program,
             semester,
             section,
+            ...(matchedProgram ? { programId: matchedProgram.id } : {}),
           },
         },
       },

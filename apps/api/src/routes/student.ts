@@ -576,4 +576,140 @@ export async function studentRoutes(app: FastifyInstance) {
 
     return reply.send({ entries, warnings: [] as Array<{ code: string; message: string }> });
   });
+
+  // ─── SIS SELF-SERVICE (Phase 2 — Decision A) ────────────────────────────────
+  // Own-record + tenant-scoped reads of the caller's own student record. Like
+  // the academics reads above, these carry NO requireModuleActive hook — SIS is
+  // FOUNDATIONAL institution-layer data (Decision A), permission-gated only.
+  // Ownership is ALWAYS resolved via getStudentInTenant(userId, …) — never from
+  // a request-supplied id — so a student can only ever read their own record.
+
+  // The modules whose self-service entry points a student may use, keyed by the
+  // module key. Only modules whose institution_modules row is ACTIVE surface
+  // (ENTITLED/SUSPENDED/NOT_ENTITLED never appear — §8).
+  const SELF_SERVICE_ENTRY_POINTS: Record<string, { entryPoints: string[] }> = {
+    campus_movement: {
+      entryPoints: [
+        "gate-pass.request",
+        "gate-pass.active",
+        "gate-pass.history",
+        "gate-pass.allowance",
+        "gate-pass.reliability",
+      ],
+    },
+  };
+
+  // ─── GET OWN PROFILE ───────────────────────────────────────────────────────
+  app.get("/me/profile", { preHandler: [requirePermission("students.view_own")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const student = await getStudentInTenant(userId, institutionId, tx);
+      if (!student) return null;
+
+      const [department, structuredProgram, academicSession, currentTerm] = await Promise.all([
+        tx.department.findFirst({ where: { id: student.departmentId, institutionId }, select: { id: true, name: true, code: true } }),
+        student.programId
+          ? tx.program.findFirst({ where: { id: student.programId, institutionId }, select: { id: true, name: true, code: true } })
+          : Promise.resolve(null),
+        student.academicSessionId
+          ? tx.academicSession.findFirst({ where: { id: student.academicSessionId, institutionId }, select: { id: true, name: true } })
+          : Promise.resolve(null),
+        student.currentTermId
+          ? tx.academicTerm.findFirst({ where: { id: student.currentTermId, institutionId }, select: { id: true, name: true, ordinal: true } })
+          : Promise.resolve(null),
+      ]);
+
+      return { student, department, structuredProgram, academicSession, currentTerm };
+    });
+
+    if (!result) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const { student, department, structuredProgram, academicSession, currentTerm } = result;
+
+    return reply.send({
+      id: student.id,
+      name: student.name,
+      enrollmentNo: student.enrollmentNo,
+      rollNumber: student.rollNumber,
+      email: undefined, // email lives on User; not surfaced on this profile read
+      status: student.status,
+      admissionDate: student.admissionDate,
+      department,
+      // prefer the structured program when linked, else the free-text value
+      program: structuredProgram ?? { name: student.program, code: null, id: null },
+      academicSession,
+      // prefer the structured current term when set, else the free-text semester
+      currentTerm: currentTerm ?? null,
+      semester: student.semester,
+      section: student.section,
+    });
+  });
+
+  // ─── GET OWN ACADEMIC VIEW ───────────────────────────────────────────────────
+  app.get("/me/academic", { preHandler: [requirePermission("students.view_own")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const student = await getStudentInTenant(userId, institutionId, tx);
+      if (!student) return null;
+
+      const [structuredProgram, academicSession, currentTerm] = await Promise.all([
+        student.programId
+          ? tx.program.findFirst({ where: { id: student.programId, institutionId }, select: { id: true, name: true, code: true } })
+          : Promise.resolve(null),
+        student.academicSessionId
+          ? tx.academicSession.findFirst({ where: { id: student.academicSessionId, institutionId }, select: { id: true, name: true, status: true } })
+          : // fall back to the institution's single ACTIVE session (Phase-1 read)
+            tx.academicSession.findFirst({ where: { institutionId, status: "ACTIVE" }, select: { id: true, name: true, status: true } }),
+        student.currentTermId
+          ? tx.academicTerm.findFirst({ where: { id: student.currentTermId, institutionId }, select: { id: true, name: true, ordinal: true } })
+          : Promise.resolve(null),
+      ]);
+
+      return { student, structuredProgram, academicSession, currentTerm };
+    });
+
+    if (!result) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    const { student, structuredProgram, academicSession, currentTerm } = result;
+
+    return reply.send({
+      status: student.status,
+      program: structuredProgram ?? { name: student.program, code: null, id: null },
+      academicSession,
+      currentTerm: currentTerm ?? null,
+      semester: student.semester,
+    });
+  });
+
+  // ─── GET OWN SERVICES (ACTIVE modules only) ──────────────────────────────────
+  app.get("/me/services", { preHandler: [requirePermission("students.view_own")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const student = await getStudentInTenant(userId, institutionId, tx);
+      if (!student) return null;
+
+      const activeModules = await tx.institutionModule.findMany({
+        where: { institutionId, state: "ACTIVE" },
+        select: { moduleKey: true },
+      });
+
+      return activeModules.map((m) => ({
+        module: m.moduleKey,
+        entryPoints: SELF_SERVICE_ENTRY_POINTS[m.moduleKey]?.entryPoints ?? [],
+      }));
+    });
+
+    if (!result) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+
+    return reply.send({ services: result });
+  });
 }
