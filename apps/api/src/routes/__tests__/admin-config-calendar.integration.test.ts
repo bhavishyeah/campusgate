@@ -7,7 +7,16 @@ vi.mock("@campusgate/db", () => {
     user: { findUnique: vi.fn() },
     institutionMembership: { findUnique: vi.fn() },
     institutionConfig: { findUnique: vi.fn(), create: vi.fn(), upsert: vi.fn() },
-    academicCalendarDay: { findMany: vi.fn(), upsert: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
+    academicCalendarDay: {
+      findMany: vi.fn(),
+      upsert: vi.fn(),
+      findUnique: vi.fn(),
+      findFirst: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
+    academicCalendarDayRevision: { create: vi.fn() },
     auditEvent: { create: vi.fn() },
   };
   return {
@@ -46,7 +55,16 @@ type MockFn = ReturnType<typeof vi.fn>;
 const mockedPrisma = prisma as unknown as {
   user: { findUnique: MockFn };
   institutionConfig: { findUnique: MockFn; create: MockFn; upsert: MockFn };
-  academicCalendarDay: { findMany: MockFn; upsert: MockFn; findUnique: MockFn; delete: MockFn };
+  academicCalendarDay: {
+    findMany: MockFn;
+    upsert: MockFn;
+    findUnique: MockFn;
+    findFirst: MockFn;
+    create: MockFn;
+    update: MockFn;
+    delete: MockFn;
+  };
+  academicCalendarDayRevision: { create: MockFn };
   auditEvent: { create: MockFn };
 };
 
@@ -168,17 +186,17 @@ describe("Admin config/calendar routes", () => {
     const app = await makeApp();
     await app.register(adminRoutes, { prefix: "/api/admin" });
 
-    mockedPrisma.academicCalendarDay.upsert.mockResolvedValue({
+    // Generalized handler (Phase 1): resolves the row via findFirst keyed on
+    // (institutionId, date, departmentId ?? null), writes an append-only revision
+    // in the same tx, then create/update (no compound-unique upsert).
+    mockedPrisma.academicCalendarDay.findFirst.mockResolvedValue(null);
+    mockedPrisma.academicCalendarDay.create.mockResolvedValue({
       id: "acd-1",
       date: new Date("2026-10-12T00:00:00.000Z"),
       dayType: "HOLIDAY",
     });
+    mockedPrisma.academicCalendarDayRevision.create.mockResolvedValue({ id: "rev-1" });
     mockedPrisma.auditEvent.create.mockResolvedValue({});
-    mockedPrisma.academicCalendarDay.findUnique.mockResolvedValue({
-      id: "acd-1",
-      institutionId: "inst-1",
-      date: new Date("2026-10-12T00:00:00.000Z"),
-    });
     mockedPrisma.academicCalendarDay.delete.mockResolvedValue({});
 
     const token = app.jwt.sign({ userId: "u-admin", role: "ADMIN", institutionId: "inst-1" });
@@ -191,13 +209,30 @@ describe("Admin config/calendar routes", () => {
     });
 
     expect(upsertRes.statusCode).toBe(200);
-    expect(mockedPrisma.academicCalendarDay.upsert).toHaveBeenCalledWith(
+    // Row resolved with a tenant-scoped find on (institutionId, date, departmentId).
+    expect(mockedPrisma.academicCalendarDay.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          institutionId_date: expect.objectContaining({ institutionId: "inst-1" }),
-        }),
+        where: expect.objectContaining({ institutionId: "inst-1", departmentId: null }),
       })
     );
+    // Append-only revision written in-tenant before the mutation.
+    expect(mockedPrisma.academicCalendarDayRevision.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ institutionId: "inst-1", changeType: "CREATE" }),
+      })
+    );
+
+    // DELETE path resolves an existing row, then writes a DELETE revision + deletes.
+    mockedPrisma.academicCalendarDay.findFirst.mockResolvedValueOnce({
+      id: "acd-1",
+      institutionId: "inst-1",
+      date: new Date("2026-10-12T00:00:00.000Z"),
+      dayType: "HOLIDAY",
+      note: "Dussehra",
+      departmentId: null,
+      academicSessionId: null,
+      academicTermId: null,
+    });
 
     const deleteRes = await app.inject({
       method: "DELETE",
@@ -206,11 +241,12 @@ describe("Admin config/calendar routes", () => {
     });
 
     expect(deleteRes.statusCode).toBe(200);
-    expect(mockedPrisma.academicCalendarDay.findUnique).toHaveBeenCalledWith(
+    expect(mockedPrisma.academicCalendarDay.delete).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "acd-1" } })
+    );
+    expect(mockedPrisma.academicCalendarDayRevision.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          institutionId_date: expect.objectContaining({ institutionId: "inst-1" }),
-        }),
+        data: expect.objectContaining({ changeType: "DELETE" }),
       })
     );
 

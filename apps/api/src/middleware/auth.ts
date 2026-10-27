@@ -42,6 +42,10 @@ export interface RequestAuth {
   roles: string[];
   permissions: string[];
   permissionsVersion: number | null;
+  // Phase 1 (additive, read-only): the caller's department scope, re-read from
+  // the membership each request (never from the token, so it cannot go stale).
+  // null for SUPER_ADMIN (no membership) and for members with no scope set.
+  departmentScope: string | null;
 }
 
 // Augment FastifyRequest with the resolved auth + tenant context. `tenant` is
@@ -121,6 +125,7 @@ export async function authenticate(
       roles: ["SUPER_ADMIN"],
       permissions: SUPER_ADMIN_PERMISSIONS,
       permissionsVersion: null,
+      departmentScope: null,
     };
     // request.tenant deliberately left unset for SUPER_ADMIN.
 
@@ -148,6 +153,7 @@ export async function authenticate(
         id: true,
         membershipStatus: true,
         permissionsVersion: true,
+        departmentScope: true,
         roles: {
           select: {
             role: {
@@ -202,6 +208,7 @@ export async function authenticate(
     roles: roleKeys,
     permissions,
     permissionsVersion: membership.permissionsVersion,
+    departmentScope: membership.departmentScope,
   };
   request.tenant = { institutionId: dbUser.institutionId };
 

@@ -306,6 +306,11 @@ export class AllowanceEngine {
         where: {
           institutionId,
           date: { gte: start, lte: end },
+          // Phase 1: institution-wide entries only. Department-scoped rows are
+          // now possible; excluding them preserves the engine's pre-Phase-1
+          // behaviour on existing data and makes the date-keyed map deterministic
+          // via the _inst_date_institutionwide partial unique index (design §4.4).
+          departmentId: null,
         },
       }),
     ]);

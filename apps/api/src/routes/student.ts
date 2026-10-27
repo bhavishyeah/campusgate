@@ -7,6 +7,7 @@ import { requirePermission, requireModuleActive } from "../services/authz-engine
 import { notifyDepartmentHods } from "../services/notifications.js";
 import { ReliabilityEngine } from "../services/reliability-engine.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
+import { CalendarService } from "../services/calendar-service.js";
 import { getStudentInTenant } from "../services/authz.js";
 import { recordAuditEvent } from "../services/audit.js";
 import { buildPassTimeline, computeOutsideDurationMinutes } from "../services/pass-lifecycle.js";
@@ -522,5 +523,57 @@ export async function studentRoutes(app: FastifyInstance) {
     }
 
     return reply.send(score);
+  });
+
+  // ─── ACADEMIC READ ENDPOINTS (Phase 1 — Decision A) ─────────────────────────
+  // NOTE: unlike every peer route on this file, these carry NO requireModuleActive
+  // hook. Academics is FOUNDATIONAL institution-layer data, not a gated module
+  // (design Decision A), so it is permission-gated (academics.view) + withTenant
+  // only and is available to every tenant unconditionally.
+
+  // The institution's single ACTIVE session + its terms.
+  app.get("/me/academic/current-session", { preHandler: [requirePermission("academics.view")] }, async (request, reply) => {
+    const { institutionId } = request.user;
+
+    const session = await withTenant(institutionId, (tx) =>
+      tx.academicSession.findFirst({
+        where: { institutionId, status: "ACTIVE" },
+        include: {
+          terms: {
+            orderBy: { ordinal: "asc" },
+            select: { id: true, name: true, ordinal: true, status: true, startDate: true, endDate: true },
+          },
+        },
+      }),
+    );
+
+    return reply.send({ session, warnings: [] as Array<{ code: string; message: string }> });
+  });
+
+  // Institution-wide calendar entries for the range, plus department-scoped
+  // entries ONLY for the caller's own department (from request.auth.departmentScope,
+  // never from request input). The CalendarService precedence rule applies.
+  app.get("/me/academic/calendar", { preHandler: [requirePermission("academics.view")] }, async (request, reply) => {
+    const { institutionId } = request.user;
+    const { startDate, endDate } = request.query as { startDate?: string; endDate?: string };
+
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const start = startDate ? new Date(startDate) : defaultStart;
+    const end = endDate ? new Date(endDate) : defaultEnd;
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return reply.status(400).send({ error: "Invalid date range" });
+    }
+
+    const departmentScope = request.auth?.departmentScope ?? undefined;
+
+    const entries = await withTenant(institutionId, (tx) =>
+      CalendarService.getEntries(institutionId, start, end, tx, { departmentId: departmentScope }),
+    );
+
+    return reply.send({ entries, warnings: [] as Array<{ code: string; message: string }> });
   });
 }

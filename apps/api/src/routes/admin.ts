@@ -11,6 +11,11 @@ import {
   resolveEmergencySchema,
   updateInstitutionConfigSchema,
   upsertAcademicCalendarDaySchema,
+  createAcademicSessionSchema,
+  createAcademicTermSchema,
+  createProgramSchema,
+  academicSessionObject,
+  academicTermObject,
   AUDIT_ACTION_KEY_SET,
   LEGACY_AUDIT_ACTION_MAP,
   type LegacyAuditAction,
@@ -23,6 +28,17 @@ import { requirePermission, requireModuleActive } from "../services/authz-engine
 import { recordAuditEvent } from "../services/audit.js";
 import { activate, suspend } from "../services/module-system.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
+import { CalendarService } from "../services/calendar-service.js";
+import {
+  activateSession,
+  closeSession,
+  activateTerm,
+  closeTerm,
+  termCountWarning,
+  termOutsideSessionWarning,
+  termOverlapWarning,
+  type Warning,
+} from "../services/academic-session.js";
 import {
   notifyUser,
   notifyInstitution,
@@ -1622,10 +1638,22 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(config);
   });
 
-  // ─── ACADEMIC CALENDAR ────────────────────────────────────────────────────
-  app.get("/academic-calendar", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
+  // ─── ACADEMIC CALENDAR (generalized — Phase 1, Decision A/D) ──────────────
+  // These handlers are gated on the new academics.calendar.manage permission
+  // (NOT the retained-but-route-unused admin.academic_calendar.manage), carry NO
+  // requireModuleActive (academics is foundational, not a gated module — Decision
+  // A), run through withTenant, write an append-only AcademicCalendarDayRevision
+  // row in the SAME transaction before each mutation, and audit
+  // academics.calendar.updated. The gone (institutionId, date) compound-unique is
+  // replaced by findFirst/create/update keyed on (institutionId, date,
+  // departmentId ?? null) — the partial-unique shape is not a Prisma compound key.
+  app.get("/academic-calendar", { preHandler: [requirePermission("academics.calendar.manage")] }, async (request, reply) => {
     const { institutionId } = request.user;
-    const { startDate, endDate } = request.query as { startDate?: string; endDate?: string };
+    const { startDate, endDate, departmentId } = request.query as {
+      startDate?: string;
+      endDate?: string;
+      departmentId?: string;
+    };
 
     const now = new Date();
     const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
@@ -1639,19 +1667,15 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     const days = await withTenant(institutionId, (tx) =>
-      tx.academicCalendarDay.findMany({
-        where: {
-          institutionId,
-          date: { gte: start, lte: end },
-        },
-        orderBy: { date: "asc" },
+      CalendarService.getEntries(institutionId, start, end, tx, {
+        departmentId: departmentId || undefined,
       }),
     );
 
     return reply.send(days);
   });
 
-  app.put("/academic-calendar/day", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
+  app.put("/academic-calendar/day", { preHandler: [requirePermission("academics.calendar.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
 
     const parsed = upsertAcademicCalendarDaySchema.safeParse(request.body);
@@ -1659,34 +1683,58 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.flatten() });
     }
 
-    const { date, dayType, note } = parsed.data;
+    const { date, dayType, note, departmentId, academicSessionId, academicTermId } = parsed.data;
     const parts = date.split("-").map((v) => Number(v));
     if (parts.length !== 3 || parts.some((p) => Number.isNaN(p))) {
       return reply.status(400).send({ error: "Invalid date" });
     }
 
     const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+    const scopeDepartmentId = departmentId ?? null;
 
     const day = await withTenant(institutionId, async (tx) => {
-      const upserted = await tx.academicCalendarDay.upsert({
-        where: {
-          institutionId_date: {
-            institutionId,
-            date: normalizedDate,
-          },
-        },
-        update: { dayType, note },
-        create: {
+      const existing = await tx.academicCalendarDay.findFirst({
+        where: { institutionId, date: normalizedDate, departmentId: scopeDepartmentId },
+      });
+
+      // Append-only revision row written BEFORE the mutation, in the same tx.
+      await tx.academicCalendarDayRevision.create({
+        data: {
           institutionId,
+          calendarDayId: existing?.id ?? null,
           date: normalizedDate,
-          dayType,
-          note,
+          departmentId: scopeDepartmentId,
+          previousDayType: existing?.dayType ?? null,
+          newDayType: dayType,
+          previousNote: existing?.note ?? null,
+          newNote: note ?? null,
+          changeType: existing ? "UPDATE" : "CREATE",
+          actorUserId: userId,
+          academicSessionId: academicSessionId ?? null,
+          academicTermId: academicTermId ?? null,
         },
       });
 
+      const upserted = existing
+        ? await tx.academicCalendarDay.update({
+            where: { id: existing.id },
+            data: { dayType, note: note ?? null, academicSessionId: academicSessionId ?? null, academicTermId: academicTermId ?? null },
+          })
+        : await tx.academicCalendarDay.create({
+            data: {
+              institutionId,
+              date: normalizedDate,
+              dayType,
+              note: note ?? null,
+              departmentId: scopeDepartmentId,
+              academicSessionId: academicSessionId ?? null,
+              academicTermId: academicTermId ?? null,
+            },
+          });
+
       await recordAuditEvent(
         {
-          action: "admin.academic_calendar.updated",
+          action: "academics.calendar.updated",
           result: "SUCCESS",
           actorUserId: userId,
           actorRoleKey: request.auth?.roles[0] ?? request.user.role,
@@ -1695,7 +1743,7 @@ export async function adminRoutes(app: FastifyInstance) {
           resourceType: "AcademicCalendarDay",
           resourceId: upserted.id,
           requestRef: request.id,
-          metadata: { date: upserted.date, dayType: upserted.dayType },
+          metadata: { date: upserted.date, dayType: upserted.dayType, changeType: existing ? "UPDATE" : "CREATE", departmentId: scopeDepartmentId },
         },
         tx,
       );
@@ -1703,12 +1751,13 @@ export async function adminRoutes(app: FastifyInstance) {
       return upserted;
     });
 
-    return reply.send(day);
+    return reply.send({ calendarDay: day, warnings: [] as Warning[] });
   });
 
-  app.delete("/academic-calendar/day/:date", { preHandler: [requirePermission("admin.academic_calendar.manage")] }, async (request, reply) => {
+  app.delete("/academic-calendar/day/:date", { preHandler: [requirePermission("academics.calendar.manage")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
     const { date } = request.params as { date: string };
+    const { departmentId } = request.query as { departmentId?: string };
 
     const parts = date.split("-").map((v) => Number(v));
     if (parts.length !== 3 || parts.some((p) => Number.isNaN(p))) {
@@ -1716,31 +1765,38 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     const normalizedDate = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+    const scopeDepartmentId = departmentId ?? null;
 
     const result = await withTenant(institutionId, async (tx) => {
-      const existing = await tx.academicCalendarDay.findUnique({
-        where: {
-          institutionId_date: {
-            institutionId,
-            date: normalizedDate,
-          },
-        },
+      const existing = await tx.academicCalendarDay.findFirst({
+        where: { institutionId, date: normalizedDate, departmentId: scopeDepartmentId },
       });
 
       if (!existing) return { notFound: true as const };
 
-      await tx.academicCalendarDay.delete({
-        where: {
-          institutionId_date: {
-            institutionId,
-            date: normalizedDate,
-          },
+      // Append-only DELETE revision written BEFORE the delete, in the same tx.
+      await tx.academicCalendarDayRevision.create({
+        data: {
+          institutionId,
+          calendarDayId: existing.id,
+          date: normalizedDate,
+          departmentId: scopeDepartmentId,
+          previousDayType: existing.dayType,
+          newDayType: null,
+          previousNote: existing.note,
+          newNote: null,
+          changeType: "DELETE",
+          actorUserId: userId,
+          academicSessionId: existing.academicSessionId,
+          academicTermId: existing.academicTermId,
         },
       });
 
+      await tx.academicCalendarDay.delete({ where: { id: existing.id } });
+
       await recordAuditEvent(
         {
-          action: "admin.academic_calendar.updated",
+          action: "academics.calendar.updated",
           result: "SUCCESS",
           actorUserId: userId,
           actorRoleKey: request.auth?.roles[0] ?? request.user.role,
@@ -1749,7 +1805,7 @@ export async function adminRoutes(app: FastifyInstance) {
           resourceType: "AcademicCalendarDay",
           resourceId: existing.id,
           requestRef: request.id,
-          metadata: { deleted: true, date: normalizedDate },
+          metadata: { deleted: true, date: normalizedDate, changeType: "DELETE", departmentId: scopeDepartmentId },
         },
         tx,
       );
@@ -1761,7 +1817,566 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Calendar day not found" });
     }
 
-    return reply.send({ success: true });
+    return reply.send({ success: true, warnings: [] as Warning[] });
+  });
+
+  // ─── ACADEMIC SESSIONS + TERMS (Phase 1 — permission-gated only, Decision A) ─
+  // All routes below: requirePermission(academics.*), withTenant, recordAuditEvent
+  // in-tx, success-plus-warnings envelope { <resource>, warnings }. NO
+  // requireModuleActive — academics is foundational, not a gated module.
+  app.get("/academic/sessions", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { institutionId } = request.user;
+    const { status } = request.query as { status?: string };
+
+    const where: Record<string, unknown> = { institutionId };
+    if (status) where.status = status;
+
+    const sessions = await withTenant(institutionId, (tx) =>
+      tx.academicSession.findMany({ where, orderBy: { createdAt: "desc" } }),
+    );
+
+    return reply.send({ sessions, warnings: [] as Warning[] });
+  });
+
+  app.post("/academic/sessions", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = createAcademicSessionSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+    const { name, structureType, startDate, endDate } = parsed.data;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const dup = await tx.academicSession.findFirst({ where: { institutionId, name } });
+      if (dup) return { conflict: true as const };
+
+      const session = await tx.academicSession.create({
+        data: {
+          institutionId,
+          name,
+          structureType,
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
+        },
+      });
+
+      await recordAuditEvent(
+        {
+          action: "academics.session.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicSession",
+          resourceId: session.id,
+          requestRef: request.id,
+          metadata: { name: session.name, structureType: session.structureType },
+        },
+        tx,
+      );
+
+      return { session };
+    });
+
+    if ("conflict" in result) {
+      return reply.status(409).send({ error: "session name exists" });
+    }
+
+    return reply.status(201).send({ session: result.session, warnings: [] as Warning[] });
+  });
+
+  app.get("/academic/sessions/:id", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const session = await withTenant(institutionId, (tx) =>
+      tx.academicSession.findFirst({
+        where: { id, institutionId },
+        include: { terms: { orderBy: { ordinal: "asc" } } },
+      }),
+    );
+
+    if (!session) {
+      return reply.status(404).send({ error: "Session not found" });
+    }
+
+    return reply.send({ session, warnings: [] as Warning[] });
+  });
+
+  app.patch("/academic/sessions/:id", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const parsed = academicSessionObject.partial().safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.academicSession.findFirst({ where: { id, institutionId } });
+      if (!existing) return { notFound: true as const };
+      // PATCH allowed ONLY while UPCOMING (preserve-history §5.1).
+      if (existing.status !== "UPCOMING") return { notEditable: true as const };
+
+      const data: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) data.name = parsed.data.name;
+      if (parsed.data.structureType !== undefined) data.structureType = parsed.data.structureType;
+      if (parsed.data.startDate !== undefined) data.startDate = new Date(parsed.data.startDate);
+      if (parsed.data.endDate !== undefined) data.endDate = new Date(parsed.data.endDate);
+
+      const session = await tx.academicSession.update({ where: { id }, data });
+
+      await recordAuditEvent(
+        {
+          action: "academics.session.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicSession",
+          resourceId: session.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { session };
+    });
+
+    if ("notFound" in result) return reply.status(404).send({ error: "Session not found" });
+    if ("notEditable" in result) return reply.status(409).send({ error: "session not editable" });
+
+    return reply.send({ session: result.session, warnings: [] as Warning[] });
+  });
+
+  app.post("/academic/sessions/:id/terms", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const parsed = academicTermObject
+      .omit({ academicSessionId: true })
+      .refine((d) => new Date(d.startDate) < new Date(d.endDate), {
+        message: "Start date must be before end date",
+        path: ["endDate"],
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+    const { name, ordinal, startDate, endDate } = parsed.data;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const session = await tx.academicSession.findFirst({ where: { id, institutionId } });
+      if (!session) return { notFound: true as const };
+
+      const dup = await tx.academicTerm.findFirst({
+        where: { academicSessionId: id, ordinal },
+      });
+      if (dup) return { ordinalConflict: true as const };
+
+      const existingTerms = await tx.academicTerm.findMany({
+        where: { academicSessionId: id, institutionId },
+      });
+
+      const newRange = { startDate: new Date(startDate), endDate: new Date(endDate) };
+      const warnings: Warning[] = [];
+      const outside = termOutsideSessionWarning(newRange, {
+        startDate: session.startDate,
+        endDate: session.endDate,
+      });
+      if (outside) warnings.push(outside);
+      const overlap = termOverlapWarning(
+        newRange,
+        existingTerms.map((t) => ({ startDate: t.startDate, endDate: t.endDate })),
+      );
+      if (overlap) warnings.push(overlap);
+      const countWarn = termCountWarning(session.structureType, existingTerms.length + 1);
+      if (countWarn) warnings.push(countWarn);
+
+      const term = await tx.academicTerm.create({
+        data: {
+          institutionId,
+          academicSessionId: id,
+          name,
+          ordinal,
+          startDate: newRange.startDate,
+          endDate: newRange.endDate,
+        },
+      });
+
+      await recordAuditEvent(
+        {
+          action: "academics.term.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicTerm",
+          resourceId: term.id,
+          requestRef: request.id,
+          metadata: { name: term.name, ordinal: term.ordinal },
+        },
+        tx,
+      );
+
+      return { term, warnings };
+    });
+
+    if ("notFound" in result) return reply.status(404).send({ error: "Session not found" });
+    if ("ordinalConflict" in result) return reply.status(409).send({ error: "ordinal exists" });
+
+    return reply.status(201).send({ term: result.term, warnings: result.warnings });
+  });
+
+  app.patch("/academic/terms/:id", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const parsed = academicTermObject
+      .omit({ academicSessionId: true })
+      .partial()
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.academicTerm.findFirst({ where: { id, institutionId } });
+      if (!existing) return { notFound: true as const };
+      if (existing.status === "CLOSED") return { notEditable: true as const };
+
+      const data: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) data.name = parsed.data.name;
+      if (parsed.data.ordinal !== undefined) data.ordinal = parsed.data.ordinal;
+      if (parsed.data.startDate !== undefined) data.startDate = new Date(parsed.data.startDate);
+      if (parsed.data.endDate !== undefined) data.endDate = new Date(parsed.data.endDate);
+
+      const term = await tx.academicTerm.update({ where: { id }, data });
+
+      await recordAuditEvent(
+        {
+          action: "academics.term.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicTerm",
+          resourceId: term.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { term };
+    });
+
+    if ("notFound" in result) return reply.status(404).send({ error: "Term not found" });
+    if ("notEditable" in result) return reply.status(409).send({ error: "term not editable" });
+
+    return reply.send({ term: result.term, warnings: [] as Warning[] });
+  });
+
+  // ─── SESSION / TERM LIFECYCLE (state machine in academic-session.ts) ─────────
+  app.post("/academic/sessions/:id/activate", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+    const query = request.query as { handover?: string };
+    const body = (request.body ?? {}) as { handover?: boolean };
+    const handover = query.handover === "true" || body.handover === true;
+
+    const outcome = await withTenant(institutionId, async (tx) => {
+      const result = await activateSession(tx, institutionId, id, handover);
+      if (!result.ok) return { result };
+
+      await recordAuditEvent(
+        {
+          action: "academics.session.activated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicSession",
+          resourceId: result.session.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      if (result.closedSessionId) {
+        await recordAuditEvent(
+          {
+            action: "academics.session.closed",
+            result: "SUCCESS",
+            actorUserId: userId,
+            actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+            institutionId,
+            actorMembershipId: request.auth?.membershipId,
+            resourceType: "AcademicSession",
+            resourceId: result.closedSessionId,
+            requestRef: request.id,
+            metadata: { handover: true },
+          },
+          tx,
+        );
+      }
+
+      return { result };
+    });
+
+    const r = outcome.result;
+    if (!r.ok) {
+      switch (r.code) {
+        case "NOT_FOUND":
+          return reply.status(404).send({ error: "Session not found" });
+        case "INVALID_STATE":
+          return reply.status(409).send({ error: "invalid state" });
+        case "NO_TERMS":
+          return reply.status(409).send({ error: "session needs >=1 term" });
+        case "TERM_INVALID_DATES":
+          return reply.status(409).send({ error: "term has invalid dates", termId: r.termId });
+        case "ACTIVE_EXISTS":
+          return reply.status(409).send({ error: "active session exists; pass handover=true" });
+      }
+    }
+
+    return reply.send({ session: r.session, warnings: r.warnings });
+  });
+
+  app.post("/academic/sessions/:id/close", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const outcome = await withTenant(institutionId, async (tx) => {
+      const result = await closeSession(tx, institutionId, id);
+      if (!result.ok) return { result };
+
+      await recordAuditEvent(
+        {
+          action: "academics.session.closed",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicSession",
+          resourceId: result.session.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { result };
+    });
+
+    const r = outcome.result;
+    if (!r.ok) {
+      if (r.code === "NOT_FOUND") return reply.status(404).send({ error: "Session not found" });
+      return reply.status(409).send({ error: "invalid state" });
+    }
+
+    return reply.send({ session: r.session, warnings: [] as Warning[] });
+  });
+
+  app.post("/academic/terms/:id/activate", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const outcome = await withTenant(institutionId, async (tx) => {
+      const result = await activateTerm(tx, institutionId, id);
+      if (!result.ok) return { result };
+
+      await recordAuditEvent(
+        {
+          action: "academics.term.activated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicTerm",
+          resourceId: result.term.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { result };
+    });
+
+    const r = outcome.result;
+    if (!r.ok) {
+      if (r.code === "NOT_FOUND") return reply.status(404).send({ error: "Term not found" });
+      if (r.code === "SESSION_NOT_ACTIVE") return reply.status(409).send({ error: "session not active" });
+      return reply.status(409).send({ error: "invalid state" });
+    }
+
+    return reply.send({ term: r.term, warnings: [] as Warning[] });
+  });
+
+  app.post("/academic/terms/:id/close", { preHandler: [requirePermission("academics.sessions.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const outcome = await withTenant(institutionId, async (tx) => {
+      const result = await closeTerm(tx, institutionId, id);
+      if (!result.ok) return { result };
+
+      await recordAuditEvent(
+        {
+          action: "academics.term.closed",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "AcademicTerm",
+          resourceId: result.term.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { result };
+    });
+
+    const r = outcome.result;
+    if (!r.ok) {
+      if (r.code === "NOT_FOUND") return reply.status(404).send({ error: "Term not found" });
+      return reply.status(409).send({ error: "invalid state" });
+    }
+
+    return reply.send({ term: r.term, warnings: [] as Warning[] });
+  });
+
+  // ─── ACADEMIC PROGRAMS (Phase 1 — permission-gated only, Decision A) ─────────
+  app.get("/academic/programs", { preHandler: [requirePermission("academics.programs.manage")] }, async (request, reply) => {
+    const { institutionId } = request.user;
+    const { departmentId, status } = request.query as { departmentId?: string; status?: string };
+
+    const where: Record<string, unknown> = { institutionId };
+    if (departmentId) where.departmentId = departmentId;
+    if (status) where.status = status;
+
+    const programs = await withTenant(institutionId, (tx) =>
+      tx.program.findMany({ where, orderBy: { createdAt: "desc" } }),
+    );
+
+    return reply.send({ programs, warnings: [] as Warning[] });
+  });
+
+  app.post("/academic/programs", { preHandler: [requirePermission("academics.programs.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const parsed = createProgramSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+    const { departmentId, name, code, duration, durationUnit } = parsed.data;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const dept = await tx.department.findFirst({ where: { id: departmentId, institutionId } });
+      if (!dept) return { unknownDept: true as const };
+
+      const dup = await tx.program.findFirst({ where: { institutionId, code } });
+      if (dup) return { codeConflict: true as const };
+
+      const program = await tx.program.create({
+        data: { institutionId, departmentId, name, code, duration, durationUnit },
+      });
+
+      await recordAuditEvent(
+        {
+          action: "academics.program.created",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "Program",
+          resourceId: program.id,
+          requestRef: request.id,
+          metadata: { code: program.code, name: program.name },
+        },
+        tx,
+      );
+
+      return { program };
+    });
+
+    if ("unknownDept" in result) return reply.status(400).send({ error: "unknown department" });
+    if ("codeConflict" in result) return reply.status(409).send({ error: "program code exists" });
+
+    return reply.status(201).send({ program: result.program, warnings: [] as Warning[] });
+  });
+
+  app.patch("/academic/programs/:id", { preHandler: [requirePermission("academics.programs.manage")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    const parsed = createProgramSchema.partial().safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.flatten() });
+    }
+    // Program status (ACTIVE/INACTIVE) is edited via a separate body field — it
+    // is a different enum from durationUnit, so it is read off the raw body and
+    // whitelisted below rather than added to the create schema.
+    const statusRaw = (request.body as { status?: string } | undefined)?.status;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const existing = await tx.program.findFirst({ where: { id, institutionId } });
+      if (!existing) return { notFound: true as const };
+
+      const data: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) data.name = parsed.data.name;
+      if (parsed.data.duration !== undefined) data.duration = parsed.data.duration;
+      if (parsed.data.durationUnit !== undefined) data.durationUnit = parsed.data.durationUnit;
+      if (statusRaw === "ACTIVE" || statusRaw === "INACTIVE") data.status = statusRaw;
+
+      if (parsed.data.departmentId !== undefined && parsed.data.departmentId !== existing.departmentId) {
+        const dept = await tx.department.findFirst({
+          where: { id: parsed.data.departmentId, institutionId },
+        });
+        if (!dept) return { unknownDept: true as const };
+        data.departmentId = parsed.data.departmentId;
+      }
+
+      if (parsed.data.code !== undefined && parsed.data.code !== existing.code) {
+        const dup = await tx.program.findFirst({ where: { institutionId, code: parsed.data.code } });
+        if (dup) return { codeConflict: true as const };
+        data.code = parsed.data.code;
+      }
+
+      const program = await tx.program.update({ where: { id }, data });
+
+      await recordAuditEvent(
+        {
+          action: "academics.program.updated",
+          result: "SUCCESS",
+          actorUserId: userId,
+          actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+          institutionId,
+          actorMembershipId: request.auth?.membershipId,
+          resourceType: "Program",
+          resourceId: program.id,
+          requestRef: request.id,
+        },
+        tx,
+      );
+
+      return { program };
+    });
+
+    if ("notFound" in result) return reply.status(404).send({ error: "Program not found" });
+    if ("unknownDept" in result) return reply.status(400).send({ error: "unknown department" });
+    if ("codeConflict" in result) return reply.status(409).send({ error: "program code exists" });
+
+    return reply.send({ program: result.program, warnings: [] as Warning[] });
   });
 
   // ─── ADMIN PASS REVOCATION ────────────────────────────────────────────────

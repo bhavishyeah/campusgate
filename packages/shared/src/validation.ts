@@ -154,6 +154,50 @@ export const upsertAcademicCalendarDaySchema = z.object({
     "INSTITUTION_EVENT",
   ]),
   note: z.string().max(500).optional(),
+  // Phase 1 generalization (all additive/optional — live callers stay valid).
+  departmentId: z.string().min(1).optional(),
+  academicSessionId: z.string().min(1).optional(),
+  academicTermId: z.string().min(1).optional(),
+});
+
+// ─── ACADEMICS (Phase 1) ─────────────────────────────────────────────────────
+
+const startBeforeEnd = (data: { startDate: string; endDate: string }) =>
+  new Date(data.startDate) < new Date(data.endDate);
+
+// Base object shapes are exported so routes can derive .partial()/.omit()
+// variants (ZodEffects from .refine() does not support those helpers).
+export const academicSessionObject = z.object({
+  name: z.string().min(1, "Name is required").max(100),
+  structureType: z.enum(["SEMESTER", "TRIMESTER", "ANNUAL", "CUSTOM"]),
+  startDate: z.string().min(1, "Start date is required"),
+  endDate: z.string().min(1, "End date is required"),
+});
+
+export const createAcademicSessionSchema = academicSessionObject.refine(startBeforeEnd, {
+  message: "Start date must be before end date",
+  path: ["endDate"],
+});
+
+export const academicTermObject = z.object({
+  academicSessionId: z.string().min(1, "Session is required"),
+  name: z.string().min(1, "Name is required").max(100),
+  ordinal: z.number().int().min(1, "Ordinal must be >= 1"),
+  startDate: z.string().min(1, "Start date is required"),
+  endDate: z.string().min(1, "End date is required"),
+});
+
+export const createAcademicTermSchema = academicTermObject.refine(startBeforeEnd, {
+  message: "Start date must be before end date",
+  path: ["endDate"],
+});
+
+export const createProgramSchema = z.object({
+  departmentId: z.string().min(1, "Department is required"),
+  name: z.string().min(1, "Name is required").max(200),
+  code: z.string().min(1, "Code is required").max(32),
+  duration: z.number().int().min(1).max(20),
+  durationUnit: z.enum(["TERMS", "YEARS"]).default("TERMS"),
 });
 
 export const declareEmergencySchema = z.object({
@@ -189,3 +233,6 @@ export type DeclareEmergencyInput = z.infer<typeof declareEmergencySchema>;
 export type ResolveEmergencyInput = z.infer<typeof resolveEmergencySchema>;
 export type UpdateInstitutionConfigInput = z.infer<typeof updateInstitutionConfigSchema>;
 export type UpsertAcademicCalendarDayInput = z.infer<typeof upsertAcademicCalendarDaySchema>;
+export type CreateAcademicSessionInput = z.infer<typeof createAcademicSessionSchema>;
+export type CreateAcademicTermInput = z.infer<typeof createAcademicTermSchema>;
+export type CreateProgramInput = z.infer<typeof createProgramSchema>;
