@@ -73,6 +73,15 @@ export const AUDIT_ACTIONS = [
   { key: "academics.program.created", module: "academics", description: "Academic program created" },
   { key: "academics.program.updated", module: "academics", description: "Academic program updated" },
   { key: "academics.calendar.updated", module: "academics", description: "Academic calendar entry created, updated or deleted" },
+  // students.* (8) — Phase 2 SIS student lifecycle
+  { key: "students.student.created", module: "students", description: "Student record created" },
+  { key: "students.student.updated", module: "students", description: "Student permitted profile fields updated" },
+  { key: "students.student.program_assigned", module: "students", description: "Student assigned a structured program" },
+  { key: "students.student.enrolled", module: "students", description: "Student enrolled into a session/term" },
+  { key: "students.student.promoted", module: "students", description: "Student promoted (term/semester advanced)" },
+  { key: "students.student.transferred", module: "students", description: "Student transferred (department/program changed)" },
+  { key: "students.student.deactivated", module: "students", description: "Student archived via status change" },
+  { key: "students.student.imported", module: "students", description: "Bulk student import (SIS model)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

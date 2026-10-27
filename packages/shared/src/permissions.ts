@@ -206,6 +206,44 @@ export const PERMISSIONS = [
     description: "View academic sessions, terms, programs and calendar",
   },
 
+  // students.* — Phase 2 SIS: the authoritative student record + lifecycle ops.
+  // Foundational institution-layer data, permission-gated ONLY (never module-gated).
+  {
+    key: "students.view",
+    module: "students",
+    description: "View student records, detail and history (list/detail/history)",
+  },
+  {
+    key: "students.create",
+    module: "students",
+    description: "Create a student",
+  },
+  {
+    key: "students.update",
+    module: "students",
+    description: "Edit permitted fields; assign program; transfer; reactivate",
+  },
+  {
+    key: "students.enroll",
+    module: "students",
+    description: "Enroll a student into a session/term",
+  },
+  {
+    key: "students.promote",
+    module: "students",
+    description: "Promote a student (advance term/semester)",
+  },
+  {
+    key: "students.deactivate",
+    module: "students",
+    description: "Archive a student via status (withdraw/suspend/graduate/leave)",
+  },
+  {
+    key: "students.view_own",
+    module: "students",
+    description: "Student views only their own profile and academic info",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -258,6 +296,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.pass.view_own",
     "campus_movement.emergency.view",
     "academics.view",
+    "students.view_own",
   ],
   GUARD: [
     "campus_movement.gate.verify",
@@ -276,6 +315,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.pass.override",
     "campus_movement.emergency.view",
     "academics.view",
+    "students.view",
+    "students.update",
+    "students.enroll",
+    "students.promote",
+    "students.view_own",
   ],
   ADMIN: [
     "admin.users.view",
@@ -298,6 +342,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "academics.programs.manage",
     "academics.calendar.manage",
     "academics.view",
+    "students.view",
+    "students.create",
+    "students.update",
+    "students.enroll",
+    "students.promote",
+    "students.deactivate",
+    "students.view_own",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

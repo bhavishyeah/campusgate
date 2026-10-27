@@ -200,6 +200,86 @@ export const createProgramSchema = z.object({
   durationUnit: z.enum(["TERMS", "YEARS"]).default("TERMS"),
 });
 
+// ─── STUDENTS / SIS (Phase 2) ────────────────────────────────────────────────
+
+// Student lifecycle status enum members (mirrors the StudentStatus pg enum).
+export const studentStatusEnum = z.enum([
+  "APPLICANT",
+  "ENROLLED",
+  "ACTIVE",
+  "ON_LEAVE",
+  "GRADUATED",
+  "WITHDRAWN",
+  "SUSPENDED",
+]);
+
+export const createStudentSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  name: z.string().min(1, "Name is required"),
+  enrollmentNo: z.string().min(1, "Enrollment number is required"),
+  departmentId: z.string().min(1, "Department is required"),
+  program: z.string().min(1, "Program is required"),
+  semester: z.number().int().min(1).max(12),
+  section: z.string().optional(),
+  rollNumber: z.string().optional(),
+  dob: z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  admissionDate: z.string().optional(),
+  programId: z.string().min(1).optional(),
+});
+
+// Permitted-mutable-field rule enforced by construction: .strict() so any
+// identity/lifecycle key (enrollmentNo, status, programId, semester, …) yields
+// a 400 rather than being silently stripped.
+export const updateStudentSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    rollNumber: z.string().optional(),
+    section: z.string().optional(),
+    dob: z.string().optional(),
+    phone: z.string().optional(),
+    address: z.string().optional(),
+    admissionDate: z.string().optional(),
+  })
+  .strict();
+
+export const assignProgramSchema = z.object({
+  programId: z.string().min(1, "Program is required"),
+  refreshProgramText: z.boolean().optional(),
+});
+
+export const enrollStudentSchema = z.object({
+  academicSessionId: z.string().min(1, "Session is required"),
+  currentTermId: z.string().min(1, "Term is required"),
+  activate: z.boolean().optional(),
+  semester: z.number().int().min(1).max(12).optional(),
+});
+
+export const promoteStudentSchema = z.object({
+  currentTermId: z.string().min(1).optional(),
+  semester: z.number().int().min(1).max(12).optional(),
+});
+
+export const transferStudentSchema = z.object({
+  departmentId: z.string().min(1).optional(),
+  programId: z.string().min(1).optional(),
+});
+
+export const deactivateStudentSchema = z.object({
+  status: studentStatusEnum,
+  reason: z.string().max(500).optional(),
+});
+
+export const listStudentsQuerySchema = z.object({
+  status: studentStatusEnum.optional(),
+  programId: z.string().min(1).optional(),
+  departmentId: z.string().min(1).optional(),
+  q: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).catch(100).default(20),
+});
+
 export const declareEmergencySchema = z.object({
   type: z.enum(["FIRE", "EARTHQUAKE", "MEDICAL", "SECURITY", "EVACUATION", "OTHER"]),
   title: z.string().min(3).max(120),
@@ -236,3 +316,12 @@ export type UpsertAcademicCalendarDayInput = z.infer<typeof upsertAcademicCalend
 export type CreateAcademicSessionInput = z.infer<typeof createAcademicSessionSchema>;
 export type CreateAcademicTermInput = z.infer<typeof createAcademicTermSchema>;
 export type CreateProgramInput = z.infer<typeof createProgramSchema>;
+export type StudentStatusValue = z.infer<typeof studentStatusEnum>;
+export type CreateStudentInput = z.infer<typeof createStudentSchema>;
+export type UpdateStudentInput = z.infer<typeof updateStudentSchema>;
+export type AssignProgramInput = z.infer<typeof assignProgramSchema>;
+export type EnrollStudentInput = z.infer<typeof enrollStudentSchema>;
+export type PromoteStudentInput = z.infer<typeof promoteStudentSchema>;
+export type TransferStudentInput = z.infer<typeof transferStudentSchema>;
+export type DeactivateStudentInput = z.infer<typeof deactivateStudentSchema>;
+export type ListStudentsQueryInput = z.infer<typeof listStudentsQuerySchema>;

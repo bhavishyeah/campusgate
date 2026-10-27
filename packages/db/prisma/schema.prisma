@@ -192,6 +192,37 @@ enum EmergencyStatus {
   RESOLVED
 }
 
+// ─── STUDENTS / SIS (Phase 2 — student lifecycle, history, documents) ───────
+
+enum StudentStatus {
+  APPLICANT
+  ENROLLED
+  ACTIVE
+  ON_LEAVE
+  GRADUATED
+  WITHDRAWN
+  SUSPENDED
+}
+
+enum StudentHistoryChangeType {
+  CREATED
+  STATUS_CHANGED
+  PROGRAM_CHANGED
+  ENROLLED
+  PROMOTED
+  TRANSFERRED
+  DEACTIVATED
+  UPDATED
+}
+
+enum StudentDocumentKind {
+  ID_PROOF
+  PHOTO
+  TRANSCRIPT
+  CERTIFICATE
+  OTHER
+}
+
 // ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
 
 model Institution {
@@ -232,6 +263,8 @@ model Institution {
   academicTerms                AcademicTerm[]
   programs                     Program[]
   academicCalendarDayRevisions AcademicCalendarDayRevision[]
+  studentProfileHistory        StudentProfileHistory[]
+  studentDocuments             StudentDocument[]
 
   @@map("institutions")
 }
@@ -398,12 +431,88 @@ model StudentProfile {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
+  // Phase 2 SIS generalization — all additive-nullable / defaulted so every
+  // existing live row stays valid and every live query keeps working.
+  status            StudentStatus    @default(ACTIVE)
+  admissionDate     DateTime?
+  programId         String?
+  structuredProgram Program?         @relation(fields: [programId], references: [id])
+  academicSessionId String?
+  academicSession   AcademicSession? @relation(fields: [academicSessionId], references: [id])
+  currentTermId     String?
+  currentTerm       AcademicTerm?    @relation(fields: [currentTermId], references: [id])
+
   gatePasses           GatePass[]
   reliabilitySnapshots ReliabilityScoreSnapshot[]
+  history              StudentProfileHistory[]
+  documents            StudentDocument[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
+  @@index([institutionId, status])
+  @@index([institutionId, programId])
   @@map("student_profiles")
+}
+
+// ─── STUDENT PROFILE HISTORY (Phase 2, tenant-owned, append-only) ───────────
+
+model StudentProfileHistory {
+  id               String                   @id @default(cuid())
+  institutionId    String
+  institution      Institution              @relation(fields: [institutionId], references: [id])
+  studentProfileId String
+  studentProfile   StudentProfile           @relation(fields: [studentProfileId], references: [id])
+  changeType       StudentHistoryChangeType
+
+  previousStatus       StudentStatus?
+  newStatus            StudentStatus?
+  previousProgramId    String?
+  newProgramId         String?
+  previousProgramText  String?
+  newProgramText       String?
+  previousSemester     Int?
+  newSemester          Int?
+  previousDepartmentId String?
+  newDepartmentId      String?
+  previousSessionId    String?
+  newSessionId         String?
+  previousTermId       String?
+  newTermId            String?
+
+  actorUserId       String
+  actorMembershipId String?
+  reason            String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, studentProfileId])
+  @@index([studentProfileId])
+  @@map("student_profile_history")
+}
+
+// ─── STUDENT DOCUMENT (Phase 2, tenant-owned, reference metadata only) ──────
+
+model StudentDocument {
+  id               String              @id @default(cuid())
+  institutionId    String
+  institution      Institution         @relation(fields: [institutionId], references: [id])
+  studentProfileId String
+  studentProfile   StudentProfile      @relation(fields: [studentProfileId], references: [id])
+  kind             StudentDocumentKind @default(OTHER)
+  title            String
+  storageKey       String
+  contentType      String?
+  sizeBytes        Int?
+  uploadedByUserId String
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, studentProfileId])
+  @@map("student_documents")
 }
 
 // ─── HOD PROFILE ────────────────────────────────────────────────────────────
@@ -726,6 +835,7 @@ model AcademicSession {
   terms                AcademicTerm[]
   calendarDays         AcademicCalendarDay[]
   calendarDayRevisions AcademicCalendarDayRevision[]
+  enrolledStudents     StudentProfile[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -750,6 +860,7 @@ model AcademicTerm {
 
   calendarDays         AcademicCalendarDay[]
   calendarDayRevisions AcademicCalendarDayRevision[]
+  currentTermStudents  StudentProfile[]
 
   @@unique([academicSessionId, ordinal])
   @@unique([id, institutionId])
@@ -773,6 +884,8 @@ model Program {
   status        ProgramStatus       @default(ACTIVE)
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
+
+  students StudentProfile[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])

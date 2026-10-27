@@ -345,7 +345,7 @@ async function main() {
     },
   });
 
-  await prisma.academicTerm.upsert({
+  const term1 = await prisma.academicTerm.upsert({
     where: { academicSessionId_ordinal: { academicSessionId: session.id, ordinal: 1 } },
     update: {},
     create: {
@@ -374,7 +374,7 @@ async function main() {
   });
   console.log("  ✓ Academic session 2026-2027 (ACTIVE) + two terms created");
 
-  await prisma.program.upsert({
+  const bcaProgram = await prisma.program.upsert({
     where: { institutionId_code: { institutionId: institution.id, code: "BCA" } },
     update: {},
     create: {
@@ -444,6 +444,57 @@ async function main() {
     }
   }
   console.log("  ✓ Academic calendar entries created (2 institution-wide, 1 BCA-scoped)");
+
+  // ─── SIS: link demo students to the structured academic context (Phase 2) ───
+  // Best-effort generalization of the live demo students onto the Phase-1
+  // structures: set academicSessionId/currentTermId to the active 2026-2027
+  // Semester 1, and programId to the matching Program (BCA for BCA-department
+  // students), leaving status=ACTIVE (the column default). Keyed by the known
+  // enrollmentNo so it is idempotent and touches only demo rows. Then seed ONE
+  // ENROLLED history row per demo student via a findFirst-guarded create (NEVER
+  // upsert — the append-only trigger forbids update). No StudentDocument rows.
+  const demoStudentLinks: Array<{ enrollmentNo: string; programId: string }> = [
+    { enrollmentNo: "BCA2024001", programId: bcaProgram.id },
+  ];
+
+  for (const link of demoStudentLinks) {
+    const student = await prisma.studentProfile.findUnique({
+      where: { enrollmentNo: link.enrollmentNo },
+    });
+    if (!student) continue;
+
+    await prisma.studentProfile.update({
+      where: { id: student.id },
+      data: {
+        academicSessionId: session.id,
+        currentTermId: term1.id,
+        programId: link.programId,
+      },
+    });
+
+    const existingHistory = await prisma.studentProfileHistory.findFirst({
+      where: { studentProfileId: student.id, changeType: "ENROLLED" },
+    });
+    if (!existingHistory) {
+      await prisma.studentProfileHistory.create({
+        data: {
+          institutionId: institution.id,
+          studentProfileId: student.id,
+          changeType: "ENROLLED",
+          newStatus: student.status,
+          newProgramId: link.programId,
+          newProgramText: student.program,
+          newSemester: student.semester,
+          newDepartmentId: student.departmentId,
+          newSessionId: session.id,
+          newTermId: term1.id,
+          actorUserId: admin.id,
+          reason: "Seed: demo enrollment into 2026-2027 Semester 1",
+        },
+      });
+    }
+  }
+  console.log("  ✓ Demo students linked to 2026-2027 Semester 1 + ENROLLED history seeded");
 
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");

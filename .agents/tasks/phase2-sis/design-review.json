@@ -1,0 +1,34 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "NIT",
+      "area": "routing",
+      "location": "§5.1 / §10",
+      "what": "The new students.ts route file (studentAdminRoutes) is said to register 'under a /students prefix' but the concrete apps/api/src/server.ts edit and the /api/<name> prefix convention are not stated.",
+      "fix": "State explicitly: add `await app.register(studentAdminRoutes, { prefix: \"/api/students\" });` to apps/api/src/server.ts; confirm no collision with self-service routes on student.ts (/api/student/me/*)."
+    },
+    {
+      "severity": "NIT",
+      "area": "self-service",
+      "location": "§8 (/me/services)",
+      "what": "The /me/services active-module resolution is named only by analogy ('the same mechanism requireModuleActive uses'); the exact query and the module-key -> entry-point map shape are unspecified.",
+      "fix": "Specify the read, e.g. tx.institutionModule.findMany({ where: { institutionId, state: \"ACTIVE\" } }) inside withTenant, plus the literal module-key -> self-service-entry map. The ACTIVE-only filter / SUSPENDED-ENTITLED-NOT_ENTITLED exclusion is already unambiguous."
+    },
+    {
+      "severity": "NIT",
+      "area": "audit",
+      "location": "§7.3 / §7.4",
+      "what": "The folded-in importer switches its audit key from the live admin.students.imported to the new students.student.imported 'going forward', a behavioral change to a live route's audit stream (verified admin.ts currently writes admin.students.imported).",
+      "fix": "Pick one and state it: (a) keep writing admin.students.imported and drop the new key, or (b) keep the switch but note that any audit filter keyed on the old import key must union both."
+    },
+    {
+      "severity": "NIT",
+      "area": "migration",
+      "location": "§10.2",
+      "what": "The rationale for avoiding `migrate dev --create-only` ('may trip the superadmin checksum into a reset prompt') is stronger than database.md supports; database.md records the drift as harmless/deploy-tolerated and lists --create-only as the standard generation step. The chosen hand-author + migrate diff (read-only) + migrate deploy path is itself correct.",
+      "fix": "Reword to: --create-only is unnecessary because the migration is hand-authored for RLS/trigger/grant/seed SQL regardless; confirm modelled DDL with read-only `migrate diff`, apply with `migrate deploy`. Drop the speculative reset-prompt claim."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase2-sis\\design-review.md"
+}

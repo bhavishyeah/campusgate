@@ -28,6 +28,7 @@ const SEEDING_MIGRATION_DIRS = [
   "20261019053533_superadmin_security",
   "20261019093119_module_system",
   "20261027111710_phase1_academics",
+  "20261027161616_phase2_sis",
 ];
 
 function migrationSql(dir: string): string {
