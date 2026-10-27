@@ -184,6 +184,28 @@ export const PERMISSIONS = [
     description: "Activate / suspend / view the institution's modules",
   },
 
+  // academics.* — Phase 1 academic sessions / terms / programs / calendar
+  {
+    key: "academics.sessions.manage",
+    module: "academics",
+    description: "Manage academic sessions and terms (create, update, activate, close)",
+  },
+  {
+    key: "academics.programs.manage",
+    module: "academics",
+    description: "Manage academic programs",
+  },
+  {
+    key: "academics.calendar.manage",
+    module: "academics",
+    description: "Manage academic calendar entries",
+  },
+  {
+    key: "academics.view",
+    module: "academics",
+    description: "View academic sessions, terms, programs and calendar",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -235,6 +257,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.pass.cancel",
     "campus_movement.pass.view_own",
     "campus_movement.emergency.view",
+    "academics.view",
   ],
   GUARD: [
     "campus_movement.gate.verify",
@@ -243,6 +266,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.gate.lookup",
     "campus_movement.shift.manage_own",
     "campus_movement.emergency.view",
+    "academics.view",
   ],
   HOD: [
     "campus_movement.pass.view_department",
@@ -251,6 +275,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.view",
+    "academics.view",
   ],
   ADMIN: [
     "admin.users.view",
@@ -269,6 +294,10 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "admin.academic_calendar.manage",
     "admin.support.revoke",
     "admin.modules.manage",
+    "academics.sessions.manage",
+    "academics.programs.manage",
+    "academics.calendar.manage",
+    "academics.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

@@ -61,6 +61,18 @@ export const AUDIT_ACTIONS = [
   // admin.module.* (2)
   { key: "admin.module.activated", module: "admin", description: "Institution activated a module" },
   { key: "admin.module.suspended", module: "admin", description: "Institution suspended a module" },
+  // academics.* (12)
+  { key: "academics.session.created", module: "academics", description: "Academic session created" },
+  { key: "academics.session.updated", module: "academics", description: "Academic session updated" },
+  { key: "academics.session.activated", module: "academics", description: "Academic session activated" },
+  { key: "academics.session.closed", module: "academics", description: "Academic session closed" },
+  { key: "academics.term.created", module: "academics", description: "Academic term created" },
+  { key: "academics.term.updated", module: "academics", description: "Academic term updated" },
+  { key: "academics.term.activated", module: "academics", description: "Academic term activated" },
+  { key: "academics.term.closed", module: "academics", description: "Academic term closed" },
+  { key: "academics.program.created", module: "academics", description: "Academic program created" },
+  { key: "academics.program.updated", module: "academics", description: "Academic program updated" },
+  { key: "academics.calendar.updated", module: "academics", description: "Academic calendar entry created, updated or deleted" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

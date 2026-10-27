@@ -120,6 +120,37 @@ enum ModuleState {
   SUSPENDED
 }
 
+// ─── ACADEMICS (Phase 1 — sessions / terms / programs / calendar) ───────────
+
+enum AcademicSessionStatus {
+  UPCOMING
+  ACTIVE
+  CLOSED
+}
+
+enum AcademicStructureType {
+  SEMESTER
+  TRIMESTER
+  ANNUAL
+  CUSTOM
+}
+
+enum AcademicTermStatus {
+  UPCOMING
+  ACTIVE
+  CLOSED
+}
+
+enum ProgramStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProgramDurationUnit {
+  TERMS
+  YEARS
+}
+
 enum WeekStartDay {
   MONDAY
   TUESDAY
@@ -197,6 +228,10 @@ model Institution {
   auditEvents          AuditEvent[]
   supportGrants        SupportGrant[]
   institutionModules   InstitutionModule[]
+  academicSessions             AcademicSession[]
+  academicTerms                AcademicTerm[]
+  programs                     Program[]
+  academicCalendarDayRevisions AcademicCalendarDayRevision[]
 
   @@map("institutions")
 }
@@ -214,6 +249,8 @@ model Department {
 
   students StudentProfile[]
   hods     HodProfile[]
+  programs            Program[]
+  academicCalendarDays AcademicCalendarDay[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -672,6 +709,106 @@ model InstitutionModule {
   @@map("institution_modules")
 }
 
+// ─── ACADEMIC SESSION / TERM (Phase 1, tenant-owned) ────────────────────────
+
+model AcademicSession {
+  id            String                @id @default(cuid())
+  institutionId String
+  institution   Institution           @relation(fields: [institutionId], references: [id])
+  name          String
+  structureType AcademicStructureType
+  status        AcademicSessionStatus @default(UPCOMING)
+  startDate     DateTime
+  endDate       DateTime
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  terms                AcademicTerm[]
+  calendarDays         AcademicCalendarDay[]
+  calendarDayRevisions AcademicCalendarDayRevision[]
+
+  @@unique([institutionId, name])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@map("academic_sessions")
+}
+
+model AcademicTerm {
+  id                String             @id @default(cuid())
+  institutionId     String
+  institution       Institution        @relation(fields: [institutionId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession    @relation(fields: [academicSessionId], references: [id])
+  name              String
+  ordinal           Int
+  status            AcademicTermStatus @default(UPCOMING)
+  startDate         DateTime
+  endDate           DateTime
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  calendarDays         AcademicCalendarDay[]
+  calendarDayRevisions AcademicCalendarDayRevision[]
+
+  @@unique([academicSessionId, ordinal])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([academicSessionId])
+  @@map("academic_terms")
+}
+
+// ─── PROGRAM (Phase 1, tenant-owned) ────────────────────────────────────────
+
+model Program {
+  id            String              @id @default(cuid())
+  institutionId String
+  institution   Institution         @relation(fields: [institutionId], references: [id])
+  departmentId  String
+  department    Department          @relation(fields: [departmentId], references: [id])
+  name          String
+  code          String
+  duration      Int
+  durationUnit  ProgramDurationUnit @default(TERMS)
+  status        ProgramStatus       @default(ACTIVE)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([institutionId, code])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([departmentId])
+  @@map("programs")
+}
+
+// ─── ACADEMIC CALENDAR DAY REVISION (Phase 1, tenant-owned, append-only) ────
+
+model AcademicCalendarDayRevision {
+  id                String           @id @default(cuid())
+  institutionId     String
+  institution       Institution      @relation(fields: [institutionId], references: [id])
+  calendarDayId     String?
+  date              DateTime
+  departmentId      String?
+  previousDayType   AcademicDayType?
+  newDayType        AcademicDayType?
+  previousNote      String?
+  newNote           String?
+  changeType        String
+  actorUserId       String
+  academicSessionId String?
+  academicSession   AcademicSession? @relation(fields: [academicSessionId], references: [id])
+  academicTermId    String?
+  academicTerm      AcademicTerm?    @relation(fields: [academicTermId], references: [id])
+  createdAt         DateTime         @default(now())
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, date])
+  @@index([calendarDayId])
+  @@map("academic_calendar_day_revisions")
+}
+
 // ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
 
 model Notification {
@@ -717,7 +854,14 @@ model AcademicCalendarDay {
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
-  @@unique([institutionId, date])
+  // Phase 1 generalization (all nullable; existing rows stay valid).
+  departmentId      String?
+  department        Department?      @relation(fields: [departmentId], references: [id])
+  academicSessionId String?
+  academicSession   AcademicSession? @relation(fields: [academicSessionId], references: [id])
+  academicTermId    String?
+  academicTerm      AcademicTerm?    @relation(fields: [academicTermId], references: [id])
+
   @@index([institutionId, date])
   @@map("academic_calendar_days")
 }

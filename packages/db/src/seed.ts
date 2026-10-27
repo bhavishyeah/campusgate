@@ -153,6 +153,7 @@ async function main() {
   ];
 
   let bca: any;
+  let btechCse: any;
   for (const c of courses) {
     const created = await prisma.department.upsert({
       where: { institutionId_code: { institutionId: institution.id, code: c.code } },
@@ -160,6 +161,7 @@ async function main() {
       create: { name: c.name, code: c.code, institutionId: institution.id },
     });
     if (c.code === "512") bca = created;
+    if (c.code === "501") btechCse = created;
   }
 
   console.log("  ✓ Courses created (9)");
@@ -325,6 +327,123 @@ async function main() {
     },
   });
   console.log("  ✓ campus_movement module entitled + activated for demo tenant");
+
+  // ─── Academics: session + terms + programs + calendar (Phase 1, FEAT-001) ───
+  // Idempotent demo data for the new academic substrate. All upserts/find-first
+  // are keyed on natural uniques so re-running the seed never duplicates. No
+  // revision rows are seeded (the revision table is append-only history).
+  const session = await prisma.academicSession.upsert({
+    where: { institutionId_name: { institutionId: institution.id, name: "2026-2027" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      name: "2026-2027",
+      structureType: "SEMESTER",
+      status: "ACTIVE",
+      startDate: new Date("2026-07-01"),
+      endDate: new Date("2027-06-30"),
+    },
+  });
+
+  await prisma.academicTerm.upsert({
+    where: { academicSessionId_ordinal: { academicSessionId: session.id, ordinal: 1 } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      academicSessionId: session.id,
+      name: "Semester 1",
+      ordinal: 1,
+      status: "ACTIVE",
+      startDate: new Date("2026-07-01"),
+      endDate: new Date("2026-12-31"),
+    },
+  });
+
+  await prisma.academicTerm.upsert({
+    where: { academicSessionId_ordinal: { academicSessionId: session.id, ordinal: 2 } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      academicSessionId: session.id,
+      name: "Semester 2",
+      ordinal: 2,
+      status: "UPCOMING",
+      startDate: new Date("2027-01-01"),
+      endDate: new Date("2027-06-30"),
+    },
+  });
+  console.log("  ✓ Academic session 2026-2027 (ACTIVE) + two terms created");
+
+  await prisma.program.upsert({
+    where: { institutionId_code: { institutionId: institution.id, code: "BCA" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      departmentId: bca.id,
+      name: "Bachelor of Computer Applications",
+      code: "BCA",
+      duration: 6,
+      durationUnit: "TERMS",
+      status: "ACTIVE",
+    },
+  });
+
+  await prisma.program.upsert({
+    where: { institutionId_code: { institutionId: institution.id, code: "BTECH-CSE" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      departmentId: btechCse.id,
+      name: "B.Tech (Computer Science & Engineering)",
+      code: "BTECH-CSE",
+      duration: 6,
+      durationUnit: "TERMS",
+      status: "ACTIVE",
+    },
+  });
+  console.log("  ✓ Programs created (BCA, BTECH-CSE)");
+
+  // Calendar entries: two institution-wide (departmentId null) + one BCA-scoped,
+  // linked to the active session. The partial unique indexes aren't expressible
+  // as a Prisma compound-unique, so resolve via findFirst + create/update.
+  const calendarEntries: Array<{
+    date: Date;
+    dayType: "HOLIDAY" | "WORKING_DAY" | "EXAM_DAY";
+    note: string;
+    departmentId: string | null;
+  }> = [
+    { date: new Date("2026-08-15"), dayType: "HOLIDAY", note: "Independence Day", departmentId: null },
+    { date: new Date("2026-09-05"), dayType: "WORKING_DAY", note: "Regular working day", departmentId: null },
+    { date: new Date("2026-11-20"), dayType: "EXAM_DAY", note: "BCA mid-semester exam", departmentId: bca.id },
+  ];
+
+  for (const entry of calendarEntries) {
+    const existing = await prisma.academicCalendarDay.findFirst({
+      where: { institutionId: institution.id, date: entry.date, departmentId: entry.departmentId },
+    });
+    if (existing) {
+      await prisma.academicCalendarDay.update({
+        where: { id: existing.id },
+        data: {
+          dayType: entry.dayType,
+          note: entry.note,
+          academicSessionId: session.id,
+        },
+      });
+    } else {
+      await prisma.academicCalendarDay.create({
+        data: {
+          institutionId: institution.id,
+          date: entry.date,
+          dayType: entry.dayType,
+          note: entry.note,
+          departmentId: entry.departmentId,
+          academicSessionId: session.id,
+        },
+      });
+    }
+  }
+  console.log("  ✓ Academic calendar entries created (2 institution-wide, 1 BCA-scoped)");
 
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
