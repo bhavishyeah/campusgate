@@ -687,6 +687,91 @@ export async function studentRoutes(app: FastifyInstance) {
     });
   });
 
+  // ─── GET OWN CLASS SCHEDULE (Phase 3 — own-scoped) ──────────────────────────
+  // The SCHEDULED classes of the sections the caller is actively ENROLLED in.
+  // Served through this dedicated own-scoped endpoint (permission classes.view_own),
+  // NEVER the staff classes.view catalogue list (design A4). Ownership is resolved
+  // via getStudentInTenant(userId, ...) — never a request-supplied id — so a
+  // student can only ever read their own schedule. FOUNDATIONAL data: NO
+  // requireModuleActive hook (design §3).
+  app.get("/me/schedule", { preHandler: [requirePermission("classes.view_own")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const student = await getStudentInTenant(userId, institutionId, tx);
+      if (!student) return null;
+
+      const enrollments = await tx.classEnrollment.findMany({
+        where: { institutionId, studentId: student.id, status: "ENROLLED" },
+        select: { classSectionId: true },
+      });
+      const sectionIds = enrollments.map((e) => e.classSectionId);
+
+      if (sectionIds.length === 0) {
+        return { scheduledClasses: [] as unknown[] };
+      }
+
+      const scheduledClasses = await tx.scheduledClass.findMany({
+        where: {
+          institutionId,
+          classSectionId: { in: sectionIds },
+          status: "SCHEDULED",
+          timetable: { status: "PUBLISHED" },
+        },
+        include: {
+          subject: { select: { id: true, name: true, code: true } },
+          faculty: { select: { id: true, name: true } },
+          classSection: { select: { id: true, label: true } },
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }],
+      });
+
+      return { scheduledClasses };
+    });
+
+    if (!result) {
+      return reply.status(404).send({ error: "Student profile not found" });
+    }
+    return reply.send(result);
+  });
+
+  // ─── GET OWN TEACHING SCHEDULE (Phase 3 — faculty own-scoped) ───────────────
+  // The SCHEDULED classes taught by the caller's own FacultyProfile. Resolved by
+  // the caller's FacultyProfile.id (from their userId) — never a request-supplied
+  // id. Permission classes.view_own; NO requireModuleActive (foundational).
+  app.get("/me/teaching-schedule", { preHandler: [requirePermission("classes.view_own")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+
+    const result = await withTenant(institutionId, async (tx) => {
+      const faculty = await tx.facultyProfile.findFirst({
+        where: { userId, institutionId },
+        select: { id: true },
+      });
+      if (!faculty) return null;
+
+      const scheduledClasses = await tx.scheduledClass.findMany({
+        where: {
+          institutionId,
+          facultyId: faculty.id,
+          status: "SCHEDULED",
+          timetable: { status: "PUBLISHED" },
+        },
+        include: {
+          subject: { select: { id: true, name: true, code: true } },
+          classSection: { select: { id: true, label: true } },
+        },
+        orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }],
+      });
+
+      return { facultyId: faculty.id, scheduledClasses };
+    });
+
+    if (!result) {
+      return reply.status(404).send({ error: "Faculty profile not found" });
+    }
+    return reply.send(result);
+  });
+
   // ─── GET OWN SERVICES (ACTIVE modules only) ──────────────────────────────────
   app.get("/me/services", { preHandler: [requirePermission("students.view_own")] }, async (request, reply) => {
     const { userId, institutionId } = request.user;
