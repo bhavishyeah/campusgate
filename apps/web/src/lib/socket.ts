@@ -1,11 +1,28 @@
 import { useAuthStore } from "@/stores/auth";
 
-// Prefer an explicit WebSocket URL when provided; otherwise derive it from the
-// API URL by swapping the http(s) scheme for ws(s).
-const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:4000";
+// Swap an http(s) scheme for ws(s), anchored to the START of the string so an
+// embedded "http" later in the URL is never rewritten. Any other value is
+// returned unchanged.
+function toWsScheme(url: string): string {
+  if (url.startsWith("https://")) return `wss://${url.slice("https://".length)}`;
+  if (url.startsWith("http://")) return `ws://${url.slice("http://".length)}`;
+  return url;
+}
+
+// Resolve the WebSocket base URL per connection so env is read at connect time.
+// The WS server shares the API host (the API serves /ws/connect), so by default
+// the URL is derived from NEXT_PUBLIC_API_URL. NEXT_PUBLIC_WS_URL is an optional
+// override used ONLY when explicitly set and non-empty: a ws(s):// value is used
+// verbatim, an http(s):// value gets the scheme swap.
+function resolveWsUrl(): string {
+  const override = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  if (override) {
+    if (override.startsWith("ws://") || override.startsWith("wss://")) return override;
+    return toWsScheme(override);
+  }
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+  return toWsScheme(apiUrl);
+}
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -26,7 +43,7 @@ export function connectSocket() {
 
   intentionalClose = false;
 
-  const wsUrl = WS_URL.replace("http", "ws");
+  const wsUrl = resolveWsUrl();
   socket = new WebSocket(`${wsUrl}/ws/connect?token=${token}`);
 
   socket.onopen = () => {

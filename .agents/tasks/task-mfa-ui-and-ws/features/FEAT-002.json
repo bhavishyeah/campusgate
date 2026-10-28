@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "Harden the WebSocket URL derivation in apps/web/src/lib/socket.ts and document the API/WS env relationship in apps/web/.env.example. The WS server shares the API host (API serves /ws/connect), so the WS URL must be derived from NEXT_PUBLIC_API_URL by default, with NEXT_PUBLIC_WS_URL as an optional override that is used ONLY when explicitly set and non-empty. Independent of FEAT-001. Frontend-only; zero new dependencies.",
+  "status": "completed",
+  "steps": [
+    "In apps/web/src/lib/socket.ts, replace the module-level WS_URL constant and the inline `WS_URL.replace('http','ws')` logic with an explicit resolver (a small resolveWsUrl() helper or inline inside connectSocket so env is read per connect). Logic: const override = process.env.NEXT_PUBLIC_WS_URL?.trim(); if override is non-empty, use it (if it already starts with ws:// or wss:// use it verbatim; if it starts with http:// or https:// apply the scheme swap below). Otherwise derive from const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000').",
+    "Implement the scheme swap anchored to the START of the string so an embedded 'http' later in the URL is never rewritten: if the value starts with 'https://' replace the leading 'https://' with 'wss://'; else if it starts with 'http://' replace the leading 'http://' with 'ws://'; otherwise leave as-is. An unset/empty NEXT_PUBLIC_WS_URL MUST therefore yield the ws(s) URL derived from NEXT_PUBLIC_API_URL, and an https API origin MUST yield wss.",
+    "Keep the final connection exactly as `${wsUrl}/ws/connect?token=${token}` and do not change the reconnect/ping/handler logic or the exported function signatures (connectSocket, disconnectSocket, onMessage) — the student/hod/guard/admin layouts import connectSocket and must stay working.",
+    "Update apps/web/.env.example: document NEXT_PUBLIC_API_URL as the API origin used for both REST and WebSocket; document NEXT_PUBLIC_WS_URL as an OPTIONAL override, same host as the API, to be set only when the WS host genuinely differs, and note that leaving it unset derives the WS URL from NEXT_PUBLIC_API_URL. Do NOT commit any real .env or .env.local."
+  ],
+  "acceptance_criteria": [
+    "socket.ts derives the WS URL from NEXT_PUBLIC_API_URL by default, swapping http->ws and https->wss anchored at the start of the string.",
+    "NEXT_PUBLIC_WS_URL is used only when explicitly set and non-empty (trimmed); an unset or empty value yields the URL derived from NEXT_PUBLIC_API_URL.",
+    "The connection path remains `${wsUrl}/ws/connect?token=...` and the exported function signatures are unchanged.",
+    "apps/web/.env.example documents the NEXT_PUBLIC_API_URL vs optional NEXT_PUBLIC_WS_URL relationship.",
+    "No new dependency was added; no backend files were modified.",
+    "`npm run build` at c:\\campusgate succeeds with no type errors."
+  ],
+  "verification": [
+    "Run `npm run build` at c:\\campusgate and confirm @campusgate/web compiles with no type errors (connectSocket still typechecks and the importing layouts are unaffected).",
+    "Optionally run `npm run lint -w @campusgate/web` and confirm it passes.",
+    "Confirm git status shows only apps/web/src/lib/socket.ts and apps/web/.env.example changed by this feature, and that no real .env/.env.local is staged."
+  ],
+  "blocked_reason": null,
+  "findings": "Replaced the module-level WS_URL constant and the buggy `WS_URL.replace('http','ws')` call (which replaced the first 'http' anywhere in the string and never produced wss) with a per-connect resolveWsUrl() plus a toWsScheme() helper in apps/web/src/lib/socket.ts. resolveWsUrl() reads env at connect time: NEXT_PUBLIC_WS_URL (trimmed) is used only when non-empty — a ws://|wss:// value verbatim, an http://|https:// value via the scheme swap; otherwise it derives from NEXT_PUBLIC_API_URL (default http://localhost:4000). toWsScheme() anchors the swap at the start of the string (https://->wss://, http://->ws://), so https origins yield wss and an embedded 'http' later in the URL is never rewritten. Connection path kept exactly as `${wsUrl}/ws/connect?token=${token}`; connectSocket/disconnectSocket/onMessage signatures and the reconnect/ping/handler logic are unchanged, so the student/hod/guard/admin layouts remain unaffected. Updated apps/web/.env.example to document NEXT_PUBLIC_API_URL as the origin for both REST and WS and NEXT_PUBLIC_WS_URL as an optional same-host override (left empty by default). Frontend-only, zero new dependencies, no backend files touched. Verification: `npm run build` at c:\\campusgate succeeded (3/3 tasks, @campusgate/web next build type-checked clean) and `npm run lint -w @campusgate/web` (tsc --noEmit) exited 0."
+}
