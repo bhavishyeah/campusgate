@@ -102,6 +102,22 @@ export interface SeededTenant {
   // precedent). Its append-only behaviour is proven by the self-contained case
   // in the escape suite + the SIS regression suite.
   studentDocumentId: string;
+  // FEAT-004 Phase-3 classes tables (design §6). The eight mutable tables are
+  // seeded here (standard RLS pair) so the read/spoofed-write/foreign-parent
+  // escape tests can prove campass_app cannot see or forge the other tenant's
+  // rows. The ninth table, schedule_revisions, is append-only (its trigger
+  // blocks UPDATE/DELETE even for adminClient), so it is EXCLUDED from this
+  // generic seed/cleanup loop and proven by the self-contained case in the
+  // escape suite — the audit_events / student_profile_history precedent.
+  courseId: string;
+  subjectId: string;
+  classSectionId: string;
+  classEnrollmentId: string;
+  facultyUserId: string;
+  facultyProfileId: string;
+  facultyAssignmentId: string;
+  timetableId: string;
+  scheduledClassId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -159,6 +175,16 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const programId = id(`prog_${key}`);
   const calendarDayId = id(`acd_${key}`);
   const studentDocumentId = id(`sdoc_${key}`);
+  // FEAT-004 Phase-3 classes IDs (deterministic so cleanup is exact).
+  const courseId = id(`course_${key}`);
+  const subjectId = id(`subject_${key}`);
+  const classSectionId = id(`section_${key}`);
+  const classEnrollmentId = id(`enroll_${key}`);
+  const facultyUserId = id(`facuser_${key}`);
+  const facultyProfileId = id(`faculty_${key}`);
+  const facultyAssignmentId = id(`facassign_${key}`);
+  const timetableId = id(`timetable_${key}`);
+  const scheduledClassId = id(`sclass_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -346,6 +372,129 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // FEAT-004 Phase-3 classes MUTABLE tables (design §6). Seeded via the
+  // RLS-bypassing adminClient, in child-safe order so the RESTRICT composite FKs
+  // are satisfied: course -> subject; section; faculty user -> faculty_profile;
+  // faculty_assignment; timetable; scheduled_class; enrollment referencing the
+  // ALREADY-seeded studentProfile (no second student — the enrollment proves the
+  // single-identity composite FK). schedule_revisions is DELIBERATELY NOT seeded
+  // here — its BEFORE UPDATE OR DELETE trigger blocks even adminClient in the
+  // shared teardown (the audit_events / student_profile_history precedent); its
+  // escape behaviour is covered by the self-contained append-only case.
+  await adminClient.course.create({
+    data: {
+      id: courseId,
+      institutionId,
+      programId,
+      academicTermId,
+      name: `${PREFIX}Course ${key}`,
+      code: id(`COURSE_${key}`),
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.subject.create({
+    data: {
+      id: subjectId,
+      institutionId,
+      courseId,
+      name: `${PREFIX}Subject ${key}`,
+      code: id(`SUBJ_${key}`),
+      credits: 4,
+      contactHoursPerWeek: 4,
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.classSection.create({
+    data: {
+      id: classSectionId,
+      institutionId,
+      programId,
+      academicSessionId,
+      academicTermId,
+      label: `${PREFIX}${key}`,
+      capacity: 60,
+      status: "ACTIVE",
+    },
+  });
+
+  // A dedicated faculty user so faculty_profiles(userId) unique is not consumed
+  // by the already-seeded student user. The composite FK is to users(id,
+  // institutionId), so this user lives in the same tenant.
+  await adminClient.user.create({
+    data: {
+      id: facultyUserId,
+      email: `${PREFIX.toLowerCase()}fac_${key.toLowerCase()}@example.test`,
+      role: "GUARD", // inert non-actor legacy value for a pure-faculty user (design A3)
+      institutionId,
+    },
+  });
+
+  await adminClient.facultyProfile.create({
+    data: {
+      id: facultyProfileId,
+      institutionId,
+      userId: facultyUserId,
+      name: `${PREFIX}Faculty ${key}`,
+      departmentId,
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.facultyAssignment.create({
+    data: {
+      id: facultyAssignmentId,
+      institutionId,
+      facultyId: facultyProfileId,
+      subjectId,
+      classSectionId,
+      academicTermId,
+      role: "PRIMARY",
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.timetable.create({
+    data: {
+      id: timetableId,
+      institutionId,
+      academicTermId,
+      name: `${PREFIX}Timetable ${key}`,
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+    },
+  });
+
+  await adminClient.scheduledClass.create({
+    data: {
+      id: scheduledClassId,
+      institutionId,
+      timetableId,
+      classSectionId,
+      subjectId,
+      facultyId: facultyProfileId,
+      academicTermId,
+      room: id(`R_${key}`),
+      dayOfWeek: "MON",
+      startTime: 540,
+      endTime: 600,
+      status: "SCHEDULED",
+    },
+  });
+
+  // Enrollment references the ALREADY-seeded studentProfile (single identity —
+  // the composite same-tenant FK forbids enrolling another tenant's student).
+  await adminClient.classEnrollment.create({
+    data: {
+      id: classEnrollmentId,
+      institutionId,
+      classSectionId,
+      studentId: studentProfileId,
+      status: "ENROLLED",
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -362,6 +511,15 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     programId,
     calendarDayId,
     studentDocumentId,
+    courseId,
+    subjectId,
+    classSectionId,
+    classEnrollmentId,
+    facultyUserId,
+    facultyProfileId,
+    facultyAssignmentId,
+    timetableId,
+    scheduledClassId,
   };
 }
 
@@ -375,6 +533,21 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // FEAT-004 Phase-3 classes tables FIRST, child -> parent per the §6.10 RESTRICT
+  // FKs, so they do not block the student_profiles / programs / sessions / terms /
+  // departments / users deletes below. Order: enrollments + scheduled_classes +
+  // faculty_assignments (leaves) -> timetables + subjects + sections (mid) ->
+  // courses + faculty_profiles (parents of the above but children of
+  // programs/terms/departments/users). schedule_revisions is append-only and
+  // never seeded by the generic loop, so there is nothing to delete here for it.
+  await withRetry(() => adminClient.classEnrollment.deleteMany({ where }));
+  await withRetry(() => adminClient.scheduledClass.deleteMany({ where }));
+  await withRetry(() => adminClient.facultyAssignment.deleteMany({ where }));
+  await withRetry(() => adminClient.timetable.deleteMany({ where }));
+  await withRetry(() => adminClient.subject.deleteMany({ where }));
+  await withRetry(() => adminClient.classSection.deleteMany({ where }));
+  await withRetry(() => adminClient.course.deleteMany({ where }));
+  await withRetry(() => adminClient.facultyProfile.deleteMany({ where }));
   // B-2 tenant-owned RBAC tables first (child -> parent), so the new RESTRICT
   // composite FKs (membership_roles -> institution_memberships -> users) do not
   // block the user/department/institution deletes below.
@@ -445,6 +618,17 @@ export async function countRemainingTestRows(): Promise<number> {
     () => adminClient.membershipRole.count({ where }),
     () => adminClient.institutionMembership.count({ where }),
     () => adminClient.institutionModule.count({ where }),
+    // FEAT-004 Phase-3 classes MUTABLE tables (schedule_revisions is append-only
+    // and never seeded by the generic loop, so it is not counted — audit_events
+    // precedent). Counted SEQUENTIALLY (session-pooler client cap).
+    () => adminClient.classEnrollment.count({ where }),
+    () => adminClient.scheduledClass.count({ where }),
+    () => adminClient.facultyAssignment.count({ where }),
+    () => adminClient.timetable.count({ where }),
+    () => adminClient.subject.count({ where }),
+    () => adminClient.classSection.count({ where }),
+    () => adminClient.course.count({ where }),
+    () => adminClient.facultyProfile.count({ where }),
     // FEAT-003 academics mutable tables (the revision table is append-only and
     // not seeded here, so it is not counted — audit_events precedent).
     () => adminClient.academicCalendarDay.count({ where }),
@@ -512,6 +696,17 @@ export const RLS_TABLES = [
   // pair; student_profile_history is append-only (EXPECTED_POLICIES below).
   "student_profile_history",
   "student_documents",
+  // FEAT-004 Phase-3 classes tables (design §6). The eight mutable tables use the
+  // default modify pair; schedule_revisions is append-only (EXPECTED_POLICIES).
+  "courses",
+  "subjects",
+  "class_sections",
+  "class_enrollments",
+  "faculty_profiles",
+  "faculty_assignments",
+  "timetables",
+  "scheduled_classes",
+  "schedule_revisions",
 ] as const;
 
 /**
@@ -536,6 +731,13 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   student_profile_history: [
     "tenant_isolation_select",
     "student_profile_history_tenant_insert",
+  ],
+  // FEAT-004: schedule_revisions is append-only (design §6.9) — the SELECT +
+  // INSERT pair, NO modify policy. All eight other Phase-3 tables are deliberately
+  // ABSENT here so they fall through to DEFAULT_POLICIES (the standard pair).
+  schedule_revisions: [
+    "tenant_isolation_select",
+    "schedule_revisions_tenant_insert",
   ],
 };
 

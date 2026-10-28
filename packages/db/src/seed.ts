@@ -497,11 +497,213 @@ async function main() {
   }
   console.log("  ✓ Demo students linked to 2026-2027 Semester 1 + ENROLLED history seeded");
 
+  // ─── Classes: course + subject + section + enrollment + faculty + timetable ──
+  // Phase-3 demo data (FEAT-004, design §15). All upserts / find-first-then-create
+  // keyed on business uniques so re-running the seed never duplicates. Built on
+  // the existing demo institution + ACTIVE 2026-2027 session + Semester 1 term +
+  // BCA program + the seeded BCA student (BCA2024001) — the enrollment references
+  // that SHARED StudentProfile (single identity, no second student). No
+  // ScheduleRevision rows are seeded (append-only history — the trigger forbids
+  // anything but genuine INSERTs; mirrors student_profile_history).
+  const course = await prisma.course.upsert({
+    where: { institutionId_code: { institutionId: institution.id, code: "BCA-S1-CORE" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      programId: bcaProgram.id,
+      academicTermId: term1.id,
+      name: "BCA Semester 1 Core",
+      code: "BCA-S1-CORE",
+      status: "ACTIVE",
+    },
+  });
+
+  const subject = await prisma.subject.upsert({
+    where: { institutionId_code: { institutionId: institution.id, code: "CS101" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      courseId: course.id,
+      name: "Data Structures",
+      code: "CS101",
+      credits: 4,
+      contactHoursPerWeek: 4,
+      status: "ACTIVE",
+    },
+  });
+  console.log("  ✓ Course BCA-S1-CORE + Subject CS101 Data Structures created");
+
+  // ClassSection: the composite business unique is
+  // (institutionId, programId, academicSessionId, academicTermId, label) — not a
+  // single Prisma named unique, so resolve via findFirst + create (idempotent).
+  let section = await prisma.classSection.findFirst({
+    where: {
+      institutionId: institution.id,
+      programId: bcaProgram.id,
+      academicSessionId: session.id,
+      academicTermId: term1.id,
+      label: "A",
+    },
+  });
+  if (!section) {
+    section = await prisma.classSection.create({
+      data: {
+        institutionId: institution.id,
+        programId: bcaProgram.id,
+        academicSessionId: session.id,
+        academicTermId: term1.id,
+        label: "A",
+        capacity: 60,
+        status: "ACTIVE",
+      },
+    });
+  }
+  console.log("  ✓ ClassSection BCA/2026-2027/Semester 1/A (capacity 60, ACTIVE) created");
+
+  // ClassEnrollment of the seeded BCA2024001 student into section A, referencing
+  // the SHARED StudentProfile (no second student). Idempotent on the
+  // (classSectionId, studentId) unique.
+  const demoStudent = await prisma.studentProfile.findUnique({
+    where: { enrollmentNo: "BCA2024001" },
+  });
+  if (demoStudent) {
+    await prisma.classEnrollment.upsert({
+      where: {
+        classSectionId_studentId: { classSectionId: section.id, studentId: demoStudent.id },
+      },
+      update: {},
+      create: {
+        institutionId: institution.id,
+        classSectionId: section.id,
+        studentId: demoStudent.id,
+        status: "ENROLLED",
+      },
+    });
+    console.log("  ✓ Demo student BCA2024001 enrolled into section A (ENROLLED)");
+  }
+
+  // One pure-faculty User (legacy role = GUARD, the inert non-actor value per
+  // design A3 — teaching capability comes from the FACULTY template role on the
+  // membership, not the enum) + a FacultyProfile (dept BCA) + the FACULTY role on
+  // its membership.
+  const facultyPassword = await bcrypt.hash("faculty123", 12);
+  const facultyUser = await prisma.user.upsert({
+    where: { email: "faculty.cs@demo.edu" },
+    update: {},
+    create: {
+      email: "faculty.cs@demo.edu",
+      passwordHash: facultyPassword,
+      role: "GUARD",
+      accountStatus: "ACTIVE",
+      institutionId: institution.id,
+    },
+  });
+
+  const facultyProfile = await prisma.facultyProfile.upsert({
+    where: { userId: facultyUser.id },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      userId: facultyUser.id,
+      name: "Prof. Anita Rao",
+      departmentId: bca.id,
+      status: "ACTIVE",
+    },
+  });
+  await ensureMembership(facultyUser.id, facultyUser.institutionId, "FACULTY", roleIdByKey);
+  console.log("  ✓ Faculty user created (faculty.cs@demo.edu / faculty123) + FacultyProfile + FACULTY role");
+
+  // PRIMARY FacultyAssignment (CS101, section A, Semester 1). No single Prisma
+  // named unique for this tuple, so resolve via findFirst + create (idempotent).
+  const existingAssignment = await prisma.facultyAssignment.findFirst({
+    where: {
+      institutionId: institution.id,
+      facultyId: facultyProfile.id,
+      subjectId: subject.id,
+      classSectionId: section.id,
+      academicTermId: term1.id,
+      status: "ACTIVE",
+    },
+  });
+  if (!existingAssignment) {
+    await prisma.facultyAssignment.create({
+      data: {
+        institutionId: institution.id,
+        facultyId: facultyProfile.id,
+        subjectId: subject.id,
+        classSectionId: section.id,
+        academicTermId: term1.id,
+        role: "PRIMARY",
+        status: "ACTIVE",
+      },
+    });
+  }
+  console.log("  ✓ PRIMARY FacultyAssignment (CS101, section A, Semester 1) created");
+
+  // One PUBLISHED Timetable (Semester 1) with a conflict-free ScheduledClass set
+  // (Mon/Wed 09:00-10:00 startTime=540 endTime=600, room R-101). No single Prisma
+  // named unique for (term, name), so resolve via findFirst + create.
+  let timetable = await prisma.timetable.findFirst({
+    where: {
+      institutionId: institution.id,
+      academicTermId: term1.id,
+      name: "Semester 1 Timetable",
+    },
+  });
+  if (!timetable) {
+    timetable = await prisma.timetable.create({
+      data: {
+        institutionId: institution.id,
+        academicTermId: term1.id,
+        name: "Semester 1 Timetable",
+        status: "PUBLISHED",
+        publishedAt: new Date(),
+      },
+    });
+  }
+
+  // Conflict-free recurring slots: Mon + Wed, 09:00-10:00, room R-101, CS101,
+  // section A, the seeded faculty. Keyed per (timetable, section, subject,
+  // faculty, dayOfWeek, startTime) via findFirst so a re-run never duplicates.
+  const slotDays: Array<"MON" | "WED"> = ["MON", "WED"];
+  for (const day of slotDays) {
+    const existingSlot = await prisma.scheduledClass.findFirst({
+      where: {
+        institutionId: institution.id,
+        timetableId: timetable.id,
+        classSectionId: section.id,
+        subjectId: subject.id,
+        facultyId: facultyProfile.id,
+        dayOfWeek: day,
+        startTime: 540,
+      },
+    });
+    if (!existingSlot) {
+      await prisma.scheduledClass.create({
+        data: {
+          institutionId: institution.id,
+          timetableId: timetable.id,
+          classSectionId: section.id,
+          subjectId: subject.id,
+          facultyId: facultyProfile.id,
+          academicTermId: term1.id,
+          room: "R-101",
+          dayOfWeek: day,
+          startTime: 540,
+          endTime: 600,
+          status: "SCHEDULED",
+        },
+      });
+    }
+  }
+  console.log("  ✓ PUBLISHED Semester 1 Timetable + conflict-free Mon/Wed CS101 slots (R-101) created");
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
   console.log("   Admin:   admin@demo.edu / admin123");
   console.log("   HOD:     hod.bca@demo.edu / hod123");
   console.log("   Guard:   guard@demo.edu / guard123");
+  console.log("   Faculty: faculty.cs@demo.edu / faculty123");
   console.log("   Student: bhavishya@demo.edu / student123");
   console.log("   Super:   superadmin@campusgate.local / superadmin123");
 }

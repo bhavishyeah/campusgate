@@ -629,6 +629,296 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── FEAT-004 Phase-3 classes tables (design §6) ───────────────────────────
+  // courses / subjects / class_sections / class_enrollments / faculty_profiles /
+  // faculty_assignments / timetables / scheduled_classes (the eight mutable
+  // tables): cross-tenant read denied, spoofed/cross-tenant write denied,
+  // foreign-parent composite-FK violation, buggy-query backstop, three-GUC-state
+  // fail-closed. The append-only schedule_revisions table is covered by its own
+  // self-contained case (3cc) + the policy meta-test — it is NOT seeded in the
+  // shared setup (its trigger blocks the shared teardown).
+
+  it("3y. classes read escape: tenant A cannot see tenant B's Phase-3 rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const course = await withTenant(A.institutionId, (tx) =>
+      tx.course.findUnique({ where: { id: B.courseId } }),
+    );
+    expect(course).toBeNull();
+
+    const subject = await withTenant(A.institutionId, (tx) =>
+      tx.subject.findUnique({ where: { id: B.subjectId } }),
+    );
+    expect(subject).toBeNull();
+
+    const section = await withTenant(A.institutionId, (tx) =>
+      tx.classSection.findUnique({ where: { id: B.classSectionId } }),
+    );
+    expect(section).toBeNull();
+
+    const enrollment = await withTenant(A.institutionId, (tx) =>
+      tx.classEnrollment.findUnique({ where: { id: B.classEnrollmentId } }),
+    );
+    expect(enrollment).toBeNull();
+
+    const faculty = await withTenant(A.institutionId, (tx) =>
+      tx.facultyProfile.findUnique({ where: { id: B.facultyProfileId } }),
+    );
+    expect(faculty).toBeNull();
+
+    const assignment = await withTenant(A.institutionId, (tx) =>
+      tx.facultyAssignment.findUnique({ where: { id: B.facultyAssignmentId } }),
+    );
+    expect(assignment).toBeNull();
+
+    const timetable = await withTenant(A.institutionId, (tx) =>
+      tx.timetable.findUnique({ where: { id: B.timetableId } }),
+    );
+    expect(timetable).toBeNull();
+
+    const scheduled = await withTenant(A.institutionId, (tx) =>
+      tx.scheduledClass.findUnique({ where: { id: B.scheduledClassId } }),
+    );
+    expect(scheduled).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownCourses = await withTenant(A.institutionId, (tx) => tx.course.findMany({}));
+    expect(ownCourses.length).toBeGreaterThan(0);
+    for (const row of ownCourses) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.courseId);
+    }
+  }, 60_000);
+
+  it("3z. classes spoofed insert: A cannot stamp a course institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.course.create({
+          data: {
+            id: `${PREFIX}SPOOF_COURSE`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            programId: B.programId,
+            name: `${PREFIX}SPOOF Course`,
+            code: `${PREFIX}SPOOF_COURSE_CODE`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3aa. classes foreign-parent: A cannot create a subject referencing B's course", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, courseId) makes it physically
+    // impossible to reference B's course under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.subject.create({
+          data: {
+            id: `${PREFIX}FOREIGN_SUBJ`,
+            institutionId: A.institutionId,
+            courseId: B.courseId, // B's course under A's tenant
+            name: `${PREFIX}foreign-parent subject`,
+            code: `${PREFIX}FOREIGN_SUBJ_CODE`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3bb. classes foreign-parent: A cannot enroll B's student into A's section", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // class_enrollments.(institutionId, studentId) composite FK forbids enrolling
+    // another tenant's student — the single-identity guarantee (design §6.5).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.classEnrollment.create({
+          data: {
+            id: `${PREFIX}FOREIGN_ENROLL`,
+            institutionId: A.institutionId,
+            classSectionId: A.classSectionId,
+            studentId: B.studentProfileId, // B's student under A's tenant
+            status: "ENROLLED",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3cc. classes spoofed update: A cannot flip B's scheduled class to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.scheduledClass.updateMany({
+        where: { id: B.scheduledClassId },
+        data: { room: `${PREFIX}HIJACK` },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.scheduledClass.findUnique({
+      where: { id: B.scheduledClassId },
+    });
+    expect(bRow!.institutionId).toBe(B.institutionId);
+    expect(bRow!.room).not.toBe(`${PREFIX}HIJACK`);
+  }, 60_000);
+
+  it("3dd. classes buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const subjects = await withTenant(A.institutionId, (tx) => tx.subject.findMany({}));
+    for (const r of subjects) expect(r.institutionId).toBe(A.institutionId);
+    expect(subjects.some((r: { id: string }) => r.id === B.subjectId)).toBe(false);
+
+    const sections = await withTenant(A.institutionId, (tx) => tx.classSection.findMany({}));
+    for (const r of sections) expect(r.institutionId).toBe(A.institutionId);
+    expect(sections.some((r: { id: string }) => r.id === B.classSectionId)).toBe(false);
+
+    const enrollments = await withTenant(A.institutionId, (tx) => tx.classEnrollment.findMany({}));
+    for (const r of enrollments) expect(r.institutionId).toBe(A.institutionId);
+    expect(enrollments.some((r: { id: string }) => r.id === B.classEnrollmentId)).toBe(false);
+
+    const faculty = await withTenant(A.institutionId, (tx) => tx.facultyProfile.findMany({}));
+    for (const r of faculty) expect(r.institutionId).toBe(A.institutionId);
+    expect(faculty.some((r: { id: string }) => r.id === B.facultyProfileId)).toBe(false);
+
+    const assignments = await withTenant(A.institutionId, (tx) => tx.facultyAssignment.findMany({}));
+    for (const r of assignments) expect(r.institutionId).toBe(A.institutionId);
+    expect(assignments.some((r: { id: string }) => r.id === B.facultyAssignmentId)).toBe(false);
+
+    const timetables = await withTenant(A.institutionId, (tx) => tx.timetable.findMany({}));
+    for (const r of timetables) expect(r.institutionId).toBe(A.institutionId);
+    expect(timetables.some((r: { id: string }) => r.id === B.timetableId)).toBe(false);
+
+    const scheduled = await withTenant(A.institutionId, (tx) => tx.scheduledClass.findMany({}));
+    for (const r of scheduled) expect(r.institutionId).toBe(A.institutionId);
+    expect(scheduled.some((r: { id: string }) => r.id === B.scheduledClassId)).toBe(false);
+
+    const aCount = await adminClient.scheduledClass.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(scheduled.length).toBe(aCount);
+  }, 60_000);
+
+  it("3ee. classes fail-closed: unset / empty-string GUC yield zero rows for every mutable table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetCourses = await appClient.course.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetCourses.length).toBe(0);
+    const unsetScheduled = await appClient.scheduledClass.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetScheduled.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all eight tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const c = await tx.course.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const s = await tx.subject.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const sec = await tx.classSection.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const en = await tx.classEnrollment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const f = await tx.facultyProfile.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const fa = await tx.facultyAssignment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const tt = await tx.timetable.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const sc = await tx.scheduledClass.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return c.length + s.length + sec.length + en.length + f.length + fa.length + tt.length + sc.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.scheduledClass.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.scheduledClassId)).toBe(true);
+  }, 60_000);
+
+  it("3ff. schedule_revisions APPEND-ONLY (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the student_profile_history case 3x + the
+    // audit_events precedent): INSERT one revision under A (a plain INSERT does
+    // NOT trip the BEFORE UPDATE OR DELETE trigger, and satisfies the
+    // schedule_revisions_tenant_insert policy), assert campass_app can read it
+    // under A, assert B's context cannot see it (tenant isolation), then assert
+    // UPDATE and DELETE are BOTH denied (REVOKE + trigger -> restrict_violation).
+    // The row is removed here within THIS test's own trigger-disable scope so the
+    // shared teardown is not blocked. This is the ONLY place the escape suite
+    // touches schedule_revisions.
+    const revId = `${PREFIX}SREV_A`;
+    await withTenant(A.institutionId, (tx) =>
+      tx.scheduleRevision.create({
+        data: {
+          id: revId,
+          institutionId: A.institutionId,
+          timetableId: A.timetableId,
+          scheduledClassId: A.scheduledClassId,
+          academicTermId: A.academicTermId,
+          changeType: "TIMETABLE_PUBLISHED",
+          newStatus: "PUBLISHED",
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable by campass_app under A's context.
+    const readBack = await withTenant(A.institutionId, (tx) =>
+      tx.scheduleRevision.findUnique({ where: { id: revId } }),
+    );
+    expect(readBack).toBeTruthy();
+
+    // Cross-tenant SELECT from B's context returns empty (tenant isolation).
+    const foreign = await withTenant(B.institutionId, (tx) =>
+      tx.scheduleRevision.findUnique({ where: { id: revId } }),
+    );
+    expect(foreign).toBeNull();
+
+    // UPDATE denied (REVOKE UPDATE + the BEFORE UPDATE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.scheduleRevision.update({ where: { id: revId }, data: { reason: "mutate" } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // DELETE denied (REVOKE DELETE + the BEFORE DELETE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.scheduleRevision.delete({ where: { id: revId } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // The row survived both attempts.
+    const still = await adminClient.scheduleRevision.findUnique({ where: { id: revId } });
+    expect(still).toBeTruthy();
+
+    // Clean up this suite-local revision row within a scoped trigger-disable so
+    // the shared teardown's timetable/scheduled_class deletes are not blocked by
+    // a lingering append-only row.
+    await adminClient.$executeRawUnsafe(
+      `ALTER TABLE "schedule_revisions" DISABLE TRIGGER "schedule_revisions_no_update_delete"`,
+    );
+    try {
+      await adminClient.scheduleRevision.deleteMany({
+        where: { institutionId: { startsWith: PREFIX } },
+      });
+    } finally {
+      await adminClient.$executeRawUnsafe(
+        `ALTER TABLE "schedule_revisions" ENABLE TRIGGER "schedule_revisions_no_update_delete"`,
+      );
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -710,6 +1000,9 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "academic_calendar_day_revisions",
       "audit_events",
       "student_profile_history",
+      // FEAT-004: schedule_revisions joins the append-only set (design §6.9) —
+      // INSERT-only policy + REVOKE + trigger, NO modify policy.
+      "schedule_revisions",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(
