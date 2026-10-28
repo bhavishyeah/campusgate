@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
-import { LogOut } from "lucide-react";
+import { LogOut, ShieldCheck } from "lucide-react";
+import { MfaEnrollment } from "@/components/MfaEnrollment";
 
 export default function PlatformLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { user, token, logout, hydrated } = useAuthStore();
+  const [showMfa, setShowMfa] = useState(false);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -25,18 +27,28 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
           <h1 className="font-bold text-primary-800">CAMPUSGATE Platform</h1>
           <p className="text-xs text-gray-500">Super Admin</p>
         </div>
-        <button
-          onClick={() => {
-            logout();
-            router.replace("/login");
-          }}
-          className="flex items-center gap-2 text-sm text-gray-600 hover:text-danger-600"
-        >
-          <LogOut className="w-4 h-4" />
-          Sign Out
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowMfa(true)}
+            className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-700"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Enable MFA
+          </button>
+          <button
+            onClick={() => {
+              logout();
+              router.replace("/login");
+            }}
+            className="flex items-center gap-2 text-sm text-gray-600 hover:text-danger-600"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign Out
+          </button>
+        </div>
       </header>
       <main className="p-4 md:p-8">{children}</main>
+      <MfaEnrollment open={showMfa} onClose={() => setShowMfa(false)} />
     </div>
   );
 }

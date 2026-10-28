@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { Plus, Ban, CheckCircle2, X, Copy } from "lucide-react";
+import { MfaEnrollment } from "@/components/MfaEnrollment";
 
 interface PlatformStats {
   institutions: { total: number; active: number; suspended: number };
@@ -35,6 +36,8 @@ export default function PlatformPage() {
   const [institutions, setInstitutions] = useState<InstitutionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [showMfa, setShowMfa] = useState(false);
 
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: "", code: "", domain: "", adminEmail: "" });
@@ -47,6 +50,7 @@ export default function PlatformPage() {
   const load = () => {
     setLoading(true);
     setError("");
+    setMfaRequired(false);
     Promise.all([
       api.get<PlatformStats>("/api/platform/stats"),
       api.get<InstitutionRow[]>("/api/platform/institutions"),
@@ -55,7 +59,13 @@ export default function PlatformPage() {
         setStats(s);
         setInstitutions(i);
       })
-      .catch((e: any) => setError(e.message || "Failed to load platform data"))
+      .catch((err: any) => {
+        if (err instanceof ApiError && err.status === 403 && /mfa/i.test(err.data?.error ?? "")) {
+          setMfaRequired(true);
+        } else {
+          setError(err.message || "Failed to load platform data");
+        }
+      })
       .finally(() => setLoading(false));
   };
 
@@ -109,6 +119,31 @@ export default function PlatformPage() {
   };
 
   if (loading) return <div className="animate-pulse text-gray-500">Loading...</div>;
+  if (mfaRequired)
+    return (
+      <>
+        <div className="card max-w-md">
+          <h2 className="text-lg font-semibold text-gray-900">MFA enrollment required</h2>
+          <p className="text-sm text-gray-600 mt-2">
+            Your account must have multi-factor authentication enabled before you
+            can access the platform dashboard. Enroll an authenticator app to
+            continue.
+          </p>
+          <button className="btn-primary mt-4" onClick={() => setShowMfa(true)}>
+            Enroll now
+          </button>
+        </div>
+        <MfaEnrollment
+          open={showMfa}
+          onClose={() => setShowMfa(false)}
+          onEnrolled={() => {
+            setShowMfa(false);
+            setMfaRequired(false);
+            load();
+          }}
+        />
+      </>
+    );
   if (error) return <div className="text-danger-600">{error}</div>;
 
   return (
