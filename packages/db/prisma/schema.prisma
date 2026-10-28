@@ -265,6 +265,15 @@ model Institution {
   academicCalendarDayRevisions AcademicCalendarDayRevision[]
   studentProfileHistory        StudentProfileHistory[]
   studentDocuments             StudentDocument[]
+  courses                      Course[]
+  subjects                     Subject[]
+  classSections                ClassSection[]
+  classEnrollments             ClassEnrollment[]
+  facultyProfiles              FacultyProfile[]
+  facultyAssignments           FacultyAssignment[]
+  timetables                   Timetable[]
+  scheduledClasses             ScheduledClass[]
+  scheduleRevisions            ScheduleRevision[]
 
   @@map("institutions")
 }
@@ -284,6 +293,7 @@ model Department {
   hods     HodProfile[]
   programs            Program[]
   academicCalendarDays AcademicCalendarDay[]
+  facultyProfiles      FacultyProfile[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -328,6 +338,7 @@ model User {
   auditEvents            AuditEvent[]   @relation("AuditEventActor")
   supportGrantsGranted   SupportGrant[] @relation("SupportGrantGrantee")
   supportGrantsRevoked   SupportGrant[] @relation("SupportGrantRevoker")
+  facultyProfile         FacultyProfile?
 
   @@unique([id, institutionId])
   @@map("users")
@@ -446,6 +457,7 @@ model StudentProfile {
   reliabilitySnapshots ReliabilityScoreSnapshot[]
   history              StudentProfileHistory[]
   documents            StudentDocument[]
+  classEnrollments     ClassEnrollment[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -836,6 +848,7 @@ model AcademicSession {
   calendarDays         AcademicCalendarDay[]
   calendarDayRevisions AcademicCalendarDayRevision[]
   enrolledStudents     StudentProfile[]
+  classSections        ClassSection[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -861,6 +874,11 @@ model AcademicTerm {
   calendarDays         AcademicCalendarDay[]
   calendarDayRevisions AcademicCalendarDayRevision[]
   currentTermStudents  StudentProfile[]
+  courses              Course[]
+  classSections        ClassSection[]
+  facultyAssignments   FacultyAssignment[]
+  timetables           Timetable[]
+  scheduledClasses     ScheduledClass[]
 
   @@unique([academicSessionId, ordinal])
   @@unique([id, institutionId])
@@ -886,6 +904,9 @@ model Program {
   updatedAt     DateTime            @updatedAt
 
   students StudentProfile[]
+
+  courses       Course[]
+  classSections ClassSection[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -1105,4 +1126,300 @@ enum SecurityEventType {
   SUSPICIOUS_ACTIVITY
   ACCOUNT_LOCKED
   NEW_DEVICE_LOGIN
+}
+
+// ─── CLASS & COURSE MANAGEMENT (Phase 3 — classes.*) ─────────────────────────
+// Tenant-owned class/course/timetable domain. RLS, composite same-tenant FKs,
+// CHECK constraints, and the schedule_revisions append-only trigger are carried
+// by the hand-authored 20261028000000_phase3_classes migration (Prisma does not
+// model them). Course.status / Subject.status deliberately reuse ProgramStatus
+// (design §6.2): a course/subject shares the ACTIVE/INACTIVE lifecycle of a
+// program, independent of its program's own status.
+
+enum ClassSectionStatus {
+  PLANNED
+  ACTIVE
+  CLOSED
+  CANCELLED
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  DROPPED
+  COMPLETED
+}
+
+enum FacultyStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum FacultyAssignmentRole {
+  PRIMARY
+  SUBSTITUTE
+  ASSISTANT
+}
+
+enum FacultyAssignmentStatus {
+  ACTIVE
+  ENDED
+}
+
+enum TimetableStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ScheduledClassStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+enum DayOfWeek {
+  SUN
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+}
+
+enum ScheduleRevisionChangeType {
+  TIMETABLE_CREATED
+  TIMETABLE_PUBLISHED
+  TIMETABLE_ARCHIVED
+  SCHEDULED_CLASS_ADDED
+  SCHEDULED_CLASS_UPDATED
+  SCHEDULED_CLASS_CANCELLED
+  FACULTY_REASSIGNED
+}
+
+model Course {
+  id             String        @id @default(cuid())
+  institutionId  String
+  institution    Institution   @relation(fields: [institutionId], references: [id])
+  programId      String
+  program        Program       @relation(fields: [programId], references: [id])
+  academicTermId String?
+  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
+  name           String
+  code           String
+  description    String?
+  status         ProgramStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  subjects Subject[]
+
+  @@unique([institutionId, code])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([programId])
+  @@map("courses")
+}
+
+model Subject {
+  id                  String        @id @default(cuid())
+  institutionId       String
+  institution         Institution   @relation(fields: [institutionId], references: [id])
+  courseId            String
+  course              Course        @relation(fields: [courseId], references: [id])
+  name                String
+  code                String
+  credits             Int?
+  contactHoursPerWeek Int?
+  status              ProgramStatus @default(ACTIVE)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  facultyAssignments FacultyAssignment[]
+  scheduledClasses   ScheduledClass[]
+
+  @@unique([institutionId, code])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([courseId])
+  @@map("subjects")
+}
+
+model ClassSection {
+  id                String             @id @default(cuid())
+  institutionId     String
+  institution       Institution        @relation(fields: [institutionId], references: [id])
+  programId         String
+  program           Program            @relation(fields: [programId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession    @relation(fields: [academicSessionId], references: [id])
+  academicTermId    String
+  academicTerm      AcademicTerm       @relation(fields: [academicTermId], references: [id])
+  label             String?
+  capacity          Int?
+  status            ClassSectionStatus @default(PLANNED)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  enrollments      ClassEnrollment[]
+  scheduledClasses ScheduledClass[]
+  assignments      FacultyAssignment[]
+
+  @@unique([institutionId, programId, academicSessionId, academicTermId, label])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, academicTermId])
+  @@map("class_sections")
+}
+
+model ClassEnrollment {
+  id             String           @id @default(cuid())
+  institutionId  String
+  institution    Institution      @relation(fields: [institutionId], references: [id])
+  classSectionId String
+  classSection   ClassSection     @relation(fields: [classSectionId], references: [id])
+  studentId      String
+  student        StudentProfile   @relation(fields: [studentId], references: [id])
+  enrolledAt     DateTime         @default(now())
+  status         EnrollmentStatus @default(ENROLLED)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([classSectionId, studentId])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@index([classSectionId])
+  @@map("class_enrollments")
+}
+
+model FacultyProfile {
+  id            String        @id @default(cuid())
+  institutionId String
+  institution   Institution   @relation(fields: [institutionId], references: [id])
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id])
+  name          String
+  departmentId  String?
+  department    Department?   @relation(fields: [departmentId], references: [id])
+  status        FacultyStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  assignments      FacultyAssignment[]
+  scheduledClasses ScheduledClass[]
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@map("faculty_profiles")
+}
+
+model FacultyAssignment {
+  id             String                  @id @default(cuid())
+  institutionId  String
+  institution    Institution             @relation(fields: [institutionId], references: [id])
+  facultyId      String
+  faculty        FacultyProfile          @relation(fields: [facultyId], references: [id])
+  subjectId      String
+  subject        Subject                 @relation(fields: [subjectId], references: [id])
+  classSectionId String?
+  classSection   ClassSection?           @relation(fields: [classSectionId], references: [id])
+  academicTermId String
+  academicTerm   AcademicTerm            @relation(fields: [academicTermId], references: [id])
+  role           FacultyAssignmentRole   @default(PRIMARY)
+  status         FacultyAssignmentStatus @default(ACTIVE)
+  assignedAt     DateTime                @default(now())
+  endedAt        DateTime?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, facultyId, status])
+  @@index([subjectId])
+  @@map("faculty_assignments")
+}
+
+model Timetable {
+  id             String          @id @default(cuid())
+  institutionId  String
+  institution    Institution     @relation(fields: [institutionId], references: [id])
+  academicTermId String
+  academicTerm   AcademicTerm    @relation(fields: [academicTermId], references: [id])
+  name           String
+  status         TimetableStatus @default(DRAFT)
+  publishedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  scheduledClasses ScheduledClass[]
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, academicTermId])
+  @@map("timetables")
+}
+
+model ScheduledClass {
+  id             String               @id @default(cuid())
+  institutionId  String
+  institution    Institution          @relation(fields: [institutionId], references: [id])
+  timetableId    String
+  timetable      Timetable            @relation(fields: [timetableId], references: [id])
+  classSectionId String
+  classSection   ClassSection         @relation(fields: [classSectionId], references: [id])
+  subjectId      String
+  subject        Subject              @relation(fields: [subjectId], references: [id])
+  facultyId      String
+  faculty        FacultyProfile       @relation(fields: [facultyId], references: [id])
+  academicTermId String
+  academicTerm   AcademicTerm         @relation(fields: [academicTermId], references: [id])
+  room           String?
+  dayOfWeek      DayOfWeek?
+  date           DateTime?
+  startTime      Int
+  endTime        Int
+  period         Int?
+  status         ScheduledClassStatus @default(SCHEDULED)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, academicTermId, dayOfWeek])
+  @@index([facultyId])
+  @@index([classSectionId])
+  @@map("scheduled_classes")
+}
+
+model ScheduleRevision {
+  id               String                     @id @default(cuid())
+  institutionId    String
+  institution      Institution                @relation(fields: [institutionId], references: [id])
+  timetableId      String?
+  scheduledClassId String?
+  academicTermId   String?
+  changeType       ScheduleRevisionChangeType
+
+  previousFacultyId String?
+  newFacultyId      String?
+  previousRoom      String?
+  newRoom           String?
+  previousStartTime Int?
+  newStartTime      Int?
+  previousEndTime   Int?
+  newEndTime        Int?
+  previousStatus    String?
+  newStatus         String?
+
+  actorUserId       String
+  actorMembershipId String?
+  reason            String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, timetableId])
+  @@index([scheduledClassId])
+  @@map("schedule_revisions")
 }

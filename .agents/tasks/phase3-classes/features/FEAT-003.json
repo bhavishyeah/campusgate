@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "The HTTP surface: the /api/classes route module (CRUD courses/subjects/sections; enroll/unenroll; assign/reassign/substitute faculty with history; create/publish/revise/cancel timetable + scheduled classes with conflict validation; dry-run /check), the own-scoped student + faculty 'my schedule' reads, server.ts registration, and the route-integration (mocked Prisma) + real-DB behavioral test suites. Depends on FEAT-001 (schema/permissions/Zod) and FEAT-002 (pure services it calls). Independent of FEAT-004.",
+  "status": "pending",
+  "steps": [
+    "Read context.json + design.md §3 (foundational placement, NO requireModuleActive), §4 (routes), §7/§7.1 (permissions + HOD relation-filter scope), §8.3 (route behavior, 409 envelope, /check), §9 (audit), §10 (validation mapping) FIRST. Mirror the apps/api/src/routes/students.ts pattern exactly.",
+    "Create apps/api/src/routes/classes.ts (export classesRoutes), single top-level authenticate preHandler, per-route requirePermission(key), NO requireModuleActive. Handlers: CRUD courses/subjects/sections; enroll (capacity check inside the withTenant tx — A9 soft overshoot, no row lock; duplicate blocked by the DB unique) / unenroll referencing the shared StudentProfile; create faculty profile + assign/reassign/substitute faculty using faculty-assignment.ts (soft transition + FACULTY_REASSIGNED ScheduleRevision in the same tx); create timetable; add/update scheduled class with detectTimetableConflicts (409 + { error, conflicts: ConflictReport } on blocking.length>0, success+warnings envelope otherwise); publish timetable (hard-block 409 on any blocking conflict across slots — A7); cancel scheduled class; revise a published timetable writing a ScheduleRevision row per the §6.9 per-changeType column contract; POST /timetables/:id/check dry-run gated by classes.timetable.manage (NIT-4). Add classesDepartmentScopeFilter(request, kind) relation-filter helper (§7.1) and 404-on-out-of-scope for HOD on reads and writes. Coerce InstitutionConfig.workingDaysOfWeek to a validated number[] (allowance-engine guard shape: Array.isArray -> map(Number) -> filter 0..6 -> fallback [1..6]) before building ConflictContext (NIT-3). Every mutation writes a classes.* AuditEvent via recordAuditEvent(input, tx) in the same withTenant tx.",
+    "Add own-scoped read endpoints (permission classes.view_own): in apps/api/src/routes/student.ts a 'my schedule' read (the student's enrolled ClassSection's SCHEDULED classes) and a faculty teaching-schedule read (by the caller's FacultyProfile.id). Serve 'my schedule' via these dedicated own-scoped endpoints, never the staff classes.view catalogue list (A4).",
+    "Register classesRoutes in apps/api/src/server.ts at prefix /api/classes (alongside studentAdminRoutes).",
+    "Create apps/api/src/routes/__tests__/classes-routes.integration.test.ts (mocked Prisma, academics-routes precedent): permission gating per role (ADMIN manage; HOD manage within scope; FACULTY/STUDENT view_own only, mutate => 403); the 409 conflict envelope on a double-booked slot; the success-plus-warnings envelope on an out-of-hours slot; cross-tenant read => 404; the recordAuditEvent call shape on mutations.",
+    "Create apps/api/src/routes/__tests__/classes-behavioral.integration.test.ts (self-contained CLASS_TEST_ prefix, real DB, academics-behavioral precedent): build a small timetable; a double-booked faculty and a double-booked room are rejected (409/blocking); publishing a change writes a schedule_revisions row and UPDATE/DELETE on it is refused (append-only); a faculty reassignment preserves the prior assignment row and writes a FACULTY_REASSIGNED revision; a student and a faculty each read only their own schedule; enrollment references the shared StudentProfile (no second student row). Seeds + tears down its own rows."
+  ],
+  "acceptance_criteria": [
+    "`npm run build -w @campusgate/api` typechecks with classes.ts, the student/faculty reads, and the server.ts registration.",
+    "`npm test -w @campusgate/api -- classes-routes` passes: role-gating (403 for FACULTY/STUDENT mutate), 409 conflict envelope, success+warnings envelope, cross-tenant 404, audit call shape.",
+    "`npm test -w @campusgate/api -- classes-behavioral` passes: timetable build, double-booked faculty+room rejected, published-change revision written + append-only enforced, faculty reassignment preserves history, student/faculty see only own schedule, enrollment references the shared StudentProfile.",
+    "Routes are permission-gated only (no requireModuleActive) and every mutation is tenant-scoped via withTenant and audited."
+  ],
+  "verification": [
+    "npm run build -w @campusgate/api",
+    "npm test -w @campusgate/api -- classes-routes",
+    "npm test -w @campusgate/api -- classes-behavioral"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

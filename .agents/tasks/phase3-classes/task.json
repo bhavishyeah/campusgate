@@ -1,0 +1,7 @@
+{
+  "task_id": "phase3-classes",
+  "task_description": "CAMPASS Phase 3 — Class & Course Management. Add 9 tenant-owned tables (Course, Subject, ClassSection, ClassEnrollment, FacultyProfile, FacultyAssignment, Timetable, ScheduledClass + append-only ScheduleRevision) via a hand-authored migration with RLS+composite FKs; classes.* permissions + FACULTY template role; a pure conflict-detection function; permission-gated audited routes for CRUD/enroll/faculty-assignment/timetable with append-only revision history; extend the seed and the cross-tenant escape suite; keep the 304-test baseline and Phase 1/2 regression green. Runs on main, no worktree, no push.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}

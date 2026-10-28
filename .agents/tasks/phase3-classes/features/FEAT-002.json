@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Pure, DB-free domain services + their unit tests: the timetable conflict-detection function (all 5 conflict types, BLOCK/WARN, day-axis math) and the enrollment + faculty-assignment decision helpers (no-duplicate enrollment; soft-transition reassignment that preserves history). These are the unit-testable core the routes (FEAT-003) call. Depends on FEAT-001 (needs the generated DayOfWeek enum type + AcademicDayType). Independent of FEAT-003/004.",
+  "status": "pending",
+  "steps": [
+    "Read context.json + design.md §8 (conflict detection) and §6.7 (FacultyAssignment immutability invariant) FIRST.",
+    "Create apps/api/src/services/timetable-conflict.ts exporting detectTimetableConflicts(ctx: ConflictContext): ConflictReport, DB-free, mirroring the student-sis.ts/calendar-service.ts pure-logic style. Implement: DOW_INDEX {SUN:0..SAT:6} + weekdayOf(slot) using getUTCDay() for one-off dates (§8.2 — getUTCDay NOT getDay; the DayOfWeek ordinal lives only in DOW_INDEX, no SQL compares it numerically, NIT-2); same-day-axis overlap a.start<b.end && b.start<a.end; the 5 checks with severity per §8.2.1 — INVALID_PERIOD (BLOCK: startTime>=endTime or <0 or endTime>1440), FACULTY_DOUBLE_BOOKED (BLOCK), ROOM_DOUBLE_BOOKED (BLOCK, only when room non-null), SECTION_SELF_CONFLICT (BLOCK), OUT_OF_HOURS (WARN); recurring out-of-hours = workingDaysOfWeek membership ONLY, one-off = explicit effectiveDayType wins else workingDaysOfWeek fallback (§8.2.1 rule); ignore CANCELLED on both sides; exclude the edited slot's own id from self-compare. Output ConflictReport { blocking: Conflict[]; warnings: Conflict[] } with the §8.3 Conflict shape.",
+    "Create apps/api/src/services/__tests__/timetable-conflict.test.ts covering EACH conflict type, BLOCK-vs-WARN, the touching-not-overlapping boundary (a.end==b.start => no conflict), recurring-vs-one-off day-axis match (a one-off date whose UTC weekday equals a recurring slot's dayOfWeek collides), getUTCDay determinism, CANCELLED-ignored, edited-slot self-exclusion, and the working-day resolution split by slot kind.",
+    "Create apps/api/src/services/class-enrollment.ts (DB-free decision for duplicate-enrollment: resolve by (classSectionId, studentId); the single student identity is the shared StudentProfile — never a second copy) and apps/api/src/services/faculty-assignment.ts (DB-free decision for assign/reassign/substitute: a swap ENDS the current ACTIVE row (status ACTIVE->ENDED + endedAt) and INSERTs a new row for the new faculty/role, emitting a FACULTY_REASSIGNED revision payload; facultyId/subjectId/classSectionId/academicTermId/role immutable after insert — §6.7).",
+    "Create apps/api/src/services/__tests__/class-enrollment.test.ts and apps/api/src/services/__tests__/faculty-assignment.test.ts (incl. a preserve-history assertion: the prior assignment row is retained, not overwritten, on a substitute swap)."
+  ],
+  "acceptance_criteria": [
+    "`npm test -w @campusgate/api -- timetable-conflict` passes with a case for every conflict type (INVALID_PERIOD, FACULTY_DOUBLE_BOOKED, ROOM_DOUBLE_BOOKED, SECTION_SELF_CONFLICT, OUT_OF_HOURS) and BLOCK/WARN, boundary, recurring-vs-one-off, CANCELLED-ignored, and self-exclude cases.",
+    "`npm test -w @campusgate/api -- class-enrollment faculty-assignment` passes, including the preserve-history (soft-transition retains prior rows) assertion.",
+    "`npm run build -w @campusgate/api` typechecks the new service modules against the FEAT-001 generated types."
+  ],
+  "verification": [
+    "npm test -w @campusgate/api -- timetable-conflict",
+    "npm test -w @campusgate/api -- class-enrollment faculty-assignment",
+    "npm run build -w @campusgate/api"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

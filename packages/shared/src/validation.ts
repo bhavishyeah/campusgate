@@ -291,6 +291,163 @@ export const resolveEmergencySchema = z.object({
   resolutionNote: z.string().max(500).optional(),
 });
 
+// ─── CLASSES / COURSE MANAGEMENT (Phase 3) ───────────────────────────────────
+
+// Enum members mirror the pg enums added by the phase3_classes migration.
+export const classSectionStatusEnum = z.enum([
+  "PLANNED",
+  "ACTIVE",
+  "CLOSED",
+  "CANCELLED",
+]);
+
+export const facultyAssignmentRoleEnum = z.enum([
+  "PRIMARY",
+  "SUBSTITUTE",
+  "ASSISTANT",
+]);
+
+export const dayOfWeekEnum = z.enum(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]);
+
+// Course create/update (§10). programId required; code unique-per-tenant (409 in
+// handler); academicTermId optional stage link.
+export const createCourseSchema = z.object({
+  programId: z.string().min(1, "Program is required"),
+  name: z.string().min(1, "Name is required").max(200),
+  code: z.string().min(1, "Code is required").max(40),
+  description: z.string().max(2000).optional(),
+  academicTermId: z.string().min(1).optional(),
+});
+
+export const updateCourseSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).optional(),
+    academicTermId: z.string().min(1).optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
+
+// Subject create/update (§10). courseId required; code unique-per-tenant.
+export const createSubjectSchema = z.object({
+  courseId: z.string().min(1, "Course is required"),
+  name: z.string().min(1, "Name is required").max(200),
+  code: z.string().min(1, "Code is required").max(40),
+  credits: z.number().int().min(0).max(100).optional(),
+  contactHoursPerWeek: z.number().int().min(0).max(100).optional(),
+});
+
+export const updateSubjectSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    credits: z.number().int().min(0).max(100).optional(),
+    contactHoursPerWeek: z.number().int().min(0).max(100).optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
+
+// ClassSection create/update (§10). program/session/term required; duplicate
+// (program,session,term,label) -> 409 (composite unique).
+export const createClassSectionSchema = z.object({
+  programId: z.string().min(1, "Program is required"),
+  academicSessionId: z.string().min(1, "Session is required"),
+  academicTermId: z.string().min(1, "Term is required"),
+  label: z.string().max(10).optional(),
+  capacity: z.number().int().min(1).max(10000).optional(),
+  status: classSectionStatusEnum.optional(),
+});
+
+export const updateClassSectionSchema = z
+  .object({
+    label: z.string().max(10).optional(),
+    capacity: z.number().int().min(1).max(10000).optional(),
+    status: classSectionStatusEnum.optional(),
+  })
+  .strict();
+
+// ClassEnrollment (§10). Duplicate (section,student) + capacity -> 409 in handler.
+export const enrollClassSchema = z.object({
+  classSectionId: z.string().min(1, "Section is required"),
+  studentId: z.string().min(1, "Student is required"),
+});
+
+// FacultyProfile create (§10). userId required (same-tenant, not already faculty).
+export const createFacultyProfileSchema = z.object({
+  userId: z.string().min(1, "User is required"),
+  name: z.string().min(1, "Name is required").max(200),
+  departmentId: z.string().min(1).optional(),
+});
+
+// FacultyAssignment (§10). facultyId/subjectId/term required; optional
+// replacesAssignmentId drives the substitute swap (end + insert + revision).
+export const createFacultyAssignmentSchema = z.object({
+  facultyId: z.string().min(1, "Faculty is required"),
+  subjectId: z.string().min(1, "Subject is required"),
+  academicTermId: z.string().min(1, "Term is required"),
+  classSectionId: z.string().min(1).optional(),
+  role: facultyAssignmentRoleEnum.default("PRIMARY"),
+  replacesAssignmentId: z.string().min(1).optional(),
+});
+
+// ScheduledClass create/update (§10). Exactly one of dayOfWeek / date; minute
+// bounds [0,1440]; startTime < endTime (also DB CHECK + conflict INVALID_PERIOD).
+const scheduledClassObject = z.object({
+  timetableId: z.string().min(1, "Timetable is required"),
+  classSectionId: z.string().min(1, "Section is required"),
+  subjectId: z.string().min(1, "Subject is required"),
+  facultyId: z.string().min(1, "Faculty is required"),
+  academicTermId: z.string().min(1, "Term is required"),
+  room: z.string().max(100).optional(),
+  dayOfWeek: dayOfWeekEnum.optional(),
+  date: z.string().min(1).optional(),
+  startTime: z.number().int().min(0).max(1440),
+  endTime: z.number().int().min(0).max(1440),
+  period: z.number().int().min(0).max(50).optional(),
+});
+
+const dayXorDate = (data: { dayOfWeek?: string; date?: string }) =>
+  (data.dayOfWeek == null) !== (data.date == null);
+const startBeforeEndTime = (data: { startTime: number; endTime: number }) =>
+  data.startTime < data.endTime;
+
+export const createScheduledClassSchema = scheduledClassObject
+  .refine(dayXorDate, {
+    message: "Specify dayOfWeek OR date, not both",
+    path: ["dayOfWeek"],
+  })
+  .refine(startBeforeEndTime, {
+    message: "startTime must be before endTime",
+    path: ["endTime"],
+  });
+
+export const updateScheduledClassSchema = scheduledClassObject
+  .partial()
+  .refine((data) => data.dayOfWeek == null || data.date == null, {
+    message: "Specify dayOfWeek OR date, not both",
+    path: ["dayOfWeek"],
+  })
+  .refine(
+    (data) =>
+      data.startTime == null || data.endTime == null || data.startTime < data.endTime,
+    {
+      message: "startTime must be before endTime",
+      path: ["endTime"],
+    },
+  );
+
+// Timetable create + publish (§10). Publish is a DRAFT->PUBLISHED transition
+// (validated server-side; blocking conflicts -> 409).
+export const createTimetableSchema = z.object({
+  academicTermId: z.string().min(1, "Term is required"),
+  name: z.string().min(1, "Name is required").max(200),
+});
+
+export const publishTimetableSchema = z
+  .object({
+    acceptWarnings: z.boolean().optional(),
+  })
+  .strict();
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -325,3 +482,19 @@ export type PromoteStudentInput = z.infer<typeof promoteStudentSchema>;
 export type TransferStudentInput = z.infer<typeof transferStudentSchema>;
 export type DeactivateStudentInput = z.infer<typeof deactivateStudentSchema>;
 export type ListStudentsQueryInput = z.infer<typeof listStudentsQuerySchema>;
+export type ClassSectionStatusValue = z.infer<typeof classSectionStatusEnum>;
+export type FacultyAssignmentRoleValue = z.infer<typeof facultyAssignmentRoleEnum>;
+export type DayOfWeekValue = z.infer<typeof dayOfWeekEnum>;
+export type CreateCourseInput = z.infer<typeof createCourseSchema>;
+export type UpdateCourseInput = z.infer<typeof updateCourseSchema>;
+export type CreateSubjectInput = z.infer<typeof createSubjectSchema>;
+export type UpdateSubjectInput = z.infer<typeof updateSubjectSchema>;
+export type CreateClassSectionInput = z.infer<typeof createClassSectionSchema>;
+export type UpdateClassSectionInput = z.infer<typeof updateClassSectionSchema>;
+export type EnrollClassInput = z.infer<typeof enrollClassSchema>;
+export type CreateFacultyProfileInput = z.infer<typeof createFacultyProfileSchema>;
+export type CreateFacultyAssignmentInput = z.infer<typeof createFacultyAssignmentSchema>;
+export type CreateScheduledClassInput = z.infer<typeof createScheduledClassSchema>;
+export type UpdateScheduledClassInput = z.infer<typeof updateScheduledClassSchema>;
+export type CreateTimetableInput = z.infer<typeof createTimetableSchema>;
+export type PublishTimetableInput = z.infer<typeof publishTimetableSchema>;

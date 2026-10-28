@@ -244,6 +244,45 @@ export const PERMISSIONS = [
     description: "Student views only their own profile and academic info",
   },
 
+  // classes.* — Phase 3 Class & Course Management: courses/subjects, sections,
+  // enrollment, faculty, timetables. Foundational institution-layer data,
+  // permission-gated ONLY (never module-gated).
+  {
+    key: "classes.courses.manage",
+    module: "classes",
+    description: "Create/update courses and subjects",
+  },
+  {
+    key: "classes.sections.manage",
+    module: "classes",
+    description: "Create/update class sections",
+  },
+  {
+    key: "classes.enroll",
+    module: "classes",
+    description: "Enroll / drop students in a section",
+  },
+  {
+    key: "classes.faculty.assign",
+    module: "classes",
+    description: "Create faculty profiles and assign/substitute faculty",
+  },
+  {
+    key: "classes.timetable.manage",
+    module: "classes",
+    description: "Create/edit/publish timetables and scheduled classes",
+  },
+  {
+    key: "classes.view",
+    module: "classes",
+    description: "View courses/subjects/sections/timetables (staff read)",
+  },
+  {
+    key: "classes.view_own",
+    module: "classes",
+    description: "Faculty/Student view own schedule only",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -297,7 +336,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.emergency.view",
     "academics.view",
     "students.view_own",
+    "classes.view_own",
   ],
+  FACULTY: ["classes.view_own"],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -320,6 +361,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "students.enroll",
     "students.promote",
     "students.view_own",
+    "classes.courses.manage",
+    "classes.sections.manage",
+    "classes.enroll",
+    "classes.faculty.assign",
+    "classes.timetable.manage",
+    "classes.view",
+    "classes.view_own",
   ],
   ADMIN: [
     "admin.users.view",
@@ -349,6 +397,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "students.promote",
     "students.deactivate",
     "students.view_own",
+    "classes.courses.manage",
+    "classes.sections.manage",
+    "classes.enroll",
+    "classes.faculty.assign",
+    "classes.timetable.manage",
+    "classes.view",
+    "classes.view_own",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

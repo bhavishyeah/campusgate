@@ -1,0 +1,34 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "section": "§6.9 / §6.10",
+      "problem": "ScheduleRevision.actorUserId/actorMembershipId have no stated FK or validation rule; the coder could invent a composite FK that the append-only precedents (student_profile_history, academic_calendar_day_revisions, audit_events) deliberately omit.",
+      "fix": "State in §6.10 that actorUserId/actorMembershipId on schedule_revisions are recorded id columns with NO FK, mirroring student_profile_history and AuditEvent.actorUserId. One sentence; no schema change."
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "section": "§6.1 / §8.2",
+      "problem": "The DayOfWeek ordinal (SUN=0..SAT=6) is asserted in a comment but the Postgres enum carries no numeric meaning; only DOW_INDEX enforces it. No live bug, but a future DB-side weekday comparison could diverge.",
+      "fix": "Add one line to §8.2 stating the ordinal convention lives only in DOW_INDEX and getUTCDay(), and that no SQL compares dayOfWeek numerically (the enum is a label; integers live in the service)."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "section": "§8.1 / §8.3",
+      "problem": "InstitutionConfig.workingDaysOfWeek is Json in the DB (default [1,2,3,4,5,6]); §8.1 types it number[] without noting the route must parse/guard it the way allowance-engine.ts does (Array.isArray, map(Number), filter 0..6, fallback). A malformed config could throw inside the pure function.",
+      "fix": "Note in §8.1/§8.3 that the route coerces workingDaysOfWeek to a validated number[] (reusing the allowance-engine guard shape) before building ConflictContext."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "section": "§8.3 / §7",
+      "problem": "The dry-run endpoint POST /api/classes/timetables/:id/check is not assigned a permission key; it sits between classes.view and classes.timetable.manage.",
+      "fix": "State that /check is gated by classes.timetable.manage (part of the authoring flow, reveals nothing a manager cannot already see). One line in §7 or §8.3."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase3-classes\\design-review.md"
+}

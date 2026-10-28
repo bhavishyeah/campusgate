@@ -82,6 +82,25 @@ export const AUDIT_ACTIONS = [
   { key: "students.student.transferred", module: "students", description: "Student transferred (department/program changed)" },
   { key: "students.student.deactivated", module: "students", description: "Student archived via status change" },
   { key: "students.student.imported", module: "students", description: "Bulk student import (SIS model)" },
+  // classes.* (18) — Phase 3 Class & Course Management mutations (past-tense)
+  { key: "classes.course.created", module: "classes", description: "Course created" },
+  { key: "classes.course.updated", module: "classes", description: "Course updated" },
+  { key: "classes.subject.created", module: "classes", description: "Subject created" },
+  { key: "classes.subject.updated", module: "classes", description: "Subject updated" },
+  { key: "classes.section.created", module: "classes", description: "Class section created" },
+  { key: "classes.section.updated", module: "classes", description: "Class section updated" },
+  { key: "classes.enrollment.enrolled", module: "classes", description: "Student enrolled into a class section" },
+  { key: "classes.enrollment.dropped", module: "classes", description: "Student dropped from a class section" },
+  { key: "classes.faculty.profile_created", module: "classes", description: "Faculty profile created" },
+  { key: "classes.faculty.assigned", module: "classes", description: "Faculty assigned to a subject/section" },
+  { key: "classes.faculty.substituted", module: "classes", description: "Faculty substituted (reassignment, prior assignment ended)" },
+  { key: "classes.faculty.unassigned", module: "classes", description: "Faculty assignment ended (unassigned)" },
+  { key: "classes.timetable.created", module: "classes", description: "Timetable created" },
+  { key: "classes.timetable.published", module: "classes", description: "Timetable published" },
+  { key: "classes.timetable.archived", module: "classes", description: "Timetable archived" },
+  { key: "classes.scheduled_class.added", module: "classes", description: "Scheduled class added to a timetable" },
+  { key: "classes.scheduled_class.updated", module: "classes", description: "Scheduled class updated" },
+  { key: "classes.scheduled_class.cancelled", module: "classes", description: "Scheduled class cancelled" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

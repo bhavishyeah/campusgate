@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-004",
+  "type": "test",
+  "description": "Hardening + completion gate: extend the cross-tenant escape suite to all 9 new tenant-owned tables (incl. the self-contained append-only schedule_revisions case), extend the demo seed with idempotent Phase-3 data, and run the full clean build + full test suite + live smoke to prove the 304 baseline and Phase 1/2 regression stay green with Phase 3 added. Depends on FEAT-001 (tables/migration applied), FEAT-002, and FEAT-003 (routes exist for the behavioral/smoke paths). Comes last.",
+  "status": "pending",
+  "steps": [
+    "Read context.json + design.md §12 (testing + gate), §15 (seed), and tenancy.md §7 FIRST. Study apps/api/src/routes/__tests__/helpers/tenant-escape-setup.ts to match its exact seed/cleanup/counter conventions.",
+    "Extend tenant-escape-setup.ts: add the 9 new tables to RLS_TABLES; add schedule_revisions to EXPECTED_POLICIES as ['tenant_isolation_select','schedule_revisions_tenant_insert'] (the 8 mutable tables fall through to DEFAULT_POLICIES); in seedTenant add one ESCAPE_TEST_ row per mutable table for A and B in child-safe order (course -> subject; section; faculty_profile; faculty_assignment; timetable; scheduled_class; enrollment referencing the already-seeded studentProfile), EXCLUDING schedule_revisions from the generic loop (its trigger blocks UPDATE/DELETE even for adminClient); extend cleanup() and countRemainingTestRows() child-first per the RESTRICT FKs. Keep teardown counts sequential (session-pooler client cap).",
+    "Extend apps/api/src/routes/__tests__/tenant-escape.integration.test.ts: add the read-escape, spoofed-write, foreign-parent-write, buggy-query backstop, three-GUC-state fail-closed, and RLS enabled+forced+policies meta assertions for the 8 mutable tables; add the self-contained schedule_revisions case (privileged INSERT of one row; cross-tenant SELECT returns empty; UPDATE and DELETE both raise restrict_violation; meta-assert ENABLE+FORCE + the exact append-only policy pair).",
+    "Extend packages/db/src/seed.ts (idempotent, keyed on business uniques, runs on DIRECT_URL) after the SIS linking block: one Course BCA-S1-CORE under the BCA program; one Subject CS101 Data Structures (4 credits, 4 contact hrs); one ClassSection (BCA + 2026-2027 + Semester 1, label A, capacity 60, ACTIVE); one ClassEnrollment of student BCA2024001 (ENROLLED, referencing the shared StudentProfile); one pure-faculty User (role=GUARD inert value, A3) with a FacultyProfile (dept BCA) + FACULTY template role on its membership + a PRIMARY FacultyAssignment (CS101, section A, Semester 1); one PUBLISHED Timetable with a conflict-free ScheduledClass set (Mon/Wed startTime=540,endTime=600, room R-101). No ScheduleRevision rows seeded (append-only).",
+    "Run the full clean build and full test suite; run migrate status to confirm ledger health; perform the live smoke sequence."
+  ],
+  "acceptance_criteria": [
+    "`npm test -w @campusgate/api -- tenant-escape` passes with the 9 tables covered: read/spoofed-write/foreign-parent/buggy-query/three-GUC/meta for the 8 mutable tables and the self-contained append-only schedule_revisions case; teardown leaves zero ESCAPE_TEST_ rows.",
+    "`npm run db:seed -w @campusgate/db` runs clean twice consecutively with no duplicate Phase-3 rows (idempotent); the seeded enrollment points at the existing BCA2024001 StudentProfile (no second student).",
+    "Full clean build passes: `npm ci`; `npm run build -w @campusgate/shared`; `npm run db:generate -w @campusgate/db`; `npm run build -w @campusgate/api`; `npm run build` (turbo) all exit 0.",
+    "`npm test -w @campusgate/api` (vitest, single run, fileParallelism:false) reports every suite passing — the 304 baseline + the new Phase-3 unit/integration/escape/behavioral suites; GatePass/allowance + Phase-1/Phase-2 regression unchanged.",
+    "Live smoke: logged in as admin@demo.edu, create course/subject/section -> 201; enroll demo student -> 201; create+publish timetable -> 200/201; double-book a room/faculty -> 409 with ConflictReport; revise a published slot -> a schedule_revisions row appears; demo faculty and student each GET only their own schedule."
+  ],
+  "verification": [
+    "npm test -w @campusgate/api -- tenant-escape",
+    "npm run db:seed -w @campusgate/db",
+    "npm ci; npm run build -w @campusgate/shared; npm run db:generate -w @campusgate/db; npm run build -w @campusgate/api; npm run build",
+    "npm test -w @campusgate/api",
+    "cd packages/db; npx prisma migrate status"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

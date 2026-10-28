@@ -29,6 +29,7 @@ const TEMPLATE_ROLE_NAMES: Record<string, string> = {
   HOD: "HOD",
   ADMIN: "Admin",
   SUPER_ADMIN: "Super Admin",
+  FACULTY: "Faculty",
 };
 
 /**
