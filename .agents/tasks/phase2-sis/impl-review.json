@@ -1,0 +1,5 @@
+{
+  "verdict": "APPROVED",
+  "summary": "The whole Phase-2 SIS diff on main (three FEAT commits) matches the approved design: additive-only generalization of the live student_profiles, append-only StudentProfileHistory + standard-pair StudentDocument, composite same-tenant FKs incl. institutionId, the six students.* permissions + students.view_own + eight students.student.* audit keys with exact catalogue-sync markers, Decision A (requirePermission only, modules.ts untouched), the extended escape suite, the seven FROZEN migrations untouched, and a green clean build + full vitest run (34 files, 304 tests passed).",
+  "findings": []
+}
