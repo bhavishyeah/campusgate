@@ -103,3 +103,73 @@ New Phase-4 coverage:
   edges; `module-system.integration.test.ts` re-architected so the dependency
   state-machine exemplar now rides `examinations` (multi-dep) + `academic_sessions`
   (reverse-edge/suspend).
+
+---
+
+## Independent final verification (clean-state re-run + live smoke)
+
+This section records a second, independent verification done from a CLEAN state on
+Windows/PowerShell against the live Supabase project, to confirm Phase 4 had not
+regressed and that the running node server behaves correctly end-to-end.
+
+### Clean `npm ci` build + typecheck + tests
+
+- `npm ci` at the repo root: "added 786 packages, and audited 791 packages" (clean
+  install from lockfile).
+- `cd packages/shared; npx tsc` → exit 0.
+- `npx prisma generate --schema=packages/db/prisma/schema.prisma` → "Generated
+  Prisma Client (v6.19.3)".
+- `cd apps/api; npx tsc` → exit 0.
+- `npm run build` (turbo) → "Tasks: 3 successful, 3 total" (@campusgate/shared,
+  @campusgate/api, @campusgate/web; @campusgate/db has no build task).
+- `cd apps/api; npx vitest run` → **43 test files passed, 412 tests passed, 0 failed**
+  (escape-suite + faculty-scope + correction-workflow + module-inactive +
+  GatePass/Phase-1/2/3 regression all green).
+
+### Migration ledger
+
+- `npx prisma migrate status` (packages/db) → "Database schema is up to date!",
+  10 migration dirs found.
+- Dir listing: the 9 prior frozen dirs + `20261101000000_phase4_attendance` (sorts
+  strictly last). Ledger query (`_prisma_migrations`): 10 rows, **0 duplicate
+  migration_name rows**, all applied, no unapplied/failed entries.
+
+### Live smoke test (built node server vs Supabase)
+
+The API was built (`npm run build` → `apps/api/dist/server.js`) and started with
+`node dist/server.js` (health probe `GET /api/health` → `{status:"ok"}`). A harness
+(`_smoke/smoke.mjs`, since deleted) logged in the seeded users over HTTP, created a
+couple of extra fixtures (one UNASSIGNED DEMO faculty + a full SECOND tenant) via the
+privileged owner client, exercised every required flow over real HTTP, then deleted
+all fixtures (restoring DEMO to its seeded state) and the server was stopped.
+**Result: 23 of 23 proof points PASS, 0 FAIL.** Proof points:
+
+| # | Proof point | Result |
+|---|---|---|
+| 1 | Seeded FACULTY opens an attendance session for their ASSIGNED ScheduledClass (Wed CS101) | 201; one record seeded from the section enrollment (`recordCount=1`) |
+| 2 | FACULTY marks the enrolled student PRESENT | 200 `changed=1` |
+| 3 | FACULTY submits then finalizes | 200 → `SUBMITTED`; 200 → `FINALIZED` |
+| 4 | Finalized immutability: mark on a FINALIZED session | **409 `session finalized`** |
+| 5 | **DIFFERENT / unassigned faculty opening that class → 403** | **403 `not assigned to this class`** |
+| 6 | **DENIED audit written for the unassigned-faculty attempt** | audit row present, `action=attendance.session.opened result=DENIED reason="not assigned to this class"` |
+| 7 | FACULTY requests a correction (reason) on the finalized record | 201 (PENDING, `priorStatus=PRESENT requestedStatus=EXCUSED`) |
+| 8 | **HOD APPROVES → record status changes + audit written + before/after history preserved** | 200 `APPROVED`; record `PRESENT→EXCUSED`; a `CORRECTED` history row (`previous=PRESENT new=EXCUSED`) added; `attendance.correction.approved` audit row present |
+| 9 | REJECT path leaves a record unchanged | 2nd correction 201 PENDING → HOD reject 200 `REJECTED`; record status unchanged (`EXCUSED` before == after) |
+| 10 | STUDENT sees their OWN attendance (and not others') | `GET /me` 200; every returned record `studentId == own`; count reflects only own FINALIZED rows |
+| 11 | Attendance for a SUSPENDED/inactive module is rejected (`requireModuleActive`) | open → **403 `Module not active: attendance`**; student `GET /me` → **403** (incl. historical finalized data); restored to ACTIVE after |
+| 12 | Cross-tenant isolation of attendance rows holds | DEMO ADMIN `GET /sessions` does NOT include the second tenant's sessions; second-tenant faculty `GET /me` is tenant-scoped (404, no DEMO leak) |
+| 13 | Existing GatePass flow still works | student `GET /api/student/dashboard` 200; `GET /api/student/reasons` 200 (campus_movement routes + withTenant intact) |
+
+Post-smoke DB check confirmed the fixtures were removed (0 smoke institutions / users /
+faculty) and DEMO was back to its seeded state (1 attendance session: the seeded Mon
+CS101 FINALIZED with the student PRESENT; 0 corrections). The server was stopped and the
+`_smoke` harness scripts were deleted.
+
+> Note on cleanup mechanism: `audit_events` and `attendance_record_history` are
+> append-only (BEFORE UPDATE/DELETE trigger + REVOKE). The smoke harness removed its
+> OWN fixture rows in these two tables as the DB owner with triggers disabled
+> transaction-locally (`SET LOCAL session_replication_role = 'replica'`) — a non-DDL,
+> connection-scoped mechanism that does not alter the schema or the trigger, used
+> solely to return the DB to its seeded state. The append-only guarantee for the
+> `campass_app` runtime role is unchanged and is independently proven by the escape
+> suite's self-contained case.

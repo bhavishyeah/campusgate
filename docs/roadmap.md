@@ -9,6 +9,34 @@
 
 ---
 
+## Build strategy decision (2026-10-xx): BACKEND-FIRST (Option A)
+
+**Decision:** complete the backend architecture across all phases FIRST; the frontend
+(`apps/web`) is built as a single dedicated pass AFTER the backend roadmap is complete.
+Rationale: finish the coherent architecture against which a stable UI can later be built
+with minimal rework.
+
+**Consequence (tracked deliberately, not drifting):** as of this decision, `apps/web`
+only covers the original **Phase 0 GatePass** UI (admin/hod/guard/student/platform gate
+flows + institution management + MFA enrollment). **Phases 1, 2, 3 have NO frontend** —
+their APIs are fully built, tested, and live, but no screens exist. Each new backend
+phase's "Definition of Done (demoable)" is satisfied at the **API + test + DB-verification**
+level during backend-first; the user-facing demo is deferred to the frontend pass.
+
+**Deferred frontend scope (the eventual UI pass must cover):**
+- Phase 1 — academic sessions/terms, programs, calendar management screens
+- Phase 2 — SIS: student records, enrollment, promotion, transfer, search, self-service
+- Phase 3 — courses/subjects/sections, faculty, class enrollment, timetable + conflict UI
+- Phase 4 — attendance UI: faculty marking screen (open session → load enrolled students →
+  mark present/absent/late/excused → submit → finalize), correction request/review
+  (faculty request with reason, HOD/ADMIN approve/reject), student attendance view
+  (own records + rate), department reports + export
+- Phase 5+ — each phase adds to this list as it ships backend-only
+
+Keep this list current as phases land so the frontend pass has an exact scope.
+
+---
+
 ## How to read a phase
 
 Every phase lists: **Objective · Dependencies · Scope · Schema additions · Security &
