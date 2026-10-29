@@ -1,0 +1,12 @@
+{
+  "verdict": "APPROVED",
+  "findings": [],
+  "counts": { "HIGH": 0, "MEDIUM": 0, "NIT": 0 },
+  "priorFindingsRecheck": {
+    "MEDIUM-1": "CLOSED",
+    "NIT-1": "CLOSED",
+    "NIT-2": "CLOSED",
+    "NIT-3": "CLOSED"
+  },
+  "reviewDoc": "c:\\campusgate\\docs\\phase4\\design-review.md"
+}

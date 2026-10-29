@@ -274,6 +274,10 @@ model Institution {
   timetables                   Timetable[]
   scheduledClasses             ScheduledClass[]
   scheduleRevisions            ScheduleRevision[]
+  attendanceSessions           AttendanceSession[]
+  attendanceRecords            AttendanceRecord[]
+  attendanceCorrections        AttendanceCorrection[]
+  attendanceRecordHistory      AttendanceRecordHistory[]
 
   @@map("institutions")
 }
@@ -458,6 +462,7 @@ model StudentProfile {
   history              StudentProfileHistory[]
   documents            StudentDocument[]
   classEnrollments     ClassEnrollment[]
+  attendanceRecords    AttendanceRecord[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -879,6 +884,7 @@ model AcademicTerm {
   facultyAssignments   FacultyAssignment[]
   timetables           Timetable[]
   scheduledClasses     ScheduledClass[]
+  attendanceSessions   AttendanceSession[]
 
   @@unique([academicSessionId, ordinal])
   @@unique([id, institutionId])
@@ -1305,8 +1311,9 @@ model FacultyProfile {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  assignments      FacultyAssignment[]
-  scheduledClasses ScheduledClass[]
+  assignments        FacultyAssignment[]
+  scheduledClasses   ScheduledClass[]
+  attendanceSessions AttendanceSession[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -1383,7 +1390,10 @@ model ScheduledClass {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
 
+  attendanceSessions AttendanceSession[]
+
   @@unique([id, institutionId])
+  @@unique([institutionId, id, academicTermId]) // FK target for AttendanceSession term integrity (Phase 4)
   @@index([institutionId])
   @@index([institutionId, academicTermId, dayOfWeek])
   @@index([facultyId])
@@ -1422,4 +1432,135 @@ model ScheduleRevision {
   @@index([institutionId, timetableId])
   @@index([scheduledClassId])
   @@map("schedule_revisions")
+}
+
+// ─── ATTENDANCE (Phase 4, tenant-owned) ─────────────────────────────────────
+// Four new tables recording attendance against the Phase 3 scheduling substrate
+// plus a controlled correction workflow. All follow the A2 tenancy checklist
+// (institutionId + composite same-tenant FKs + ENABLE/FORCE RLS). The composite
+// FKs, RLS policies, CHECK constraints, append-only trigger, GRANT refresh and
+// catalogue seed live in the hand-authored migration 20261101000000_phase4_attendance.
+
+enum AttendanceSessionStatus {
+  OPEN // created; records being marked
+  SUBMITTED // faculty submitted; still correctable in place by the marker before finalize
+  FINALIZED // locked; records immutable except via an approved AttendanceCorrection
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED // documented synonym for "approved leave"
+}
+
+enum AttendanceCorrectionReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AttendanceRecordHistoryChangeType {
+  MARKED // initial mark inside an OPEN/SUBMITTED session
+  CORRECTED // value changed by an APPROVED correction on a FINALIZED record
+}
+
+model AttendanceSession {
+  id                 String                  @id @default(cuid())
+  institutionId      String
+  institution        Institution             @relation(fields: [institutionId], references: [id])
+  scheduledClassId   String
+  scheduledClass     ScheduledClass          @relation(fields: [scheduledClassId], references: [id])
+  academicTermId     String
+  academicTerm       AcademicTerm            @relation(fields: [academicTermId], references: [id])
+  date               DateTime // the calendar date (UTC midnight) the session covers
+  status             AttendanceSessionStatus @default(OPEN)
+  markedByFacultyId  String
+  markedByFaculty    FacultyProfile          @relation(fields: [markedByFacultyId], references: [id])
+  submissionDeadline DateTime? // optional; informational only in Phase 4
+  submittedAt        DateTime?
+  finalizedAt        DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  records AttendanceRecord[]
+
+  @@unique([scheduledClassId, date]) // one session per class occurrence per date
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, academicTermId, date])
+  @@index([markedByFacultyId])
+  @@index([scheduledClassId])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id                  String            @id @default(cuid())
+  institutionId       String
+  institution         Institution       @relation(fields: [institutionId], references: [id])
+  attendanceSessionId String
+  attendanceSession   AttendanceSession @relation(fields: [attendanceSessionId], references: [id])
+  studentId           String
+  student             StudentProfile    @relation(fields: [studentId], references: [id])
+  status              AttendanceStatus
+  markedAt            DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  history     AttendanceRecordHistory[]
+  corrections AttendanceCorrection[]
+
+  @@unique([attendanceSessionId, studentId]) // one record per student per session
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@index([attendanceSessionId])
+  @@map("attendance_records")
+}
+
+model AttendanceCorrection {
+  id                 String                           @id @default(cuid())
+  institutionId      String
+  institution        Institution                      @relation(fields: [institutionId], references: [id])
+  attendanceRecordId String
+  attendanceRecord   AttendanceRecord                 @relation(fields: [attendanceRecordId], references: [id])
+  requestedByUserId  String // actor id (no composite FK)
+  reason             String // REQUIRED, min length enforced in Zod + CHECK
+  requestedStatus    AttendanceStatus // the status the requester wants applied
+  priorStatus        AttendanceStatus // snapshot of the record's status at request time
+  reviewStatus       AttendanceCorrectionReviewStatus @default(PENDING)
+  reviewedByUserId   String?
+  reviewedAt         DateTime?
+  reviewNote         String?
+  createdAt          DateTime                         @default(now())
+  updatedAt          DateTime                         @updatedAt
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, reviewStatus])
+  @@index([attendanceRecordId])
+  @@map("attendance_corrections")
+}
+
+model AttendanceRecordHistory {
+  id                 String                            @id @default(cuid())
+  institutionId      String
+  institution        Institution                       @relation(fields: [institutionId], references: [id])
+  attendanceRecordId String
+  attendanceRecord   AttendanceRecord                  @relation(fields: [attendanceRecordId], references: [id])
+  changeType         AttendanceRecordHistoryChangeType
+  previousStatus     AttendanceStatus? // null for the initial MARKED row
+  newStatus          AttendanceStatus
+  correctionId       String? // the AttendanceCorrection that drove a CORRECTED row (recorded id, no FK)
+  actorUserId        String
+  actorMembershipId  String?
+  reason             String?
+  metadata           Json?
+  createdAt          DateTime                          @default(now())
+
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@index([institutionId, attendanceRecordId])
+  @@index([attendanceRecordId])
+  @@map("attendance_record_history")
 }

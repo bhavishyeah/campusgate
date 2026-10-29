@@ -283,6 +283,34 @@ export const PERMISSIONS = [
     description: "Faculty/Student view own schedule only",
   },
 
+  // attendance.* — Phase 4 Attendance: sessions, records, corrections, reports.
+  // Gated module (requireModuleActive("attendance")) in addition to permission.
+  {
+    key: "attendance.view",
+    module: "attendance",
+    description: "Staff read of sessions/records/reports (HOD dept-scoped, ADMIN whole-tenant)",
+  },
+  {
+    key: "attendance.mark",
+    module: "attendance",
+    description: "Faculty opens a session, marks records, submits, finalizes — assigned classes only (record-level scope)",
+  },
+  {
+    key: "attendance.correct",
+    module: "attendance",
+    description: "Review (approve/reject) a correction request",
+  },
+  {
+    key: "attendance.export",
+    module: "attendance",
+    description: "Export attendance (authorized and audited)",
+  },
+  {
+    key: "attendance.view_own",
+    module: "attendance",
+    description: "Student reads only their own attendance",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -337,8 +365,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "academics.view",
     "students.view_own",
     "classes.view_own",
+    "attendance.view_own",
   ],
-  FACULTY: ["classes.view_own"],
+  FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own"],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -368,6 +397,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "classes.timetable.manage",
     "classes.view",
     "classes.view_own",
+    "attendance.view",
+    "attendance.correct",
+    "attendance.export",
   ],
   ADMIN: [
     "admin.users.view",
@@ -404,6 +436,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "classes.timetable.manage",
     "classes.view",
     "classes.view_own",
+    "attendance.view",
+    "attendance.correct",
+    "attendance.export",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

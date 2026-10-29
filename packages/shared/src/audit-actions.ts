@@ -101,6 +101,16 @@ export const AUDIT_ACTIONS = [
   { key: "classes.scheduled_class.added", module: "classes", description: "Scheduled class added to a timetable" },
   { key: "classes.scheduled_class.updated", module: "classes", description: "Scheduled class updated" },
   { key: "classes.scheduled_class.cancelled", module: "classes", description: "Scheduled class cancelled" },
+  // attendance.* (9) — Phase 4 Attendance mutations (past-tense)
+  { key: "attendance.session.opened", module: "attendance", description: "AttendanceSession created (OPEN)" },
+  { key: "attendance.records.marked", module: "attendance", description: "Records marked/updated inside an OPEN/SUBMITTED session" },
+  { key: "attendance.session.submitted", module: "attendance", description: "Session OPEN -> SUBMITTED" },
+  { key: "attendance.session.finalized", module: "attendance", description: "Session SUBMITTED -> FINALIZED" },
+  { key: "attendance.correction.requested", module: "attendance", description: "Correction row created (PENDING)" },
+  { key: "attendance.correction.approved", module: "attendance", description: "Correction PENDING -> APPROVED (record rewritten, history row written)" },
+  { key: "attendance.correction.rejected", module: "attendance", description: "Correction PENDING -> REJECTED" },
+  { key: "attendance.exported", module: "attendance", description: "Attendance export performed" },
+  { key: "attendance.low_attendance.alerted", module: "attendance", description: "Low-attendance alert emitted" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

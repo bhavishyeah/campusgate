@@ -698,6 +698,91 @@ async function main() {
   }
   console.log("  ✓ PUBLISHED Semester 1 Timetable + conflict-free Mon/Wed CS101 slots (R-101) created");
 
+  // ─── Attendance: module ACTIVE for the demo tenant + a sample FINALIZED session ─
+  // Mirrors the campus_movement upsert so a fresh DB has the attendance module
+  // ACTIVE (attendance is a gated module; routes carry requireModuleActive).
+  await prisma.institutionModule.upsert({
+    where: { institutionId_moduleKey: { institutionId: institution.id, moduleKey: "attendance" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      moduleKey: "attendance",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+  console.log("  ✓ attendance module entitled + activated for demo tenant");
+
+  // One sample FINALIZED AttendanceSession against the seeded Mon CS101 slot,
+  // the enrolled BCA student marked PRESENT. Keyed on @@unique([scheduledClassId,
+  // date]) so re-runs never duplicate. The `date` is a MON at UTC midnight so it
+  // satisfies the recurrence rule the open-session handler enforces.
+  const monSlot = await prisma.scheduledClass.findFirst({
+    where: {
+      institutionId: institution.id,
+      timetableId: timetable.id,
+      classSectionId: section.id,
+      subjectId: subject.id,
+      facultyId: facultyProfile.id,
+      dayOfWeek: "MON",
+      startTime: 540,
+    },
+  });
+  if (monSlot && demoStudent) {
+    // Pick a fixed MON date at UTC midnight (2026-11-02 is a Monday).
+    const sessionDate = new Date(Date.UTC(2026, 10, 2));
+    let attendanceSession = await prisma.attendanceSession.findFirst({
+      where: {
+        institutionId: institution.id,
+        scheduledClassId: monSlot.id,
+        date: sessionDate,
+      },
+    });
+    if (!attendanceSession) {
+      attendanceSession = await prisma.attendanceSession.create({
+        data: {
+          institutionId: institution.id,
+          scheduledClassId: monSlot.id,
+          academicTermId: term1.id,
+          date: sessionDate,
+          status: "FINALIZED",
+          markedByFacultyId: facultyProfile.id,
+          submittedAt: new Date(),
+          finalizedAt: new Date(),
+        },
+      });
+    }
+    const existingRecord = await prisma.attendanceRecord.findFirst({
+      where: {
+        institutionId: institution.id,
+        attendanceSessionId: attendanceSession.id,
+        studentId: demoStudent.id,
+      },
+    });
+    if (!existingRecord) {
+      const record = await prisma.attendanceRecord.create({
+        data: {
+          institutionId: institution.id,
+          attendanceSessionId: attendanceSession.id,
+          studentId: demoStudent.id,
+          status: "PRESENT",
+        },
+      });
+      await prisma.attendanceRecordHistory.create({
+        data: {
+          institutionId: institution.id,
+          attendanceRecordId: record.id,
+          changeType: "MARKED",
+          previousStatus: null,
+          newStatus: "PRESENT",
+          actorUserId: facultyUser.id,
+        },
+      });
+    }
+    console.log("  ✓ Sample FINALIZED AttendanceSession (Mon CS101) + BCA student PRESENT created");
+  }
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
   console.log("   Admin:   admin@demo.edu / admin123");

@@ -118,6 +118,14 @@ export interface SeededTenant {
   facultyAssignmentId: string;
   timetableId: string;
   scheduledClassId: string;
+  // Phase-4 attendance MUTABLE tables (design §9). The three mutable tables are
+  // seeded here (standard RLS pair). attendance_record_history is append-only
+  // (its trigger blocks UPDATE/DELETE even for adminClient), so it is EXCLUDED
+  // from this generic seed/cleanup loop and proven by the self-contained case —
+  // the schedule_revisions / student_profile_history precedent.
+  attendanceSessionId: string;
+  attendanceRecordId: string;
+  attendanceCorrectionId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -185,6 +193,9 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const facultyAssignmentId = id(`facassign_${key}`);
   const timetableId = id(`timetable_${key}`);
   const scheduledClassId = id(`sclass_${key}`);
+  const attendanceSessionId = id(`asession_${key}`);
+  const attendanceRecordId = id(`arecord_${key}`);
+  const attendanceCorrectionId = id(`acorr_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -495,6 +506,51 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-4 attendance MUTABLE tables (design §9). Seeded via the RLS-bypassing
+  // adminClient, child-safe after scheduled_classes/enrollments: session (against
+  // the seeded scheduledClass + academicTerm, a MON date) -> record (the seeded
+  // studentProfile) -> one PENDING correction on that record.
+  // attendance_record_history is DELIBERATELY NOT seeded here — its BEFORE UPDATE
+  // OR DELETE trigger blocks even adminClient in the shared teardown (the
+  // schedule_revisions / audit_events precedent); its append-only behaviour is
+  // proven by the self-contained case.
+  await adminClient.attendanceSession.create({
+    data: {
+      id: attendanceSessionId,
+      institutionId,
+      scheduledClassId,
+      academicTermId,
+      date: new Date("2026-11-02T00:00:00.000Z"), // a Monday (matches the MON slot)
+      status: "FINALIZED",
+      markedByFacultyId: facultyProfileId,
+      submittedAt: new Date(),
+      finalizedAt: new Date(),
+    },
+  });
+
+  await adminClient.attendanceRecord.create({
+    data: {
+      id: attendanceRecordId,
+      institutionId,
+      attendanceSessionId,
+      studentId: studentProfileId,
+      status: "PRESENT",
+    },
+  });
+
+  await adminClient.attendanceCorrection.create({
+    data: {
+      id: attendanceCorrectionId,
+      institutionId,
+      attendanceRecordId,
+      requestedByUserId: facultyUserId,
+      reason: `${PREFIX}correction ${key}`,
+      requestedStatus: "ABSENT",
+      priorStatus: "PRESENT",
+      reviewStatus: "PENDING",
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -520,6 +576,9 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     facultyAssignmentId,
     timetableId,
     scheduledClassId,
+    attendanceSessionId,
+    attendanceRecordId,
+    attendanceCorrectionId,
   };
 }
 
@@ -533,7 +592,15 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
-  // FEAT-004 Phase-3 classes tables FIRST, child -> parent per the §6.10 RESTRICT
+  // Phase-4 attendance tables FIRST (child -> parent): corrections -> records ->
+  // sessions, BEFORE the scheduled_classes / class_enrollments / student_profiles
+  // deletes below (their composite FKs are ON DELETE RESTRICT). The append-only
+  // attendance_record_history is never seeded by the generic loop, so there is
+  // nothing to delete here for it (schedule_revisions precedent).
+  await withRetry(() => adminClient.attendanceCorrection.deleteMany({ where }));
+  await withRetry(() => adminClient.attendanceRecord.deleteMany({ where }));
+  await withRetry(() => adminClient.attendanceSession.deleteMany({ where }));
+  // FEAT-004 Phase-3 classes tables next, child -> parent per the §6.10 RESTRICT
   // FKs, so they do not block the student_profiles / programs / sessions / terms /
   // departments / users deletes below. Order: enrollments + scheduled_classes +
   // faculty_assignments (leaves) -> timetables + subjects + sections (mid) ->
@@ -615,6 +682,12 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-4 attendance MUTABLE tables (attendance_record_history is append-only
+    // and never seeded by the generic loop, so it is not counted — the
+    // schedule_revisions precedent). Counted SEQUENTIALLY (session-pooler cap).
+    () => adminClient.attendanceCorrection.count({ where }),
+    () => adminClient.attendanceRecord.count({ where }),
+    () => adminClient.attendanceSession.count({ where }),
     () => adminClient.membershipRole.count({ where }),
     () => adminClient.institutionMembership.count({ where }),
     () => adminClient.institutionModule.count({ where }),
@@ -707,6 +780,12 @@ export const RLS_TABLES = [
   "timetables",
   "scheduled_classes",
   "schedule_revisions",
+  // Phase-4 attendance tables (design §9/§10). The three mutable tables use the
+  // default modify pair; attendance_record_history is append-only (EXPECTED_POLICIES).
+  "attendance_sessions",
+  "attendance_records",
+  "attendance_corrections",
+  "attendance_record_history",
 ] as const;
 
 /**
@@ -738,6 +817,13 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   schedule_revisions: [
     "tenant_isolation_select",
     "schedule_revisions_tenant_insert",
+  ],
+  // Phase-4: attendance_record_history is append-only (design §10) — the SELECT +
+  // INSERT pair, NO modify policy. The three mutable attendance tables are
+  // deliberately ABSENT here so they fall through to DEFAULT_POLICIES.
+  attendance_record_history: [
+    "tenant_isolation_select",
+    "attendance_record_history_tenant_insert",
   ],
 };
 

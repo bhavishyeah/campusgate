@@ -129,7 +129,11 @@ describe("Phase-3 classes routes (permission + conflict + audit wiring)", () => 
       expect(keys.has(k), `missing permission ${k}`).toBe(true);
       expect(ROLE_PERMISSIONS.ADMIN).toContain(k);
     }
-    expect(ROLE_PERMISSIONS.FACULTY).toEqual(["classes.view_own"]);
+    // FACULTY holds ONLY classes.view_own among the classes.* permissions (the
+    // Phase-4 attendance.* grants on FACULTY are out of this namespace's scope).
+    expect(ROLE_PERMISSIONS.FACULTY.filter((k) => k.startsWith("classes."))).toEqual([
+      "classes.view_own",
+    ]);
     expect(ROLE_PERMISSIONS.STUDENT).toContain("classes.view_own");
     expect(ROLE_PERMISSIONS.STUDENT).not.toContain("classes.view");
   });

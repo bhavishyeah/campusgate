@@ -919,6 +919,231 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-4 attendance tables (design §9/§10) ─────────────────────────────
+  // attendance_sessions / attendance_records / attendance_corrections (the three
+  // mutable tables): cross-tenant read denied, spoofed/cross-tenant write denied,
+  // foreign-parent composite-FK violation (incl. the three-column term FK),
+  // buggy-query backstop, three-GUC-state fail-closed. The append-only
+  // attendance_record_history table is covered by its own self-contained case
+  // (3kk) + the policy meta-test — it is NOT seeded in the shared setup (its
+  // trigger blocks the shared teardown).
+
+  it("3gg. attendance read escape: tenant A cannot see tenant B's Phase-4 rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const session = await withTenant(A.institutionId, (tx) =>
+      tx.attendanceSession.findUnique({ where: { id: B.attendanceSessionId } }),
+    );
+    expect(session).toBeNull();
+
+    const record = await withTenant(A.institutionId, (tx) =>
+      tx.attendanceRecord.findUnique({ where: { id: B.attendanceRecordId } }),
+    );
+    expect(record).toBeNull();
+
+    const correction = await withTenant(A.institutionId, (tx) =>
+      tx.attendanceCorrection.findUnique({ where: { id: B.attendanceCorrectionId } }),
+    );
+    expect(correction).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownSessions = await withTenant(A.institutionId, (tx) => tx.attendanceSession.findMany({}));
+    expect(ownSessions.length).toBeGreaterThan(0);
+    for (const row of ownSessions) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.attendanceSessionId);
+    }
+  }, 60_000);
+
+  it("3hh. attendance spoofed insert: A cannot stamp a session institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.attendanceSession.create({
+          data: {
+            id: `${PREFIX}SPOOF_ASESSION`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            scheduledClassId: B.scheduledClassId,
+            academicTermId: B.academicTermId,
+            date: new Date("2026-11-09T00:00:00.000Z"),
+            status: "OPEN",
+            markedByFacultyId: B.facultyProfileId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3ii. attendance foreign-parent: A cannot create a record referencing B's session", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, attendanceSessionId) makes it
+    // physically impossible to reference B's session under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.attendanceRecord.create({
+          data: {
+            id: `${PREFIX}FOREIGN_AREC`,
+            institutionId: A.institutionId,
+            attendanceSessionId: B.attendanceSessionId, // B's session under A's tenant
+            studentId: A.studentProfileId,
+            status: "PRESENT",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3jj. attendance term-integrity: the three-column session->class->term FK rejects a tampered academicTermId", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The session->class link is a three-column FK
+    // (institutionId, scheduledClassId, academicTermId) -> scheduled_classes.
+    // A's scheduled class belongs to A's term; pairing it with B's term (even
+    // within A's tenant) violates the FK, so a denormalized-term mismatch is
+    // impossible by construction (design §3.2, MEDIUM-4).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.attendanceSession.create({
+          data: {
+            id: `${PREFIX}TAMPER_TERM`,
+            institutionId: A.institutionId,
+            scheduledClassId: A.scheduledClassId,
+            academicTermId: B.academicTermId, // not A's scheduled class's term
+            date: new Date("2026-11-16T00:00:00.000Z"),
+            status: "OPEN",
+            markedByFacultyId: A.facultyProfileId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3jk. attendance buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const sessions = await withTenant(A.institutionId, (tx) => tx.attendanceSession.findMany({}));
+    for (const r of sessions) expect(r.institutionId).toBe(A.institutionId);
+    expect(sessions.some((r: { id: string }) => r.id === B.attendanceSessionId)).toBe(false);
+
+    const records = await withTenant(A.institutionId, (tx) => tx.attendanceRecord.findMany({}));
+    for (const r of records) expect(r.institutionId).toBe(A.institutionId);
+    expect(records.some((r: { id: string }) => r.id === B.attendanceRecordId)).toBe(false);
+
+    const corrections = await withTenant(A.institutionId, (tx) => tx.attendanceCorrection.findMany({}));
+    for (const r of corrections) expect(r.institutionId).toBe(A.institutionId);
+    expect(corrections.some((r: { id: string }) => r.id === B.attendanceCorrectionId)).toBe(false);
+
+    const aCount = await adminClient.attendanceSession.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(sessions.length).toBe(aCount);
+  }, 60_000);
+
+  it("3jl. attendance fail-closed: unset / empty-string GUC yield zero rows for every mutable table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetSessions = await appClient.attendanceSession.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetSessions.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all three tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const s = await tx.attendanceSession.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.attendanceRecord.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const c = await tx.attendanceCorrection.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return s.length + r.length + c.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.attendanceSession.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.attendanceSessionId)).toBe(true);
+  }, 60_000);
+
+  it("3kk. attendance_record_history APPEND-ONLY (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the schedule_revisions case 3ff + the audit_events
+    // precedent): INSERT one history row under A (a plain INSERT does NOT trip the
+    // BEFORE UPDATE OR DELETE trigger, and satisfies the
+    // attendance_record_history_tenant_insert policy), assert campass_app can read
+    // it under A, assert B's context cannot see it (tenant isolation), then assert
+    // UPDATE and DELETE are BOTH denied (REVOKE + trigger -> restrict_violation).
+    // The row is removed here within THIS test's own trigger-disable scope so the
+    // shared teardown is not blocked. This is the ONLY place the escape suite
+    // touches attendance_record_history.
+    const histId = `${PREFIX}AHIST_A`;
+    await withTenant(A.institutionId, (tx) =>
+      tx.attendanceRecordHistory.create({
+        data: {
+          id: histId,
+          institutionId: A.institutionId,
+          attendanceRecordId: A.attendanceRecordId,
+          changeType: "MARKED",
+          previousStatus: null,
+          newStatus: "PRESENT",
+          actorUserId: A.facultyUserId,
+        },
+      }),
+    );
+
+    // Readable by campass_app under A's context.
+    const readBack = await withTenant(A.institutionId, (tx) =>
+      tx.attendanceRecordHistory.findUnique({ where: { id: histId } }),
+    );
+    expect(readBack).toBeTruthy();
+
+    // Cross-tenant SELECT from B's context returns empty (tenant isolation).
+    const foreign = await withTenant(B.institutionId, (tx) =>
+      tx.attendanceRecordHistory.findUnique({ where: { id: histId } }),
+    );
+    expect(foreign).toBeNull();
+
+    // UPDATE denied (REVOKE UPDATE + the BEFORE UPDATE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.attendanceRecordHistory.update({ where: { id: histId }, data: { reason: "mutate" } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // DELETE denied (REVOKE DELETE + the BEFORE DELETE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.attendanceRecordHistory.delete({ where: { id: histId } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // The row survived both attempts.
+    const still = await adminClient.attendanceRecordHistory.findUnique({ where: { id: histId } });
+    expect(still).toBeTruthy();
+
+    // Clean up this suite-local history row within a scoped trigger-disable so the
+    // shared teardown's attendance_records delete is not blocked by a lingering
+    // append-only row.
+    await adminClient.$executeRawUnsafe(
+      `ALTER TABLE "attendance_record_history" DISABLE TRIGGER "attendance_record_history_no_update_delete"`,
+    );
+    try {
+      await adminClient.attendanceRecordHistory.deleteMany({
+        where: { institutionId: { startsWith: PREFIX } },
+      });
+    } finally {
+      await adminClient.$executeRawUnsafe(
+        `ALTER TABLE "attendance_record_history" ENABLE TRIGGER "attendance_record_history_no_update_delete"`,
+      );
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -1003,6 +1228,8 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // FEAT-004: schedule_revisions joins the append-only set (design §6.9) —
       // INSERT-only policy + REVOKE + trigger, NO modify policy.
       "schedule_revisions",
+      // Phase-4: attendance_record_history joins the append-only set (design §10).
+      "attendance_record_history",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

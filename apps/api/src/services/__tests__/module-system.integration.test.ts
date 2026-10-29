@@ -8,7 +8,7 @@
  *
  * It proves the state machine end-to-end at the DB layer:
  *   - dependency validation blocks activation until every dep is ACTIVE (using
- *     the DECLARED `attendance` edge), including the SUSPENDED-dependency 409 and
+ *     the DECLARED `examinations` edges), including the SUSPENDED-dependency 409 and
  *     SUSPENDED->ACTIVE reactivation re-running the same predicate;
  *   - the reverse-edge affectedDependents warning set (ACTIVE + SUSPENDED);
  *   - audit metadata serializes the dependent set to scalars that SURVIVE
@@ -101,56 +101,58 @@ describe("module-system (real DB, RLS enforced)", () => {
 
   // ── pure helpers (no DB) ───────────────────────────────────────────────────
   it("missingDependencies lists absent/ENTITLED/SUSPENDED deps, excludes ACTIVE", () => {
+    // examinations is the multi-dep exemplar: it declares
+    // [academic_sessions, class_course, student_enrollment].
     const rows = new Map<string, ModuleStateRow>([
-      ["student_management", { moduleKey: "student_management", state: "ACTIVE" }],
-      ["academic_sessions", { moduleKey: "academic_sessions", state: "SUSPENDED" }],
-      // class_course absent
+      ["academic_sessions", { moduleKey: "academic_sessions", state: "ACTIVE" }],
+      ["class_course", { moduleKey: "class_course", state: "SUSPENDED" }],
+      // student_enrollment absent
     ]);
-    expect(missingDependencies("attendance", rows).sort()).toEqual(
-      ["academic_sessions", "class_course"].sort(),
+    expect(missingDependencies("examinations", rows).sort()).toEqual(
+      ["class_course", "student_enrollment"].sort(),
     );
   });
 
   it("affectedDependents returns ACTIVE + SUSPENDED dependents of a module", () => {
+    // examinations + fees are the two dependents exercised; both declare edges
+    // onto foundational keys. academic_sessions has one dependent: examinations.
     const rows = new Map<string, ModuleStateRow>([
-      ["fees", { moduleKey: "fees", state: "ACTIVE" }],
-      ["attendance", { moduleKey: "attendance", state: "SUSPENDED" }],
+      ["examinations", { moduleKey: "examinations", state: "ACTIVE" }],
     ]);
-    // both fees and attendance declare student_management as a dependency
-    expect(affectedDependents("student_management", rows).sort()).toEqual(
-      ["attendance", "fees"].sort(),
+    expect(affectedDependents("student_enrollment", rows).sort()).toEqual(
+      ["examinations"].sort(),
     );
   });
 
   // ── dependency validation through withTenant (RLS-enforced) ─────────────────
   it("activation is BLOCKED (DEPS_UNMET) until every declared dep is ACTIVE", async () => {
     await clearModules();
-    // attendance requires student_management + academic_sessions + class_course
-    await seedModule(instA, "attendance", "ENTITLED");
-    await seedModule(instA, "student_management", "ENTITLED"); // not ACTIVE yet
+    // examinations requires academic_sessions + class_course + student_enrollment
+    await seedModule(instA, "examinations", "ENTITLED");
+    await seedModule(instA, "academic_sessions", "ENTITLED"); // not ACTIVE yet
 
-    const blocked = await withTenant(instA, (tx) => activate(tx, instA, "attendance", userA));
+    const blocked = await withTenant(instA, (tx) => activate(tx, instA, "examinations", userA));
     expect(blocked.ok).toBe(false);
     if (!blocked.ok && blocked.reason === "DEPS_UNMET") {
       expect(blocked.missingDependencies.sort()).toEqual(
-        ["academic_sessions", "class_course", "student_management"].sort(),
+        ["academic_sessions", "class_course", "student_enrollment"].sort(),
       );
     } else {
       throw new Error("expected DEPS_UNMET");
     }
 
-    // Activate the three deps, then attendance activates.
-    await seedModule(instA, "academic_sessions", "ENTITLED");
+    // Activate the three deps, then examinations activates.
     await seedModule(instA, "class_course", "ENTITLED");
-    for (const dep of ["student_management", "academic_sessions", "class_course"] as const) {
+    await seedModule(instA, "student_enrollment", "ENTITLED");
+    for (const dep of ["academic_sessions", "class_course", "student_enrollment"] as const) {
       const r = await withTenant(instA, (tx) => activate(tx, instA, dep, userA));
       expect(r.ok).toBe(true);
     }
 
-    const ok = await withTenant(instA, (tx) => activate(tx, instA, "attendance", userA));
+    const ok = await withTenant(instA, (tx) => activate(tx, instA, "examinations", userA));
     expect(ok.ok).toBe(true);
     const row = await adminClient.institutionModule.findUnique({
-      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "attendance" } },
+      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "examinations" } },
     });
     expect(row!.state).toBe("ACTIVE");
     expect(row!.activatedAt).not.toBeNull();
@@ -185,13 +187,14 @@ describe("module-system (real DB, RLS enforced)", () => {
   // ── suspend + audit persistence of the dependent set ────────────────────────
   it("suspend warns ACTIVE+SUSPENDED dependents, and the audit row persists them as scalars", async () => {
     await clearModules();
-    // student_management ACTIVE with fees ACTIVE + attendance SUSPENDED (both depend on it)
-    await seedModule(instA, "student_management", "ACTIVE");
-    await seedModule(instA, "fees", "ACTIVE");
-    await seedModule(instA, "attendance", "SUSPENDED");
+    // academic_sessions ACTIVE with examinations SUSPENDED (examinations depends
+    // on it). The dependent set includes SUSPENDED dependents, proving the
+    // ACTIVE+SUSPENDED membership rule.
+    await seedModule(instA, "academic_sessions", "ACTIVE");
+    await seedModule(instA, "examinations", "SUSPENDED");
 
     const result = await withTenant(instA, async (tx) => {
-      const r = await suspend(tx, instA, "student_management", userA);
+      const r = await suspend(tx, instA, "academic_sessions", userA);
       if (r.ok) {
         const { recordAuditEvent } = await import("../audit.js");
         await recordAuditEvent(
@@ -202,9 +205,9 @@ describe("module-system (real DB, RLS enforced)", () => {
             actorRoleKey: "ADMIN",
             institutionId: instA,
             resourceType: "InstitutionModule",
-            resourceId: "student_management",
+            resourceId: "academic_sessions",
             metadata: {
-              moduleKey: "student_management",
+              moduleKey: "academic_sessions",
               affectedDependents: r.affectedDependents.join(","),
               affectedDependentsCount: r.affectedDependents.length,
             },
@@ -216,19 +219,19 @@ describe("module-system (real DB, RLS enforced)", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.affectedDependents.sort()).toEqual(["attendance", "fees"].sort());
+      expect(result.affectedDependents.sort()).toEqual(["examinations"].sort());
     }
 
     // Re-read the PERSISTED audit row: the joined scalar + count survived sanitizeMetadata.
     const audit = await adminClient.auditEvent.findFirst({
-      where: { institutionId: instA, action: "admin.module.suspended", resourceId: "student_management" },
+      where: { institutionId: instA, action: "admin.module.suspended", resourceId: "academic_sessions" },
       orderBy: { timestamp: "desc" },
     });
     expect(audit).toBeTruthy();
     const meta = audit!.metadata as Record<string, unknown>;
     expect(typeof meta.affectedDependents).toBe("string");
-    expect((meta.affectedDependents as string).split(",").sort()).toEqual(["attendance", "fees"].sort());
-    expect(meta.affectedDependentsCount).toBe(2);
+    expect((meta.affectedDependents as string).split(",").sort()).toEqual(["examinations"].sort());
+    expect(meta.affectedDependentsCount).toBe(1);
   }, 60_000);
 
   it("suspend with no dependents persists affectedDependents='' and count=0", async () => {

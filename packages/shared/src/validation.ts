@@ -448,6 +448,51 @@ export const publishTimetableSchema = z
   })
   .strict();
 
+// ─── ATTENDANCE (Phase 4) ────────────────────────────────────────────────────
+
+// Enum members mirror the pg enums added by the phase4_attendance migration.
+export const attendanceStatusEnum = z.enum(["PRESENT", "ABSENT", "LATE", "EXCUSED"]);
+export const attendanceSessionStatusEnum = z.enum(["OPEN", "SUBMITTED", "FINALIZED"]);
+export const attendanceCorrectionReviewStatusEnum = z.enum(["PENDING", "APPROVED", "REJECTED"]);
+
+export const openAttendanceSessionSchema = z.object({
+  scheduledClassId: z.string().min(1, "Scheduled class is required"),
+  date: z.coerce.date(),
+  submissionDeadline: z.coerce.date().optional(),
+});
+
+export const markAttendanceRecordsSchema = z.object({
+  records: z
+    .array(
+      z.object({
+        studentId: z.string().min(1, "Student is required"),
+        status: attendanceStatusEnum,
+      }),
+    )
+    .min(1, "At least one record is required")
+    .max(1000, "Too many records in one batch"),
+});
+
+export const requestCorrectionSchema = z.object({
+  attendanceRecordId: z.string().min(1, "Attendance record is required"),
+  requestedStatus: attendanceStatusEnum,
+  reason: z.string().min(1, "Reason is required").max(2000),
+});
+
+export const reviewCorrectionSchema = z.object({
+  reviewNote: z.string().max(2000).optional(),
+});
+
+export const attendanceReportQuerySchema = z.object({
+  academicTermId: z.string().min(1, "Term is required"),
+});
+
+export const attendanceExportQuerySchema = z.object({
+  sectionId: z.string().min(1, "Section is required"),
+  academicTermId: z.string().min(1, "Term is required"),
+  format: z.enum(["csv", "json"]).default("csv"),
+});
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -498,3 +543,12 @@ export type CreateScheduledClassInput = z.infer<typeof createScheduledClassSchem
 export type UpdateScheduledClassInput = z.infer<typeof updateScheduledClassSchema>;
 export type CreateTimetableInput = z.infer<typeof createTimetableSchema>;
 export type PublishTimetableInput = z.infer<typeof publishTimetableSchema>;
+export type AttendanceStatusValue = z.infer<typeof attendanceStatusEnum>;
+export type AttendanceSessionStatusValue = z.infer<typeof attendanceSessionStatusEnum>;
+export type AttendanceCorrectionReviewStatusValue = z.infer<typeof attendanceCorrectionReviewStatusEnum>;
+export type OpenAttendanceSessionInput = z.infer<typeof openAttendanceSessionSchema>;
+export type MarkAttendanceRecordsInput = z.infer<typeof markAttendanceRecordsSchema>;
+export type RequestCorrectionInput = z.infer<typeof requestCorrectionSchema>;
+export type ReviewCorrectionInput = z.infer<typeof reviewCorrectionSchema>;
+export type AttendanceReportQueryInput = z.infer<typeof attendanceReportQuerySchema>;
+export type AttendanceExportQueryInput = z.infer<typeof attendanceExportQuerySchema>;

@@ -40,7 +40,12 @@ export const MODULE_DEPENDENCIES: Record<ModuleKey, readonly ModuleKey[]> = {
   academic_sessions: [],
   class_course: [],
   student_enrollment: [],
-  attendance: ["student_management", "academic_sessions", "class_course"],
+  // attendance is foundational-not-gated (design §4.2 Option a): only its own row
+  // must be ENTITLED->ACTIVE. Foundational prerequisites (class/student/session) are
+  // validated at operation time via composite FKs + in-handler lookups, not by a
+  // gated-module activation edge. Keeping edges here would permanently block
+  // activation (foundational data has no ACTIVE InstitutionModule rows).
+  attendance: [],
   examinations: ["academic_sessions", "class_course", "student_enrollment"],
   fees: ["student_management"],
   library: [],

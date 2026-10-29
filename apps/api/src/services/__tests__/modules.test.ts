@@ -49,6 +49,16 @@ describe("module dependency graph", () => {
     }
   });
 
+  it("attendance declares no gated-module dependencies (foundational-not-gated)", () => {
+    expect(MODULE_DEPENDENCIES.attendance).toEqual([]);
+  });
+
+  it("examinations still declares its three foundational edges", () => {
+    expect([...MODULE_DEPENDENCIES.examinations].sort()).toEqual(
+      ["academic_sessions", "class_course", "student_enrollment"].sort(),
+    );
+  });
+
   it("is acyclic (DFS)", () => {
     const WHITE = 0;
     const GREY = 1;
