@@ -1144,6 +1144,200 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-5 library tables (design §3) ────────────────────────────────────
+  // book_titles / book_copies / library_loans / book_reservations / library_fines
+  // (the five mutable tables): cross-tenant read denied, spoofed/cross-tenant
+  // write denied, foreign-parent composite-FK violation, buggy-query backstop,
+  // three-GUC-state fail-closed, and a report-scope check (a cross-tenant sum
+  // never leaks). No append-only library table exists this phase.
+
+  it("3ll. library read escape: tenant A cannot see tenant B's library rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const title = await withTenant(A.institutionId, (tx) =>
+      tx.bookTitle.findUnique({ where: { id: B.bookTitleId } }),
+    );
+    expect(title).toBeNull();
+
+    const copy = await withTenant(A.institutionId, (tx) =>
+      tx.bookCopy.findUnique({ where: { id: B.bookCopyId } }),
+    );
+    expect(copy).toBeNull();
+
+    const loan = await withTenant(A.institutionId, (tx) =>
+      tx.libraryLoan.findUnique({ where: { id: B.libraryLoanId } }),
+    );
+    expect(loan).toBeNull();
+
+    const reservation = await withTenant(A.institutionId, (tx) =>
+      tx.bookReservation.findUnique({ where: { id: B.bookReservationId } }),
+    );
+    expect(reservation).toBeNull();
+
+    const fine = await withTenant(A.institutionId, (tx) =>
+      tx.libraryFine.findUnique({ where: { id: B.libraryFineId } }),
+    );
+    expect(fine).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownTitles = await withTenant(A.institutionId, (tx) => tx.bookTitle.findMany({}));
+    expect(ownTitles.length).toBeGreaterThan(0);
+    for (const row of ownTitles) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.bookTitleId);
+    }
+  }, 60_000);
+
+  it("3mm. library spoofed insert: A cannot stamp a title institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.bookTitle.create({
+          data: {
+            id: `${PREFIX}SPOOF_BTITLE`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            title: `${PREFIX}SPOOF Title`,
+            author: `${PREFIX}SPOOF Author`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3nn. library foreign-parent: A cannot register a copy referencing B's title", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, bookTitleId) makes it
+    // physically impossible to reference B's title under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.bookCopy.create({
+          data: {
+            id: `${PREFIX}FOREIGN_BCOPY`,
+            institutionId: A.institutionId,
+            bookTitleId: B.bookTitleId, // B's title under A's tenant
+            accessionNumber: `${PREFIX}FOREIGN_ACC`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3oo. library foreign-parent: A cannot create a loan referencing B's student", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // library_loans.(institutionId, studentId) composite FK forbids lending to
+    // another tenant's student — the single-identity guarantee (design §3).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.libraryLoan.create({
+          data: {
+            id: `${PREFIX}FOREIGN_LLOAN`,
+            institutionId: A.institutionId,
+            bookCopyId: A.bookCopyReservedId,
+            studentId: B.studentProfileId, // B's student under A's tenant
+            issuedByUserId: A.userId,
+            issueDate: new Date(),
+            dueDate: new Date(Date.now() + 14 * 24 * 3600_000),
+            status: "ACTIVE",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3pp. library spoofed update: A cannot flip B's fine to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's fine under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.libraryFine.updateMany({
+        where: { id: B.libraryFineId },
+        data: { status: "WAIVED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.libraryFine.findUnique({ where: { id: B.libraryFineId } });
+    expect(bRow!.status).toBe("PENDING");
+  }, 60_000);
+
+  it("3qq. library buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const copies = await withTenant(A.institutionId, (tx) => tx.bookCopy.findMany({}));
+    for (const r of copies) expect(r.institutionId).toBe(A.institutionId);
+    expect(copies.some((r: { id: string }) => r.id === B.bookCopyId)).toBe(false);
+
+    const loans = await withTenant(A.institutionId, (tx) => tx.libraryLoan.findMany({}));
+    for (const r of loans) expect(r.institutionId).toBe(A.institutionId);
+    expect(loans.some((r: { id: string }) => r.id === B.libraryLoanId)).toBe(false);
+
+    const reservations = await withTenant(A.institutionId, (tx) => tx.bookReservation.findMany({}));
+    for (const r of reservations) expect(r.institutionId).toBe(A.institutionId);
+    expect(reservations.some((r: { id: string }) => r.id === B.bookReservationId)).toBe(false);
+
+    const fines = await withTenant(A.institutionId, (tx) => tx.libraryFine.findMany({}));
+    for (const r of fines) expect(r.institutionId).toBe(A.institutionId);
+    expect(fines.some((r: { id: string }) => r.id === B.libraryFineId)).toBe(false);
+
+    const aCount = await adminClient.bookCopy.count({ where: { institutionId: A.institutionId } });
+    expect(copies.length).toBe(aCount);
+  }, 60_000);
+
+  it("3rr. library report-scope: a PENDING-fine sum under A never includes B's fine", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The GET /reports/summary outstanding-fines aggregate runs inside withTenant;
+    // prove the underlying RLS-scoped aggregate sums only A's PENDING fines, never
+    // crossing into B's (both tenants seeded one PENDING fine of 5.00).
+    const aSum = await withTenant(A.institutionId, (tx) =>
+      tx.libraryFine.aggregate({ where: { status: "PENDING" }, _sum: { amount: true } }),
+    );
+    const total = aSum._sum.amount ? Number(aSum._sum.amount.toString()) : 0;
+    expect(total).toBe(5); // exactly A's one fine, not 10 (A + B)
+
+    // And A cannot see B's fine row directly.
+    const foreign = await withTenant(A.institutionId, (tx) =>
+      tx.libraryFine.findUnique({ where: { id: B.libraryFineId } }),
+    );
+    expect(foreign).toBeNull();
+  }, 60_000);
+
+  it("3ss. library fail-closed: unset / empty-string GUC yield zero rows for every library table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetTitles = await appClient.bookTitle.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetTitles.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all five tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const t = await tx.bookTitle.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const c = await tx.bookCopy.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const l = await tx.libraryLoan.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.bookReservation.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const f = await tx.libraryFine.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return t.length + c.length + l.length + r.length + f.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.bookTitle.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.bookTitleId)).toBe(true);
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;

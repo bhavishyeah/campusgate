@@ -59,6 +59,17 @@ describe("module dependency graph", () => {
     );
   });
 
+  it("library declares no gated-module dependencies (Phase 5 — foundational-not-gated)", () => {
+    expect(MODULE_DEPENDENCIES.library).toEqual([]);
+  });
+
+  it("the examinations/fees exemplars are unchanged by the Phase-5 additions", () => {
+    expect([...MODULE_DEPENDENCIES.examinations].sort()).toEqual(
+      ["academic_sessions", "class_course", "student_enrollment"].sort(),
+    );
+    expect([...MODULE_DEPENDENCIES.fees].sort()).toEqual(["student_management"].sort());
+  });
+
   it("is acyclic (DFS)", () => {
     const WHITE = 0;
     const GREY = 1;

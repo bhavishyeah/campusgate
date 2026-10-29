@@ -30,6 +30,7 @@ const TEMPLATE_ROLE_NAMES: Record<string, string> = {
   ADMIN: "Admin",
   SUPER_ADMIN: "Super Admin",
   FACULTY: "Faculty",
+  LIBRARIAN: "Librarian",
 };
 
 /**
@@ -783,14 +784,163 @@ async function main() {
     console.log("  ✓ Sample FINALIZED AttendanceSession (Mon CS101) + BCA student PRESENT created");
   }
 
+  // ─── Library: module ACTIVE + librarian + catalogue + one ACTIVE loan (Phase 5) ─
+  // Mirrors the campus_movement / attendance module upserts so a fresh DB has the
+  // library module ACTIVE (library is a gated module; routes carry
+  // requireModuleActive("library")). All upserts / find-first-then-create keyed
+  // on business uniques so re-running the seed never duplicates.
+  await prisma.institutionModule.upsert({
+    where: { institutionId_moduleKey: { institutionId: institution.id, moduleKey: "library" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      moduleKey: "library",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+  console.log("  ✓ library module entitled + activated for demo tenant");
+
+  // Pure-librarian user (legacy role = GUARD, the inert non-actor value per the
+  // FACULTY precedent — capability comes from the LIBRARIAN membership role, not
+  // the enum). No profile table.
+  const librarianPassword = await bcrypt.hash("library123", 12);
+  const librarianUser = await prisma.user.upsert({
+    where: { email: "librarian@demo.edu" },
+    update: {},
+    create: {
+      email: "librarian@demo.edu",
+      passwordHash: librarianPassword,
+      role: "GUARD",
+      accountStatus: "ACTIVE",
+      institutionId: institution.id,
+    },
+  });
+  await ensureMembership(librarianUser.id, librarianUser.institutionId, "LIBRARIAN", roleIdByKey);
+  console.log("  ✓ Librarian user created (librarian@demo.edu / library123) + LIBRARIAN role");
+
+  // Two BookTitles, each with multiple BookCopys (3 and 2), status=AVAILABLE.
+  // Keyed on (institutionId, accessionNumber) for idempotency.
+  const libraryTitles: Array<{
+    title: string;
+    author: string;
+    isbn: string;
+    category: string;
+    accessionNumbers: string[];
+  }> = [
+    {
+      title: "Introduction to Algorithms",
+      author: "Cormen, Leiserson, Rivest, Stein",
+      isbn: "9780262033848",
+      category: "Computer Science",
+      accessionNumbers: ["LIB-ITA-001", "LIB-ITA-002", "LIB-ITA-003"],
+    },
+    {
+      title: "Clean Code",
+      author: "Robert C. Martin",
+      isbn: "9780132350884",
+      category: "Software Engineering",
+      accessionNumbers: ["LIB-CC-001", "LIB-CC-002"],
+    },
+  ];
+
+  const seededCopies: Array<{ titleIndex: number; copyId: string }> = [];
+  for (let ti = 0; ti < libraryTitles.length; ti += 1) {
+    const t = libraryTitles[ti];
+    // BookTitle has no single-column natural unique; resolve via findFirst on the
+    // first accession number's copy, else create. Use the title's first copy as
+    // the idempotency anchor via the (institutionId, accessionNumber) unique.
+    const anchorCopy = await prisma.bookCopy.findUnique({
+      where: {
+        institutionId_accessionNumber: {
+          institutionId: institution.id,
+          accessionNumber: t.accessionNumbers[0],
+        },
+      },
+      select: { bookTitleId: true },
+    });
+    let bookTitleId: string;
+    if (anchorCopy) {
+      bookTitleId = anchorCopy.bookTitleId;
+    } else {
+      const created = await prisma.bookTitle.create({
+        data: {
+          institutionId: institution.id,
+          title: t.title,
+          author: t.author,
+          isbn: t.isbn,
+          category: t.category,
+          status: "ACTIVE",
+        },
+      });
+      bookTitleId = created.id;
+    }
+
+    for (const accessionNumber of t.accessionNumbers) {
+      const copy = await prisma.bookCopy.upsert({
+        where: {
+          institutionId_accessionNumber: { institutionId: institution.id, accessionNumber },
+        },
+        update: {},
+        create: {
+          institutionId: institution.id,
+          bookTitleId,
+          accessionNumber,
+          condition: "GOOD",
+          status: "AVAILABLE",
+        },
+      });
+      seededCopies.push({ titleIndex: ti, copyId: copy.id });
+    }
+  }
+  console.log("  ✓ Library catalogue seeded (2 titles, 5 copies)");
+
+  // One ACTIVE loan: issue the first copy of the first title to the demo student
+  // (BCA2024001, the shared StudentProfile), flipping that copy to ISSUED. Keyed
+  // on a find-first ACTIVE loan for the copy so re-runs do not duplicate.
+  if (demoStudent) {
+    const firstCopy = seededCopies.find((c) => c.titleIndex === 0);
+    if (firstCopy) {
+      const existingLoan = await prisma.libraryLoan.findFirst({
+        where: {
+          institutionId: institution.id,
+          bookCopyId: firstCopy.copyId,
+          status: "ACTIVE",
+        },
+      });
+      if (!existingLoan) {
+        const issueDate = new Date();
+        const dueDate = new Date(issueDate.getTime() + 14 * 24 * 60 * 60 * 1000);
+        await prisma.libraryLoan.create({
+          data: {
+            institutionId: institution.id,
+            bookCopyId: firstCopy.copyId,
+            studentId: demoStudent.id,
+            issuedByUserId: librarianUser.id,
+            issueDate,
+            dueDate,
+            status: "ACTIVE",
+          },
+        });
+        await prisma.bookCopy.update({
+          where: { id: firstCopy.copyId },
+          data: { status: "ISSUED" },
+        });
+      }
+      console.log("  ✓ One ACTIVE library loan issued to demo student BCA2024001 (copy ISSUED)");
+    }
+  }
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
-  console.log("   Admin:   admin@demo.edu / admin123");
-  console.log("   HOD:     hod.bca@demo.edu / hod123");
-  console.log("   Guard:   guard@demo.edu / guard123");
-  console.log("   Faculty: faculty.cs@demo.edu / faculty123");
-  console.log("   Student: bhavishya@demo.edu / student123");
-  console.log("   Super:   superadmin@campusgate.local / superadmin123");
+  console.log("   Admin:     admin@demo.edu / admin123");
+  console.log("   HOD:       hod.bca@demo.edu / hod123");
+  console.log("   Guard:     guard@demo.edu / guard123");
+  console.log("   Faculty:   faculty.cs@demo.edu / faculty123");
+  console.log("   Librarian: librarian@demo.edu / library123");
+  console.log("   Student:   bhavishya@demo.edu / student123");
+  console.log("   Super:     superadmin@campusgate.local / superadmin123");
 }
 
 main()

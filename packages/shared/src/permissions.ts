@@ -311,6 +311,44 @@ export const PERMISSIONS = [
     description: "Student reads only their own attendance",
   },
 
+  // library.* — Phase 5 Library: catalogue, copies, circulation, reservations,
+  // fines. Gated module (requireModuleActive("library")) in addition to permission.
+  {
+    key: "library.books.view",
+    module: "library",
+    description: "Staff read of catalogue, copies, loans, reservations, reports",
+  },
+  {
+    key: "library.books.manage",
+    module: "library",
+    description: "Create/edit BookTitle + register/edit BookCopy (acquisition, condition, withdraw)",
+  },
+  {
+    key: "library.issue",
+    module: "library",
+    description: "Issue a copy to a student (concurrency-safe)",
+  },
+  {
+    key: "library.return",
+    module: "library",
+    description: "Return / renew a loan; mark lost/damaged",
+  },
+  {
+    key: "library.reservations.manage",
+    module: "library",
+    description: "Fulfil / cancel / expire reservations on behalf of circulation",
+  },
+  {
+    key: "library.fines.manage",
+    module: "library",
+    description: "Create (rule-driven) / waive / mark-paid a LibraryFine",
+  },
+  {
+    key: "library.view_own",
+    module: "library",
+    description: "A student reads only their own loans/history/reservations/fines and searches the catalogue; requests/cancels their own reservations",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -366,8 +404,17 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "students.view_own",
     "classes.view_own",
     "attendance.view_own",
+    "library.view_own",
   ],
   FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own"],
+  LIBRARIAN: [
+    "library.books.view",
+    "library.books.manage",
+    "library.issue",
+    "library.return",
+    "library.reservations.manage",
+    "library.fines.manage",
+  ],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -439,6 +486,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "attendance.view",
     "attendance.correct",
     "attendance.export",
+    "library.books.view",
+    "library.books.manage",
+    "library.issue",
+    "library.return",
+    "library.reservations.manage",
+    "library.fines.manage",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

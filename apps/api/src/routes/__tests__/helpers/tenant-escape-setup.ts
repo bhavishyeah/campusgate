@@ -126,6 +126,18 @@ export interface SeededTenant {
   attendanceSessionId: string;
   attendanceRecordId: string;
   attendanceCorrectionId: string;
+  // Phase-5 library tables (design §3). The five tables all use the standard RLS
+  // pair (no append-only table this phase), so they are seeded here in child-safe
+  // order (title -> copy -> loan/reservation/fine) and torn down child-first. The
+  // seeded loan flips its copy to ISSUED; a second copy stays AVAILABLE for the
+  // reservation. No history/append-only library table exists, so there is no
+  // trigger-disable teardown dance for this phase.
+  bookTitleId: string;
+  bookCopyId: string;
+  bookCopyReservedId: string;
+  libraryLoanId: string;
+  bookReservationId: string;
+  libraryFineId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -196,6 +208,13 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const attendanceSessionId = id(`asession_${key}`);
   const attendanceRecordId = id(`arecord_${key}`);
   const attendanceCorrectionId = id(`acorr_${key}`);
+  // Phase-5 library IDs (deterministic so cleanup is exact).
+  const bookTitleId = id(`btitle_${key}`);
+  const bookCopyId = id(`bcopy_${key}`);
+  const bookCopyReservedId = id(`bcopyr_${key}`);
+  const libraryLoanId = id(`lloan_${key}`);
+  const bookReservationId = id(`bresv_${key}`);
+  const libraryFineId = id(`lfine_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -551,6 +570,83 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-5 library tables (design §3). Seeded via the RLS-bypassing adminClient
+  // in child-safe order: a title, two copies (one flipped ISSUED for the loan,
+  // one left AVAILABLE), one ACTIVE loan on the issued copy referencing the
+  // ALREADY-seeded studentProfile (the single-identity composite FK), one PENDING
+  // reservation of the title by that same student, and one PENDING OVERDUE fine
+  // on the loan. All five tables use the standard RLS pair, so the read /
+  // spoofed-write / foreign-parent escape tests can prove campass_app cannot see
+  // or forge the other tenant's rows. No append-only library table exists this
+  // phase, so none is excluded from the generic seed/cleanup loop.
+  await adminClient.bookTitle.create({
+    data: {
+      id: bookTitleId,
+      institutionId,
+      title: `${PREFIX}Title ${key}`,
+      author: `${PREFIX}Author ${key}`,
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.bookCopy.create({
+    data: {
+      id: bookCopyId,
+      institutionId,
+      bookTitleId,
+      accessionNumber: id(`ACC_${key}`),
+      status: "ISSUED", // on the seeded ACTIVE loan below
+      condition: "GOOD",
+    },
+  });
+
+  await adminClient.bookCopy.create({
+    data: {
+      id: bookCopyReservedId,
+      institutionId,
+      bookTitleId,
+      accessionNumber: id(`ACCR_${key}`),
+      status: "AVAILABLE",
+      condition: "GOOD",
+    },
+  });
+
+  await adminClient.libraryLoan.create({
+    data: {
+      id: libraryLoanId,
+      institutionId,
+      bookCopyId,
+      studentId: studentProfileId,
+      issuedByUserId: userId,
+      issueDate: new Date("2026-11-01T00:00:00.000Z"),
+      dueDate: new Date("2026-11-15T00:00:00.000Z"),
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.bookReservation.create({
+    data: {
+      id: bookReservationId,
+      institutionId,
+      bookTitleId,
+      studentId: studentProfileId,
+      queuePosition: 1,
+      status: "PENDING",
+    },
+  });
+
+  await adminClient.libraryFine.create({
+    data: {
+      id: libraryFineId,
+      institutionId,
+      studentId: studentProfileId,
+      libraryLoanId,
+      amount: "5.00",
+      reason: "OVERDUE",
+      status: "PENDING",
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -579,6 +675,12 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     attendanceSessionId,
     attendanceRecordId,
     attendanceCorrectionId,
+    bookTitleId,
+    bookCopyId,
+    bookCopyReservedId,
+    libraryLoanId,
+    bookReservationId,
+    libraryFineId,
   };
 }
 
@@ -600,6 +702,15 @@ export async function cleanup(): Promise<void> {
   await withRetry(() => adminClient.attendanceCorrection.deleteMany({ where }));
   await withRetry(() => adminClient.attendanceRecord.deleteMany({ where }));
   await withRetry(() => adminClient.attendanceSession.deleteMany({ where }));
+  // Phase-5 library tables FIRST (child -> parent): fines + reservations + loans
+  // (which reference student_profiles + book_copies with ON DELETE RESTRICT) ->
+  // book_copies -> book_titles, all BEFORE the student_profiles / institution
+  // deletes below. No append-only library table this phase.
+  await withRetry(() => adminClient.libraryFine.deleteMany({ where }));
+  await withRetry(() => adminClient.bookReservation.deleteMany({ where }));
+  await withRetry(() => adminClient.libraryLoan.deleteMany({ where }));
+  await withRetry(() => adminClient.bookCopy.deleteMany({ where }));
+  await withRetry(() => adminClient.bookTitle.deleteMany({ where }));
   // FEAT-004 Phase-3 classes tables next, child -> parent per the §6.10 RESTRICT
   // FKs, so they do not block the student_profiles / programs / sessions / terms /
   // departments / users deletes below. Order: enrollments + scheduled_classes +
@@ -688,6 +799,12 @@ export async function countRemainingTestRows(): Promise<number> {
     () => adminClient.attendanceCorrection.count({ where }),
     () => adminClient.attendanceRecord.count({ where }),
     () => adminClient.attendanceSession.count({ where }),
+    // Phase-5 library tables (all standard-pair, seeded + torn down here).
+    () => adminClient.libraryFine.count({ where }),
+    () => adminClient.bookReservation.count({ where }),
+    () => adminClient.libraryLoan.count({ where }),
+    () => adminClient.bookCopy.count({ where }),
+    () => adminClient.bookTitle.count({ where }),
     () => adminClient.membershipRole.count({ where }),
     () => adminClient.institutionMembership.count({ where }),
     () => adminClient.institutionModule.count({ where }),
@@ -786,6 +903,13 @@ export const RLS_TABLES = [
   "attendance_records",
   "attendance_corrections",
   "attendance_record_history",
+  // Phase-5 library tables (design §3). All five use the default modify pair —
+  // no append-only table this phase, so none appears in EXPECTED_POLICIES.
+  "book_titles",
+  "book_copies",
+  "library_loans",
+  "book_reservations",
+  "library_fines",
 ] as const;
 
 /**

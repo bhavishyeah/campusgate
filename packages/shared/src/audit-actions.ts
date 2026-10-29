@@ -111,6 +111,25 @@ export const AUDIT_ACTIONS = [
   { key: "attendance.correction.rejected", module: "attendance", description: "Correction PENDING -> REJECTED" },
   { key: "attendance.exported", module: "attendance", description: "Attendance export performed" },
   { key: "attendance.low_attendance.alerted", module: "attendance", description: "Low-attendance alert emitted" },
+  // library.* (18) — Phase 5 Library circulation mutations (past-tense)
+  { key: "library.title.created", module: "library", description: "BookTitle created" },
+  { key: "library.title.updated", module: "library", description: "BookTitle bibliographic fields updated" },
+  { key: "library.copy.registered", module: "library", description: "BookCopy registered (acquisition)" },
+  { key: "library.copy.updated", module: "library", description: "BookCopy shelf/condition updated" },
+  { key: "library.copy.withdrawn", module: "library", description: "BookCopy withdrawn from circulation" },
+  { key: "library.copy.marked_lost", module: "library", description: "BookCopy marked lost (loan closed)" },
+  { key: "library.copy.marked_damaged", module: "library", description: "BookCopy marked damaged" },
+  { key: "library.loan.issued", module: "library", description: "Loan issued (copy -> student)" },
+  { key: "library.loan.returned", module: "library", description: "Loan returned (copy freed)" },
+  { key: "library.loan.renewed", module: "library", description: "Loan renewed (due date extended)" },
+  { key: "library.reservation.created", module: "library", description: "Reservation (hold) created on a title" },
+  { key: "library.reservation.fulfilled", module: "library", description: "Reservation fulfilled (copy designated)" },
+  { key: "library.reservation.cancelled", module: "library", description: "Reservation cancelled" },
+  { key: "library.reservation.expired", module: "library", description: "Reservation expired (uncollected hold swept)" },
+  { key: "library.fine.created", module: "library", description: "LibraryFine created (rule-driven)" },
+  { key: "library.fine.waived", module: "library", description: "LibraryFine waived" },
+  { key: "library.fine.paid", module: "library", description: "LibraryFine marked paid" },
+  { key: "library.overdue.reminded", module: "library", description: "Overdue reminder emitted to a student" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

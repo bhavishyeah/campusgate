@@ -278,6 +278,11 @@ model Institution {
   attendanceRecords            AttendanceRecord[]
   attendanceCorrections        AttendanceCorrection[]
   attendanceRecordHistory      AttendanceRecordHistory[]
+  bookTitles                   BookTitle[]
+  bookCopies                   BookCopy[]
+  libraryLoans                 LibraryLoan[]
+  bookReservations             BookReservation[]
+  libraryFines                 LibraryFine[]
 
   @@map("institutions")
 }
@@ -463,6 +468,9 @@ model StudentProfile {
   documents            StudentDocument[]
   classEnrollments     ClassEnrollment[]
   attendanceRecords    AttendanceRecord[]
+  libraryLoans         LibraryLoan[]
+  bookReservations     BookReservation[]
+  libraryFines         LibraryFine[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -1563,4 +1571,201 @@ model AttendanceRecordHistory {
   @@index([institutionId, attendanceRecordId])
   @@index([attendanceRecordId])
   @@map("attendance_record_history")
+}
+
+// ─── LIBRARY (Phase 5, tenant-owned, gated module) ──────────────────────────
+//
+// Five tenant-owned tables (BookTitle, BookCopy, LibraryLoan, BookReservation,
+// LibraryFine) + seven enums. Each table carries institutionId +
+// `institution Institution @relation(...)`, @@unique([id, institutionId]) (anchors
+// composite same-tenant FKs), an (institutionId) index, and the design §3 query
+// indexes. The composite same-tenant FKs (incl. institutionId), partial unique
+// indexes, RLS policies, CHECK constraints, GRANT refresh and the library.*
+// permission/role seed live in the hand-authored migration
+// 20261108000000_phase5_library (Prisma's diff models none of those). Prisma
+// relations below reference the single PK; the tenant-safe composite variants are
+// created as raw SQL in the migration.
+
+enum BookTitleStatus {
+  ACTIVE
+  WITHDRAWN // retained for history; copies are withdrawn individually
+}
+
+enum BookCopyCondition {
+  NEW
+  GOOD
+  FAIR
+  POOR
+  DAMAGED
+}
+
+enum BookCopyStatus {
+  AVAILABLE
+  ISSUED
+  RESERVED // transient hold while a reservation is being fulfilled
+  LOST
+  DAMAGED
+  WITHDRAWN
+}
+
+enum LibraryLoanStatus {
+  ACTIVE
+  RETURNED
+  OVERDUE
+  LOST
+}
+
+enum BookReservationStatus {
+  PENDING
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum LibraryFineReason {
+  OVERDUE
+  LOST
+  DAMAGED
+}
+
+enum LibraryFineStatus {
+  PENDING
+  PAID
+  WAIVED
+}
+
+model BookTitle {
+  id              String          @id @default(cuid())
+  institutionId   String
+  institution     Institution     @relation(fields: [institutionId], references: [id])
+  title           String
+  author          String
+  publisher       String?
+  isbn            String? // normalized (digits only) at the service layer; NOT business-unique (design §3.1)
+  category        String?
+  edition         String?
+  publicationYear Int?
+  status          BookTitleStatus @default(ACTIVE)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  copies       BookCopy[]
+  reservations BookReservation[]
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, isbn])
+  @@index([institutionId, title])
+  @@map("book_titles")
+}
+
+model BookCopy {
+  id              String            @id @default(cuid())
+  institutionId   String
+  institution     Institution       @relation(fields: [institutionId], references: [id])
+  bookTitleId     String
+  bookTitle       BookTitle         @relation(fields: [bookTitleId], references: [id])
+  accessionNumber String
+  shelfLocation   String?
+  condition       BookCopyCondition @default(GOOD)
+  status          BookCopyStatus    @default(AVAILABLE)
+  acquiredAt      DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  loans                LibraryLoan[]
+  fulfilledReservations BookReservation[] @relation("ReservationFulfilledByCopy")
+
+  @@unique([institutionId, accessionNumber]) // accession number unique per institution
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, bookTitleId])
+  @@index([institutionId, status])
+  @@map("book_copies")
+}
+
+model LibraryLoan {
+  id             String            @id @default(cuid())
+  institutionId  String
+  institution    Institution       @relation(fields: [institutionId], references: [id])
+  bookCopyId     String
+  bookCopy       BookCopy          @relation(fields: [bookCopyId], references: [id])
+  studentId      String
+  student        StudentProfile    @relation(fields: [studentId], references: [id])
+  issuedByUserId String // acting librarian's User id (recorded scalar, NO FK)
+  issueDate      DateTime          @default(now())
+  dueDate        DateTime
+  returnDate     DateTime?
+  renewalCount   Int               @default(0)
+  status         LibraryLoanStatus @default(ACTIVE)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  fines LibraryFine[]
+
+  // Partial unique index `library_loans_one_active_per_copy` on
+  // (institutionId, bookCopyId) WHERE status='ACTIVE' is the hard concurrency
+  // backstop (design §5.2) — Prisma cannot express a partial index, so it is
+  // created as raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId, status])
+  @@index([institutionId, status, dueDate])
+  @@index([institutionId, bookCopyId])
+  @@map("library_loans")
+}
+
+model BookReservation {
+  id                String                @id @default(cuid())
+  institutionId     String
+  institution       Institution           @relation(fields: [institutionId], references: [id])
+  bookTitleId       String
+  bookTitle         BookTitle             @relation(fields: [bookTitleId], references: [id])
+  studentId         String
+  student           StudentProfile        @relation(fields: [studentId], references: [id])
+  reservedAt        DateTime              @default(now())
+  queuePosition     Int
+  status            BookReservationStatus @default(PENDING)
+  fulfilledByCopyId String?
+  fulfilledByCopy   BookCopy?             @relation("ReservationFulfilledByCopy", fields: [fulfilledByCopyId], references: [id])
+  fulfilledAt       DateTime?
+  cancelledAt       DateTime?
+  expiredAt         DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  // Partial unique index `book_reservations_one_pending_per_student_title` on
+  // (institutionId, bookTitleId, studentId) WHERE status='PENDING' (design §3.4)
+  // — created as raw SQL in the migration (Prisma cannot express it).
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, bookTitleId, status, queuePosition])
+  @@index([institutionId, studentId, status])
+  @@map("book_reservations")
+}
+
+model LibraryFine {
+  id                   String            @id @default(cuid())
+  institutionId        String
+  institution          Institution       @relation(fields: [institutionId], references: [id])
+  studentId            String
+  student              StudentProfile    @relation(fields: [studentId], references: [id])
+  libraryLoanId        String?
+  libraryLoan          LibraryLoan?      @relation(fields: [libraryLoanId], references: [id])
+  amount               Decimal           @db.Decimal(10, 2)
+  reason               LibraryFineReason
+  status               LibraryFineStatus @default(PENDING)
+  note                 String?
+  waivedByUserId       String? // recorded actor id (no FK)
+  paidRecordedByUserId String? // recorded actor id (no FK)
+  waivedAt             DateTime?
+  paidAt               DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId, status])
+  @@index([institutionId, status])
+  @@map("library_fines")
 }

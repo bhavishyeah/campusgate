@@ -493,6 +493,118 @@ export const attendanceExportQuerySchema = z.object({
   format: z.enum(["csv", "json"]).default("csv"),
 });
 
+// ─── LIBRARY (Phase 5) ───────────────────────────────────────────────────────
+
+// Enum members mirror the pg enums added by the phase5_library migration.
+export const bookCopyConditionEnum = z.enum(["NEW", "GOOD", "FAIR", "POOR", "DAMAGED"]);
+export const libraryFineReasonEnum = z.enum(["OVERDUE", "LOST", "DAMAGED"]);
+
+export const createBookTitleSchema = z.object({
+  title: z.string().min(1, "Title is required").max(500),
+  author: z.string().min(1, "Author is required").max(300),
+  publisher: z.string().max(300).optional(),
+  isbn: z.string().max(20).optional(),
+  category: z.string().max(200).optional(),
+  edition: z.string().max(100).optional(),
+  publicationYear: z.coerce.number().int().min(1000).max(3000).optional(),
+});
+
+export const patchBookTitleSchema = z
+  .object({
+    title: z.string().min(1).max(500).optional(),
+    author: z.string().min(1).max(300).optional(),
+    publisher: z.string().max(300).nullish(),
+    isbn: z.string().max(20).nullish(),
+    category: z.string().max(200).nullish(),
+    edition: z.string().max(100).nullish(),
+    publicationYear: z.coerce.number().int().min(1000).max(3000).nullish(),
+  })
+  .strict();
+
+export const registerBookCopySchema = z.object({
+  accessionNumber: z.string().min(1, "Accession number is required").max(100),
+  shelfLocation: z.string().max(200).optional(),
+  condition: bookCopyConditionEnum.optional(),
+  acquiredAt: z.coerce.date().optional(),
+});
+
+export const patchBookCopySchema = z
+  .object({
+    shelfLocation: z.string().max(200).nullish(),
+    condition: bookCopyConditionEnum.optional(),
+    acquiredAt: z.coerce.date().nullish(),
+  })
+  .strict();
+
+export const issueLoanSchema = z.object({
+  bookCopyId: z.string().min(1, "Copy is required"),
+  studentId: z.string().min(1, "Student is required"),
+});
+
+export const returnLoanSchema = z.object({}).strict();
+
+export const renewLoanSchema = z.object({}).strict();
+
+export const markLoanLostSchema = z
+  .object({
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const markCopyDamagedSchema = z
+  .object({
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const createReservationSchema = z.object({
+  bookTitleId: z.string().min(1, "Title is required"),
+});
+
+export const fulfilReservationSchema = z.object({
+  bookCopyId: z.string().min(1, "Copy is required"),
+});
+
+export const collectReservationSchema = z.object({}).strict();
+
+export const cancelReservationSchema = z
+  .object({
+    reason: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const createLibraryFineSchema = z.object({
+  studentId: z.string().min(1, "Student is required"),
+  libraryLoanId: z.string().min(1).optional(),
+  reason: libraryFineReasonEnum,
+  amount: z.coerce.number().nonnegative("Amount must be non-negative"),
+  note: z.string().max(2000).optional(),
+});
+
+export const waiveLibraryFineSchema = z
+  .object({
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const payLibraryFineSchema = z
+  .object({
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const catalogueSearchQuerySchema = z.object({
+  q: z.string().max(300).optional(),
+  category: z.string().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const libraryReportQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -552,3 +664,23 @@ export type RequestCorrectionInput = z.infer<typeof requestCorrectionSchema>;
 export type ReviewCorrectionInput = z.infer<typeof reviewCorrectionSchema>;
 export type AttendanceReportQueryInput = z.infer<typeof attendanceReportQuerySchema>;
 export type AttendanceExportQueryInput = z.infer<typeof attendanceExportQuerySchema>;
+export type BookCopyConditionValue = z.infer<typeof bookCopyConditionEnum>;
+export type LibraryFineReasonValue = z.infer<typeof libraryFineReasonEnum>;
+export type CreateBookTitleInput = z.infer<typeof createBookTitleSchema>;
+export type PatchBookTitleInput = z.infer<typeof patchBookTitleSchema>;
+export type RegisterBookCopyInput = z.infer<typeof registerBookCopySchema>;
+export type PatchBookCopyInput = z.infer<typeof patchBookCopySchema>;
+export type IssueLoanInput = z.infer<typeof issueLoanSchema>;
+export type ReturnLoanInput = z.infer<typeof returnLoanSchema>;
+export type RenewLoanInput = z.infer<typeof renewLoanSchema>;
+export type MarkLoanLostInput = z.infer<typeof markLoanLostSchema>;
+export type MarkCopyDamagedInput = z.infer<typeof markCopyDamagedSchema>;
+export type CreateReservationInput = z.infer<typeof createReservationSchema>;
+export type FulfilReservationInput = z.infer<typeof fulfilReservationSchema>;
+export type CollectReservationInput = z.infer<typeof collectReservationSchema>;
+export type CancelReservationInput = z.infer<typeof cancelReservationSchema>;
+export type CreateLibraryFineInput = z.infer<typeof createLibraryFineSchema>;
+export type WaiveLibraryFineInput = z.infer<typeof waiveLibraryFineSchema>;
+export type PayLibraryFineInput = z.infer<typeof payLibraryFineSchema>;
+export type CatalogueSearchQueryInput = z.infer<typeof catalogueSearchQuerySchema>;
+export type LibraryReportQueryInput = z.infer<typeof libraryReportQuerySchema>;
