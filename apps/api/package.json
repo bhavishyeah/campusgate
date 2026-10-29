@@ -7,7 +7,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate --schema=../../packages/db/prisma/schema.prisma && tsc",
     "start": "node dist/server.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:all": "vitest run && vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@campusgate/db": "*",
