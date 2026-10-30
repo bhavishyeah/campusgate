@@ -290,6 +290,13 @@ model Institution {
   applicationReviews           ApplicationReview[]
   admissionOffers              AdmissionOffer[]
   enrollments                  Enrollment[]
+  feeStructures                FeeStructure[]
+  feeComponents                FeeComponent[]
+  studentCharges               StudentCharge[]
+  paymentTransactions          PaymentTransaction[]
+  paymentAllocations           PaymentAllocation[]
+  receipts                     Receipt[]
+  processedWebhookEvents       ProcessedWebhookEvent[]
 
   @@map("institutions")
 }
@@ -480,6 +487,8 @@ model StudentProfile {
   bookReservations     BookReservation[]
   libraryFines         LibraryFine[]
   enrollments          Enrollment[]
+  studentCharges       StudentCharge[]
+  paymentTransactions  PaymentTransaction[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -873,6 +882,7 @@ model AcademicSession {
   classSections        ClassSection[]
   admissionCampaigns   AdmissionCampaign[]
   enrollments          Enrollment[]
+  feeStructures        FeeStructure[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -937,6 +947,7 @@ model Program {
   admissionCampaignPrograms AdmissionCampaignProgram[]
   applications              Application[]
   admissionOffers           AdmissionOffer[]           @relation("OfferOfferedProgram")
+  feeStructures             FeeStructure[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -1996,4 +2007,247 @@ model Enrollment {
   @@index([institutionId, studentProfileId])
   @@index([institutionId, applicationId])
   @@map("enrollments")
+}
+
+// ─── FEES & PAYMENTS (Phase 7 slice 1, tenant-owned) ────────────────────────
+//
+// Money is INTEGER PAISE (BigInt) end-to-end; currency is a stored non-null
+// 'INR' (CHECK currency = 'INR' in the migration). Prisma models reference
+// SINGLE PKs; the composite same-tenant FKs (incl. institutionId), partial
+// unique (payment_transactions_payment_id_unique), the global unique on
+// processed_webhook_events.razorpayEventId, ENABLE+FORCE RLS, the two
+// append-only trigger families (unconditional-raise x3 + column-guard x2), the
+// campass_app GRANT refresh, and the fees.* + ACCOUNTANT catalogue seed are all
+// hand-authored raw SQL in the 20261122000000_phase7_fees_slice1 migration
+// (Prisma's diff models none of them).
+
+enum FeeStructureStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum FeeComponentCategory {
+  TUITION
+  LIBRARY
+  LAB
+  EXAM
+  OTHER
+}
+
+enum StudentChargeStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+}
+
+enum PaymentTransactionStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+}
+
+model FeeStructure {
+  id                String             @id @default(cuid())
+  institutionId     String
+  institution       Institution        @relation(fields: [institutionId], references: [id])
+  name              String
+  status            FeeStructureStatus @default(DRAFT)
+  programId         String?
+  program           Program?           @relation(fields: [programId], references: [id])
+  academicSessionId String?
+  academicSession   AcademicSession?   @relation(fields: [academicSessionId], references: [id])
+  description       String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  components     FeeComponent[]
+  studentCharges StudentCharge[]
+
+  // Composite same-tenant FKs (institutionId, programId)->programs and
+  // (institutionId, academicSessionId)->academic_sessions, plus CHECK
+  // char_length(name) >= 1, are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, name])
+  @@index([institutionId])
+  @@map("fee_structures")
+}
+
+model FeeComponent {
+  id                String               @id @default(cuid())
+  institutionId     String
+  institution       Institution          @relation(fields: [institutionId], references: [id])
+  feeStructureId    String
+  feeStructure      FeeStructure         @relation(fields: [feeStructureId], references: [id])
+  category          FeeComponentCategory
+  amountPaise       BigInt
+  currency          String               @default("INR")
+  dueDate           DateTime?
+  installmentLabel  String?
+  installmentNumber Int?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  studentCharges StudentCharge[]
+
+  // Composite same-tenant FK (institutionId, feeStructureId)->fee_structures,
+  // plus CHECK amountPaise > 0 and CHECK currency = 'INR', are raw SQL in the
+  // migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, feeStructureId])
+  @@map("fee_components")
+}
+
+model StudentCharge {
+  id             String              @id @default(cuid())
+  institutionId  String
+  institution    Institution         @relation(fields: [institutionId], references: [id])
+  studentId      String
+  student        StudentProfile      @relation(fields: [studentId], references: [id])
+  feeStructureId String?
+  feeStructure   FeeStructure?       @relation(fields: [feeStructureId], references: [id])
+  feeComponentId String?
+  feeComponent   FeeComponent?       @relation(fields: [feeComponentId], references: [id])
+  category       FeeComponentCategory
+  amountPaise    BigInt
+  currency       String              @default("INR")
+  dueDate        DateTime?
+  description    String
+  status         StudentChargeStatus @default(PENDING)
+  postedAt       DateTime            @default(now())
+  postedByUserId String // recorded actor id (no FK)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  allocations PaymentAllocation[]
+
+  // Posted = IMMUTABLE SNAPSHOT: only `status` (forward-only) and `updatedAt`
+  // may change. The column-guard trigger `student_charges_guard` (raw SQL,
+  // migration §h, copied verbatim from design §D.3) freezes every snapshot
+  // column and enforces the forward-only status transition. Composite
+  // same-tenant FKs (studentId->student_profiles, feeStructureId->fee_structures,
+  // feeComponentId->fee_components) + CHECKs (amountPaise > 0, currency = 'INR',
+  // char_length(description) >= 1) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, studentId, status])
+  @@index([institutionId, status])
+  @@map("student_charges")
+}
+
+model PaymentTransaction {
+  id                String                   @id @default(cuid())
+  institutionId     String
+  institution       Institution              @relation(fields: [institutionId], references: [id])
+  studentId         String
+  student           StudentProfile           @relation(fields: [studentId], references: [id])
+  amountPaise       BigInt
+  currency          String                   @default("INR")
+  status            PaymentTransactionStatus @default(CREATED)
+  razorpayOrderId   String
+  razorpayPaymentId String?
+  razorpaySignature String?
+  targetChargeIds   String[] // authoritative server-persisted charge-id set (NOT a FK; §D.2 NIT-1)
+  initiatedByUserId String? // recorded actor id (no FK)
+  createdAt         DateTime                 @default(now())
+  capturedAt        DateTime?
+  updatedAt         DateTime                 @updatedAt
+
+  allocations          PaymentAllocation[]
+  receipts             Receipt[]
+  processedWebhookEvents ProcessedWebhookEvent[]
+
+  // APPEND-ONLY fact: identity/amount columns immutable, status forward-only,
+  // terminal (CAPTURED/FAILED) frozen — enforced by the column-guard trigger
+  // `payment_transactions_guard` (raw SQL, migration §h, copied verbatim from
+  // design §D.3). Unique (institutionId, razorpayOrderId) + the partial unique
+  // `payment_transactions_payment_id_unique` on (institutionId, razorpayPaymentId)
+  // WHERE razorpayPaymentId IS NOT NULL (raw SQL), the composite same-tenant FK
+  // (studentId->student_profiles), and CHECKs (amountPaise > 0, currency = 'INR')
+  // are in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, razorpayOrderId])
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@index([institutionId, status, createdAt])
+  @@index([institutionId, studentId])
+  @@map("payment_transactions")
+}
+
+model PaymentAllocation {
+  id                   String             @id @default(cuid())
+  institutionId        String
+  institution          Institution        @relation(fields: [institutionId], references: [id])
+  paymentTransactionId String
+  paymentTransaction   PaymentTransaction @relation(fields: [paymentTransactionId], references: [id])
+  studentChargeId      String
+  studentCharge        StudentCharge      @relation(fields: [studentChargeId], references: [id])
+  amountPaise          BigInt
+  currency             String             @default("INR")
+  createdAt            DateTime           @default(now())
+
+  // INSERT-only (NO updatedAt): append-only RLS (SELECT + INSERT) + REVOKE
+  // UPDATE,DELETE + a BEFORE UPDATE OR DELETE trigger are hand-authored in the
+  // migration (mirrors application_reviews). Composite same-tenant FKs
+  // (paymentTransactionId->payment_transactions, studentChargeId->student_charges)
+  // + CHECKs (amountPaise > 0, currency = 'INR') are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, paymentTransactionId])
+  @@index([institutionId, studentChargeId])
+  @@map("payment_allocations")
+}
+
+model Receipt {
+  id                   String             @id @default(cuid())
+  institutionId        String
+  institution          Institution        @relation(fields: [institutionId], references: [id])
+  paymentTransactionId String
+  paymentTransaction   PaymentTransaction @relation(fields: [paymentTransactionId], references: [id])
+  receiptNumber        String
+  sequence             Int
+  amountPaise          BigInt
+  currency             String             @default("INR")
+  issuedAt             DateTime           @default(now())
+  createdAt            DateTime           @default(now())
+
+  // INSERT-only (NO updatedAt): append-only RLS + REVOKE UPDATE,DELETE + trigger
+  // are hand-authored in the migration. Composite same-tenant FK
+  // (paymentTransactionId->payment_transactions) + CHECKs (amountPaise > 0,
+  // currency = 'INR', sequence > 0) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, receiptNumber])
+  @@unique([institutionId, sequence]) // monotonic per-institution counter (NIT-3)
+  @@unique([institutionId, paymentTransactionId]) // one receipt per transaction
+  @@index([institutionId])
+  @@map("receipts")
+}
+
+model ProcessedWebhookEvent {
+  id                   String              @id @default(cuid())
+  institutionId        String
+  institution          Institution         @relation(fields: [institutionId], references: [id])
+  razorpayEventId      String
+  eventType            String
+  processedAt          DateTime            @default(now())
+  paymentTransactionId String?
+  paymentTransaction   PaymentTransaction? @relation(fields: [paymentTransactionId], references: [id])
+  payloadDigest        String?
+  createdAt            DateTime            @default(now())
+
+  // INSERT-only idempotency ledger (NO updatedAt): append-only RLS + REVOKE
+  // UPDATE,DELETE + trigger are hand-authored in the migration. The GLOBAL
+  // unique on razorpayEventId (the hard idempotency key, §D.7) + the composite
+  // (institutionId, razorpayEventId) unique + the composite same-tenant FK
+  // (paymentTransactionId->payment_transactions, nullable) are raw SQL in the
+  // migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([razorpayEventId]) // GLOBAL idempotency key (§D.7)
+  @@unique([institutionId, razorpayEventId])
+  @@index([institutionId])
+  @@index([institutionId, paymentTransactionId])
+  @@map("processed_webhook_events")
 }

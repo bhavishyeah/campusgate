@@ -388,6 +388,49 @@ export const PERMISSIONS = [
     description: "Applicant reads only their own applications/documents/offers; submits/withdraws own; accepts/declines own offer",
   },
 
+  // fees.* — Phase 7 Fees & Payments (slice 1): structures, charges, the
+  // Razorpay payment flow, receipts, reconciliation. Gated module
+  // (requireModuleActive("fees")) in addition to permission (the webhook is
+  // signature-gated, not module/permission-gated). fees.refund / fees.adjust are
+  // forward-declared for slice 7.1 (step-up-gated) and bound to NO role yet
+  // (design §D.12) — catalogue-sync asserts permission-key and role-pair
+  // set-equality independently, so an unbound key is legal.
+  {
+    key: "fees.structures.manage",
+    module: "fees",
+    description: "Create/update fee structures + components",
+  },
+  {
+    key: "fees.charges.manage",
+    module: "fees",
+    description: "Post charges (single + bulk)",
+  },
+  {
+    key: "fees.view",
+    module: "fees",
+    description: "Staff read of structures, a student ledger, payments, receipts, reconciliation",
+  },
+  {
+    key: "fees.collect",
+    module: "fees",
+    description: "Trigger order creation on behalf / run reconciliation (collection ops)",
+  },
+  {
+    key: "fees.view_own",
+    module: "fees",
+    description: "Student reads own charges/outstanding/receipts and initiates/verifies own payment",
+  },
+  {
+    key: "fees.refund",
+    module: "fees",
+    description: "Approve a refund (forward-declared, step-up-gated; unbound + unbuilt in slice 1)",
+  },
+  {
+    key: "fees.adjust",
+    module: "fees",
+    description: "Approve a fee adjustment (forward-declared, step-up-gated; unbound + unbuilt in slice 1)",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -444,8 +487,17 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "classes.view_own",
     "attendance.view_own",
     "library.view_own",
+    "fees.view_own",
   ],
   FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own"],
+  // ACCOUNTANT — additive platform template role (FACULTY/LIBRARIAN/
+  // ADMISSION_OFFICER precedent); fees-scoped ONLY (grants no exams/library/etc).
+  ACCOUNTANT: [
+    "fees.structures.manage",
+    "fees.charges.manage",
+    "fees.view",
+    "fees.collect",
+  ],
   LIBRARIAN: [
     "library.books.view",
     "library.books.manage",
@@ -546,6 +598,10 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "admissions.applications.review",
     "admissions.offers.manage",
     "admissions.enroll",
+    "fees.structures.manage",
+    "fees.charges.manage",
+    "fees.view",
+    "fees.collect",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

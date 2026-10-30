@@ -148,6 +148,26 @@ export const AUDIT_ACTIONS = [
   { key: "admissions.offer.accepted", module: "admissions", description: "Admission offer accepted by applicant" },
   { key: "admissions.offer.declined", module: "admissions", description: "Admission offer declined by applicant" },
   { key: "admissions.offer.expired", module: "admissions", description: "Admission offer expired" },
+  // fees.* (16) — Phase 7 Fees & Payments slice 1 mutations (past-tense). No
+  // migration mirror (validated in recordAuditEvent). The webhook-level audits
+  // that occur before/without a tenant tx (signature rejected, duplicate
+  // ignored, module inactive) are written via privilegedPrisma (design §D.13).
+  { key: "fees.structure.created", module: "fees", description: "Fee structure created" },
+  { key: "fees.structure.updated", module: "fees", description: "Fee structure updated" },
+  { key: "fees.component.added", module: "fees", description: "Fee component added to a structure" },
+  { key: "fees.charge.posted", module: "fees", description: "Charge posted to a single student" },
+  { key: "fees.charges.bulk_posted", module: "fees", description: "Charges bulk-posted by program/session" },
+  { key: "fees.payment.order_created", module: "fees", description: "Razorpay order created (PaymentTransaction CREATED)" },
+  { key: "fees.payment.signature_verified", module: "fees", description: "Checkout payment signature verified (CREATED -> AUTHORIZED)" },
+  { key: "fees.payment.signature_rejected", module: "fees", description: "Checkout payment signature rejected (nothing authoritative written)" },
+  { key: "fees.payment.captured", module: "fees", description: "Payment captured via webhook (authoritative)" },
+  { key: "fees.payment.failed", module: "fees", description: "Payment marked FAILED (reconciliation)" },
+  { key: "fees.payment.reconciled", module: "fees", description: "Stuck transaction reconciled against Razorpay" },
+  { key: "fees.receipt.issued", module: "fees", description: "Receipt issued after server-verified capture" },
+  { key: "fees.webhook.received", module: "fees", description: "Razorpay webhook received (signature-verified)" },
+  { key: "fees.webhook.duplicate_ignored", module: "fees", description: "Duplicate webhook event id ignored (idempotent no-op)" },
+  { key: "fees.webhook.signature_rejected", module: "fees", description: "Razorpay webhook HMAC rejected (nothing written)" },
+  { key: "fees.webhook.skipped_module_inactive", module: "fees", description: "Webhook skipped: fees module not ACTIVE for the resolved tenant" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

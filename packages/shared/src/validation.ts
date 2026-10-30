@@ -782,6 +782,120 @@ export const enrollApplicationSchema = z
   })
   .strict();
 
+// ─── FEES & PAYMENTS (Phase 7 slice 1) ───────────────────────────────────────
+
+// The SINGLE money-input schema (design §D.1). Money is INTEGER PAISE and
+// crosses every JSON boundary as a decimal STRING, never a JSON number: a JSON
+// number > Number.MAX_SAFE_INTEGER has already lost precision before Zod runs,
+// so a z.number() schema cannot detect the truncation. The regex rejects "0",
+// leading zeros, signs, decimals, and non-numeric input before the BigInt
+// transform; the .refine upper bound keeps every accepted amount inside the
+// single guarded Razorpay SDK-boundary conversion range (HIGH-2). Used by EVERY
+// fee-amount field — no money field is ever a z.number().
+export const PaiseAmount = z
+  .string()
+  .regex(/^[1-9]\d*$/, "positive integer paise, no leading zero")
+  .transform((s) => BigInt(s))
+  .refine((v) => v > 0n && v <= BigInt(Number.MAX_SAFE_INTEGER), "amount out of range");
+
+// Enum members mirror the pg enums added by the phase7_fees_slice1 migration.
+export const feeStructureStatusEnum = z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]);
+export const feeComponentCategoryEnum = z.enum(["TUITION", "LIBRARY", "LAB", "EXAM", "OTHER"]);
+export const studentChargeStatusEnum = z.enum(["PENDING", "PARTIALLY_PAID", "PAID"]);
+export const paymentTransactionStatusEnum = z.enum(["CREATED", "AUTHORIZED", "CAPTURED", "FAILED"]);
+
+// Fee structure create/patch (§D.5/§D.10). name required non-empty; status +
+// program/session links optional (resolved in-handler via composite FKs).
+export const createFeeStructureSchema = z
+  .object({
+    name: z.string().min(1, "Name is required").max(200),
+    status: feeStructureStatusEnum.optional(),
+    programId: z.string().min(1).optional(),
+    academicSessionId: z.string().min(1).optional(),
+    description: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const patchFeeStructureSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    status: feeStructureStatusEnum.optional(),
+    programId: z.string().min(1).nullish(),
+    academicSessionId: z.string().min(1).nullish(),
+    description: z.string().max(2000).nullish(),
+  })
+  .strict();
+
+// Fee component add (§D.5). amount via the single PaiseAmount schema (a positive
+// integer-paise STRING); category required; dueDate/installment metadata optional.
+export const addFeeComponentSchema = z
+  .object({
+    category: feeComponentCategoryEnum,
+    amountPaise: PaiseAmount,
+    dueDate: z.string().datetime("Invalid due date").optional(),
+    installmentLabel: z.string().max(100).optional(),
+    installmentNumber: z.number().int().min(1).max(1000).optional(),
+  })
+  .strict();
+
+// Post a charge to a single student (§D.5). The posted charge snapshots
+// amount/category/dueDate/description; amount via PaiseAmount.
+export const postChargeSchema = z
+  .object({
+    studentId: z.string().min(1, "Student is required"),
+    feeStructureId: z.string().min(1).optional(),
+    feeComponentId: z.string().min(1).optional(),
+    category: feeComponentCategoryEnum,
+    amountPaise: PaiseAmount,
+    dueDate: z.string().datetime("Invalid due date").optional(),
+    description: z.string().min(1, "Description is required").max(500),
+  })
+  .strict();
+
+// Bulk-charge posting by program/session from a structure (§D.5). Each component
+// snapshots onto one charge per targeted student; amounts come from the
+// structure's components (PaiseAmount is enforced at component-definition time).
+export const bulkChargeSchema = z
+  .object({
+    feeStructureId: z.string().min(1, "Fee structure is required"),
+    programId: z.string().min(1).optional(),
+    academicSessionId: z.string().min(1).optional(),
+    studentIds: z.array(z.string().min(1)).max(5000).optional(),
+  })
+  .strict();
+
+// Stage-1 create-order body (§D.5): the charges the student elects to pay.
+// No client-supplied amount is ever trusted — the server recomputes the sum.
+export const createPaymentSchema = z
+  .object({
+    chargeIds: z.array(z.string().min(1, "Charge id must be non-empty")).min(1, "At least one charge is required").max(500),
+  })
+  .strict();
+
+// Stage-2 checkout-callback verify body (§D.5): the three Razorpay fields the
+// browser returns. Optimistic UX only — never authoritative.
+export const verifyPaymentSchema = z
+  .object({
+    razorpay_order_id: z.string().min(1, "razorpay_order_id is required"),
+    razorpay_payment_id: z.string().min(1, "razorpay_payment_id is required"),
+    razorpay_signature: z.string().min(1, "razorpay_signature is required"),
+  })
+  .strict();
+
+// Reconciliation inputs (§D.11): a bounded sweep of stuck transactions.
+export const reconciliationQuerySchema = z.object({
+  thresholdMinutes: z.coerce.number().int().min(1).max(10080).default(30),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const runReconciliationSchema = z
+  .object({
+    thresholdMinutes: z.number().int().min(1).max(10080).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  })
+  .strict();
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -881,3 +995,17 @@ export type AcceptOfferInput = z.infer<typeof acceptOfferSchema>;
 export type DeclineOfferInput = z.infer<typeof declineOfferSchema>;
 export type ExpireOfferInput = z.infer<typeof expireOfferSchema>;
 export type EnrollApplicationInput = z.infer<typeof enrollApplicationSchema>;
+export type PaiseAmountInput = z.infer<typeof PaiseAmount>;
+export type FeeStructureStatusValue = z.infer<typeof feeStructureStatusEnum>;
+export type FeeComponentCategoryValue = z.infer<typeof feeComponentCategoryEnum>;
+export type StudentChargeStatusValue = z.infer<typeof studentChargeStatusEnum>;
+export type PaymentTransactionStatusValue = z.infer<typeof paymentTransactionStatusEnum>;
+export type CreateFeeStructureInput = z.infer<typeof createFeeStructureSchema>;
+export type PatchFeeStructureInput = z.infer<typeof patchFeeStructureSchema>;
+export type AddFeeComponentInput = z.infer<typeof addFeeComponentSchema>;
+export type PostChargeInput = z.infer<typeof postChargeSchema>;
+export type BulkChargeInput = z.infer<typeof bulkChargeSchema>;
+export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
+export type VerifyPaymentInput = z.infer<typeof verifyPaymentSchema>;
+export type ReconciliationQueryInput = z.infer<typeof reconciliationQuerySchema>;
+export type RunReconciliationInput = z.infer<typeof runReconciliationSchema>;

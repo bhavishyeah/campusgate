@@ -48,7 +48,13 @@ export const MODULE_DEPENDENCIES: Record<ModuleKey, readonly ModuleKey[]> = {
   // activation (foundational data has no ACTIVE InstitutionModule rows).
   attendance: [],
   examinations: ["academic_sessions", "class_course", "student_enrollment"],
-  fees: ["student_management"],
+  // fees is foundational-not-gated (design §D.9, the attendance/admissions
+  // rationale): only its own row must be ENTITLED->ACTIVE. Its real prerequisite
+  // is foundational StudentProfile data, which has NO ACTIVE InstitutionModule
+  // row — a gated-module edge (the old ["student_management"]) would permanently
+  // block activation. Those prerequisites are validated at operation time via
+  // composite FKs + in-handler lookups, not by a gated-module activation edge.
+  fees: [],
   library: [],
   // admissions is foundational-not-gated (design §6.1): only its own row must be
   // ENTITLED->ACTIVE. Its real prerequisites are foundational Program/Session/
