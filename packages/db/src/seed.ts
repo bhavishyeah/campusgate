@@ -33,6 +33,7 @@ const TEMPLATE_ROLE_NAMES: Record<string, string> = {
   LIBRARIAN: "Librarian",
   ADMISSION_OFFICER: "Admission Officer",
   APPLICANT: "Applicant",
+  ACCOUNTANT: "Accountant",
 };
 
 /**
@@ -1046,6 +1047,116 @@ async function main() {
   }
   console.log("  ✓ Demo Application (UNDER_REVIEW, APP-DEMO-0001) created for applicant, NO StudentProfile");
 
+  // ─── Fees: module ACTIVE + accountant + structure + component + one charge ──
+  // Mirrors the campus_movement / attendance / library / admissions module
+  // upserts so a fresh DB has the fees module ACTIVE (fees is a gated module;
+  // its operational routes carry requireModuleActive("fees")). All upserts /
+  // find-first-then-create are keyed on business uniques so re-running the seed
+  // never duplicates. Money is INTEGER PAISE (BIGINT): 5000000n paise = ₹50,000.
+  // NO PaymentTransaction / PaymentAllocation / Receipt rows are seeded (design
+  // §D.14 — no real payments).
+  await prisma.institutionModule.upsert({
+    where: { institutionId_moduleKey: { institutionId: institution.id, moduleKey: "fees" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      moduleKey: "fees",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+  console.log("  ✓ fees module entitled + activated for demo tenant");
+
+  // Accountant user (legacy role = GUARD, the inert non-actor value per the
+  // FACULTY/LIBRARIAN/ADMISSION_OFFICER precedent — capability comes from the
+  // ACCOUNTANT membership role, not the enum). No profile table.
+  const accountantPassword = await bcrypt.hash("accountant123", 12);
+  const accountantUser = await prisma.user.upsert({
+    where: { email: "accountant@demo.edu" },
+    update: {},
+    create: {
+      email: "accountant@demo.edu",
+      passwordHash: accountantPassword,
+      role: "GUARD",
+      accountStatus: "ACTIVE",
+      institutionId: institution.id,
+    },
+  });
+  await ensureMembership(accountantUser.id, accountantUser.institutionId, "ACCOUNTANT", roleIdByKey);
+  console.log("  ✓ Accountant user created (accountant@demo.edu / accountant123) + ACCOUNTANT role");
+
+  // One ACTIVE FeeStructure for the BCA program, idempotent on the
+  // (institutionId, name) business unique.
+  const feeStructure = await prisma.feeStructure.upsert({
+    where: {
+      institutionId_name: { institutionId: institution.id, name: "BCA 2026-2027 Fees" },
+    },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      name: "BCA 2026-2027 Fees",
+      status: "ACTIVE",
+      programId: bcaProgram.id,
+      academicSessionId: session.id,
+      description: "Tuition fee structure for BCA, academic year 2026-2027",
+    },
+  });
+
+  // One TUITION FeeComponent (₹50,000 = 5000000 paise). No single-column natural
+  // unique, so resolve via findFirst on (institutionId, feeStructureId, category)
+  // + create so re-runs do not duplicate.
+  let feeComponent = await prisma.feeComponent.findFirst({
+    where: {
+      institutionId: institution.id,
+      feeStructureId: feeStructure.id,
+      category: "TUITION",
+    },
+  });
+  if (!feeComponent) {
+    feeComponent = await prisma.feeComponent.create({
+      data: {
+        institutionId: institution.id,
+        feeStructureId: feeStructure.id,
+        category: "TUITION",
+        amountPaise: 5000000n,
+        currency: "INR",
+      },
+    });
+  }
+  console.log("  ✓ FeeStructure 'BCA 2026-2027 Fees' (ACTIVE) + TUITION component (₹50,000) created");
+
+  // One posted StudentCharge (immutable snapshot) to the seeded BCA2024001
+  // student, idempotent via a find-first guard on
+  // (institutionId, studentId, feeComponentId). postedByUserId = the accountant.
+  // No PaymentTransaction / PaymentAllocation / Receipt rows (no real payments).
+  if (demoStudent) {
+    const existingCharge = await prisma.studentCharge.findFirst({
+      where: {
+        institutionId: institution.id,
+        studentId: demoStudent.id,
+        feeComponentId: feeComponent.id,
+      },
+    });
+    if (!existingCharge) {
+      await prisma.studentCharge.create({
+        data: {
+          institutionId: institution.id,
+          studentId: demoStudent.id,
+          feeStructureId: feeStructure.id,
+          feeComponentId: feeComponent.id,
+          category: "TUITION",
+          amountPaise: 5000000n,
+          currency: "INR",
+          description: "Tuition 2026-2027",
+          status: "PENDING",
+          postedByUserId: accountantUser.id,
+        },
+      });
+    }
+    console.log("  ✓ One posted StudentCharge (PENDING, ₹50,000) on demo student BCA2024001");
+  }
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
   console.log("   Admin:     admin@demo.edu / admin123");
@@ -1054,6 +1165,7 @@ async function main() {
   console.log("   Faculty:   faculty.cs@demo.edu / faculty123");
   console.log("   Librarian: librarian@demo.edu / library123");
   console.log("   Officer:   admissions@demo.edu / officer123");
+  console.log("   Accountant: accountant@demo.edu / accountant123");
   console.log("   Applicant: applicant@demo.edu / applicant123");
   console.log("   Student:   bhavishya@demo.edu / student123");
   console.log("   Super:     superadmin@campusgate.local / superadmin123");
