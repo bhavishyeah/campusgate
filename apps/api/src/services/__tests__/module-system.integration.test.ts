@@ -29,7 +29,7 @@ import {
   missingDependencies,
   type ModuleStateRow,
 } from "../module-system.js";
-import type { ModuleKey } from "@campusgate/shared";
+import { MODULE_DEPENDENCIES, type ModuleKey } from "@campusgate/shared";
 
 type WithTenant = <T>(institutionId: string, fn: (tx: any) => Promise<T>) => Promise<T>;
 let withTenant: WithTenant;
@@ -114,14 +114,22 @@ describe("module-system (real DB, RLS enforced)", () => {
   });
 
   it("affectedDependents returns ACTIVE + SUSPENDED dependents of a module", () => {
-    // examinations + fees are the two dependents exercised; both declare edges
-    // onto foundational keys. academic_sessions has one dependent: examinations.
+    // examinations declares an edge onto student_enrollment (one of its three
+    // foundational deps), so student_enrollment has examinations as a dependent.
     const rows = new Map<string, ModuleStateRow>([
       ["examinations", { moduleKey: "examinations", state: "ACTIVE" }],
     ]);
     expect(affectedDependents("student_enrollment", rows).sort()).toEqual(
       ["examinations"].sort(),
     );
+  });
+
+  it("fees is foundational-not-gated: MODULE_DEPENDENCIES.fees === [] (§D.9)", () => {
+    // Slice 1 sets fees.deps = [] — its real prerequisite is foundational
+    // StudentProfile data, which has no ACTIVE InstitutionModule row, so a gated
+    // edge would permanently block activation.
+    expect(MODULE_DEPENDENCIES.fees).toEqual([]);
+    expect(missingDependencies("fees", new Map<string, ModuleStateRow>())).toEqual([]);
   });
 
   // ── dependency validation through withTenant (RLS-enforced) ─────────────────
@@ -160,25 +168,30 @@ describe("module-system (real DB, RLS enforced)", () => {
 
   it("a SUSPENDED dependency causes a 409 (not ACTIVE is the bar) and blocks reactivation", async () => {
     await clearModules();
-    await seedModule(instA, "fees", "SUSPENDED"); // fees depends on student_management
-    await seedModule(instA, "student_management", "SUSPENDED"); // dep is SUSPENDED
+    // examinations -> student_enrollment is the re-pointed single-dependency edge
+    // (§D.9): all of examinations' deps are ACTIVE except student_enrollment,
+    // which is SUSPENDED, so the ONLY missing dependency is student_enrollment.
+    await seedModule(instA, "examinations", "SUSPENDED");
+    await seedModule(instA, "academic_sessions", "ACTIVE");
+    await seedModule(instA, "class_course", "ACTIVE");
+    await seedModule(instA, "student_enrollment", "SUSPENDED"); // dep is SUSPENDED
 
-    // reactivate fees (SUSPENDED -> ACTIVE) must fail: dep is not ACTIVE
-    const blocked = await withTenant(instA, (tx) => activate(tx, instA, "fees", userA));
+    // reactivate examinations (SUSPENDED -> ACTIVE) must fail: the dep is not ACTIVE
+    const blocked = await withTenant(instA, (tx) => activate(tx, instA, "examinations", userA));
     expect(blocked.ok).toBe(false);
     if (!blocked.ok && blocked.reason === "DEPS_UNMET") {
-      expect(blocked.missingDependencies).toContain("student_management");
+      expect(blocked.missingDependencies).toContain("student_enrollment");
     } else {
-      throw new Error("expected DEPS_UNMET with student_management");
+      throw new Error("expected DEPS_UNMET with student_enrollment");
     }
 
-    // activate the dep, then fees reactivation (SUSPENDED -> ACTIVE) succeeds
-    const depOk = await withTenant(instA, (tx) => activate(tx, instA, "student_management", userA));
+    // activate the dep, then examinations reactivation (SUSPENDED -> ACTIVE) succeeds
+    const depOk = await withTenant(instA, (tx) => activate(tx, instA, "student_enrollment", userA));
     expect(depOk.ok).toBe(true);
-    const feesOk = await withTenant(instA, (tx) => activate(tx, instA, "fees", userA));
-    expect(feesOk.ok).toBe(true);
+    const examsOk = await withTenant(instA, (tx) => activate(tx, instA, "examinations", userA));
+    expect(examsOk.ok).toBe(true);
     const row = await adminClient.institutionModule.findUnique({
-      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "fees" } },
+      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "examinations" } },
     });
     expect(row!.state).toBe("ACTIVE");
     expect(row!.suspendedAt).toBeNull(); // cleared on reactivation
@@ -276,33 +289,33 @@ describe("module-system (real DB, RLS enforced)", () => {
   // ── platform revoke dependent-scan is tenant-scoped ─────────────────────────
   it("platform revoke's dependent scan is tenant-scoped: A's revoke lists only A's dependent", async () => {
     await clearModules();
-    // Same fees -> student_management edge ACTIVE in BOTH institutions.
-    await seedModule(instA, "student_management", "ACTIVE");
-    await seedModule(instA, "fees", "ACTIVE");
-    await seedModule(instB, "student_management", "ACTIVE");
-    await seedModule(instB, "fees", "ACTIVE");
+    // Same examinations -> student_enrollment edge ACTIVE in BOTH institutions (§D.9).
+    await seedModule(instA, "student_enrollment", "ACTIVE");
+    await seedModule(instA, "examinations", "ACTIVE");
+    await seedModule(instB, "student_enrollment", "ACTIVE");
+    await seedModule(instB, "examinations", "ACTIVE");
 
-    // revoke student_management from A on the RLS-BYPASSING owner client (the
+    // revoke student_enrollment from A on the RLS-BYPASSING owner client (the
     // production role for privilegedPrisma — in this harness DATABASE_URL is
     // pinned to campass_app so privilegedPrisma would fall back to the RLS-subject
     // role with no tenant GUC and see zero rows; adminClient is the real
     // cross-tenant-capable connection the platform path uses). The guard must
     // consider ONLY A's rows via the mandatory where:{institutionId} filter.
-    const result = await revoke(adminClient, instA, "student_management");
+    const result = await revoke(adminClient, instA, "student_enrollment");
     expect(result.ok).toBe(false);
     if (!result.ok && result.reason === "HAS_DEPENDENTS") {
-      expect(result.blockingDependents.map((d) => d.moduleKey)).toEqual(["fees"]);
-      // exactly one dependent — B's fees did not leak into A's scan
+      expect(result.blockingDependents.map((d) => d.moduleKey)).toEqual(["examinations"]);
+      // exactly one dependent — B's examinations did not leak into A's scan
       expect(result.blockingDependents).toHaveLength(1);
     } else {
       throw new Error("expected HAS_DEPENDENTS");
     }
 
-    // Clearing A's fees lets the revoke proceed (B untouched throughout).
+    // Clearing A's examinations lets the revoke proceed (B untouched throughout).
     await adminClient.institutionModule.delete({
-      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "fees" } },
+      where: { institutionId_moduleKey: { institutionId: instA, moduleKey: "examinations" } },
     });
-    const ok = await revoke(adminClient, instA, "student_management");
+    const ok = await revoke(adminClient, instA, "student_enrollment");
     expect(ok.ok).toBe(true);
     // B's rows still present.
     const bStillThere = await adminClient.institutionModule.count({ where: { institutionId: instB } });

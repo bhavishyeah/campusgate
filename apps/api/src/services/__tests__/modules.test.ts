@@ -63,11 +63,15 @@ describe("module dependency graph", () => {
     expect(MODULE_DEPENDENCIES.library).toEqual([]);
   });
 
-  it("the examinations/fees exemplars are unchanged by the Phase-5 additions", () => {
+  it("examinations keeps its three edges; fees is foundational-not-gated (Phase 7 §D.9)", () => {
     expect([...MODULE_DEPENDENCIES.examinations].sort()).toEqual(
       ["academic_sessions", "class_course", "student_enrollment"].sort(),
     );
-    expect([...MODULE_DEPENDENCIES.fees].sort()).toEqual(["student_management"].sort());
+    // Phase 7 slice 1 sets fees.deps = [] (the attendance/library/admissions
+    // foundational-not-gated precedent): fees' real prerequisite is foundational
+    // StudentProfile data, which has no ACTIVE InstitutionModule row, so a gated
+    // edge would permanently block activation.
+    expect(MODULE_DEPENDENCIES.fees).toEqual([]);
   });
 
   it("is acyclic (DFS)", () => {
