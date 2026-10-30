@@ -283,6 +283,13 @@ model Institution {
   libraryLoans                 LibraryLoan[]
   bookReservations             BookReservation[]
   libraryFines                 LibraryFine[]
+  admissionCampaigns           AdmissionCampaign[]
+  admissionCampaignPrograms    AdmissionCampaignProgram[]
+  applications                 Application[]
+  applicationDocuments         ApplicationDocument[]
+  applicationReviews           ApplicationReview[]
+  admissionOffers              AdmissionOffer[]
+  enrollments                  Enrollment[]
 
   @@map("institutions")
 }
@@ -348,6 +355,7 @@ model User {
   supportGrantsGranted   SupportGrant[] @relation("SupportGrantGrantee")
   supportGrantsRevoked   SupportGrant[] @relation("SupportGrantRevoker")
   facultyProfile         FacultyProfile?
+  applications           Application[]  @relation("ApplicationApplicant")
 
   @@unique([id, institutionId])
   @@map("users")
@@ -471,6 +479,7 @@ model StudentProfile {
   libraryLoans         LibraryLoan[]
   bookReservations     BookReservation[]
   libraryFines         LibraryFine[]
+  enrollments          Enrollment[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -862,6 +871,8 @@ model AcademicSession {
   calendarDayRevisions AcademicCalendarDayRevision[]
   enrolledStudents     StudentProfile[]
   classSections        ClassSection[]
+  admissionCampaigns   AdmissionCampaign[]
+  enrollments          Enrollment[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -921,6 +932,11 @@ model Program {
 
   courses       Course[]
   classSections ClassSection[]
+
+  admissionCampaigns        AdmissionCampaign[]        @relation("CampaignTargetProgram")
+  admissionCampaignPrograms AdmissionCampaignProgram[]
+  applications              Application[]
+  admissionOffers           AdmissionOffer[]           @relation("OfferOfferedProgram")
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -1768,4 +1784,216 @@ model LibraryFine {
   @@index([institutionId, studentId, status])
   @@index([institutionId, status])
   @@map("library_fines")
+}
+
+// ─── ADMISSIONS (Phase 6, tenant-owned) ─────────────────────────────────────
+
+enum AdmissionCampaignStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  DOCUMENTS_REQUIRED
+  ELIGIBLE
+  SHORTLISTED
+  OFFERED
+  ACCEPTED
+  ENROLLED
+  REJECTED
+  WITHDRAWN
+}
+
+enum ApplicationReviewDecision {
+  RECOMMEND_ELIGIBLE
+  RECOMMEND_REJECT
+  REQUEST_DOCUMENTS
+  SHORTLIST
+  NOTE
+}
+
+enum AdmissionOfferStatus {
+  ISSUED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model AdmissionCampaign {
+  id              String                  @id @default(cuid())
+  institutionId   String
+  institution     Institution             @relation(fields: [institutionId], references: [id])
+  name            String
+  status          AdmissionCampaignStatus @default(DRAFT)
+  intakeSessionId String?
+  intakeSession   AcademicSession?        @relation(fields: [intakeSessionId], references: [id])
+  targetProgramId String?
+  targetProgram   Program?                @relation("CampaignTargetProgram", fields: [targetProgramId], references: [id])
+  openAt          DateTime?
+  closeAt         DateTime?
+  config          Json                    @default("{}")
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  programs     AdmissionCampaignProgram[]
+  applications Application[]
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, name])
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@map("admission_campaigns")
+}
+
+model AdmissionCampaignProgram {
+  id            String            @id @default(cuid())
+  institutionId String
+  institution   Institution       @relation(fields: [institutionId], references: [id])
+  campaignId    String
+  campaign      AdmissionCampaign @relation(fields: [campaignId], references: [id])
+  programId     String
+  program       Program           @relation(fields: [programId], references: [id])
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, campaignId, programId])
+  @@index([institutionId])
+  @@index([institutionId, campaignId])
+  @@map("admission_campaign_programs")
+}
+
+model Application {
+  id                 String            @id @default(cuid())
+  institutionId      String
+  institution        Institution       @relation(fields: [institutionId], references: [id])
+  campaignId         String
+  campaign           AdmissionCampaign @relation(fields: [campaignId], references: [id])
+  applicantUserId    String
+  applicantUser      User              @relation("ApplicationApplicant", fields: [applicantUserId], references: [id])
+  programId          String
+  program            Program           @relation(fields: [programId], references: [id])
+  status             ApplicationStatus @default(DRAFT)
+  applicationNumber  String
+  submittedAt        DateTime?
+  withdrawnAt        DateTime?
+  rejectedAt         DateTime?
+  formData           Json              @default("{}")
+  interviewAt        DateTime?
+  applicationFeeRef  String?
+  applicationFeePaid Boolean           @default(false)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  documents   ApplicationDocument[]
+  reviews     ApplicationReview[]
+  offers      AdmissionOffer[]
+  enrollments Enrollment[]
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, applicationNumber])
+  @@unique([institutionId, campaignId, applicantUserId]) // one application per campaign per applicant
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@index([institutionId, campaignId, status])
+  @@index([institutionId, applicantUserId])
+  @@map("applications")
+}
+
+model ApplicationDocument {
+  id               String      @id @default(cuid())
+  institutionId    String
+  institution      Institution @relation(fields: [institutionId], references: [id])
+  applicationId    String
+  application      Application @relation(fields: [applicationId], references: [id])
+  docType          String
+  reference        String
+  fileName         String?
+  contentType      String?
+  verified         Boolean     @default(false)
+  verifiedByUserId String? // recorded actor id (no FK)
+  verifiedAt       DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, applicationId])
+  @@map("application_documents")
+}
+
+model ApplicationReview {
+  id             String                    @id @default(cuid())
+  institutionId  String
+  institution    Institution               @relation(fields: [institutionId], references: [id])
+  applicationId  String
+  application    Application               @relation(fields: [applicationId], references: [id])
+  reviewerUserId String // recorded actor id (no FK)
+  decision       ApplicationReviewDecision
+  notes          String?
+  reviewedAt     DateTime                  @default(now())
+  createdAt      DateTime                  @default(now())
+
+  // Append-only (NO updatedAt): INSERT-only RLS + REVOKE UPDATE,DELETE + a
+  // BEFORE UPDATE OR DELETE trigger are hand-authored in the migration
+  // (mirrors attendance_record_history / student_profile_history).
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, applicationId])
+  @@map("application_reviews")
+}
+
+model AdmissionOffer {
+  id               String               @id @default(cuid())
+  institutionId    String
+  institution      Institution          @relation(fields: [institutionId], references: [id])
+  applicationId    String
+  application      Application          @relation(fields: [applicationId], references: [id])
+  offeredProgramId String
+  offeredProgram   Program              @relation("OfferOfferedProgram", fields: [offeredProgramId], references: [id])
+  status           AdmissionOfferStatus @default(ISSUED)
+  offeredAt        DateTime             @default(now())
+  expiresAt        DateTime?
+  acceptedAt       DateTime?
+  declinedAt       DateTime?
+  expiredAt        DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  // Partial unique index `admission_offers_one_live_per_application` on
+  // (institutionId, applicationId) WHERE status IN ('ISSUED','ACCEPTED') — at
+  // most one live offer per application (design §5) — Prisma cannot express a
+  // partial index, so it is created as raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, applicationId])
+  @@index([institutionId, status])
+  @@map("admission_offers")
+}
+
+model Enrollment {
+  id                String          @id @default(cuid())
+  institutionId     String
+  institution       Institution     @relation(fields: [institutionId], references: [id])
+  applicationId     String
+  application       Application     @relation(fields: [applicationId], references: [id])
+  studentProfileId  String
+  studentProfile    StudentProfile  @relation(fields: [studentProfileId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  enrolledAt        DateTime        @default(now())
+  enrolledByUserId  String // recorded actor id (no FK)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, applicationId]) // one enrollment per application (idempotency backstop)
+  @@index([institutionId])
+  @@index([institutionId, studentProfileId])
+  @@index([institutionId, applicationId])
+  @@map("enrollments")
 }
