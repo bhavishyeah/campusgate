@@ -31,6 +31,8 @@ const TEMPLATE_ROLE_NAMES: Record<string, string> = {
   SUPER_ADMIN: "Super Admin",
   FACULTY: "Faculty",
   LIBRARIAN: "Librarian",
+  ADMISSION_OFFICER: "Admission Officer",
+  APPLICANT: "Applicant",
 };
 
 /**
@@ -932,6 +934,118 @@ async function main() {
     }
   }
 
+  // ─── Admissions: module ACTIVE + officer + OPEN campaign + applicant + app ──
+  // Mirrors the campus_movement / attendance / library module upserts so a fresh
+  // DB has the admissions module ACTIVE (admissions is a gated module; its
+  // operational routes carry requireModuleActive("admissions")). All upserts /
+  // find-first-then-create keyed on business uniques so re-running the seed never
+  // duplicates — and NO StudentProfile is created for the applicant (design §2:
+  // a profile is created only at enrollment).
+  await prisma.institutionModule.upsert({
+    where: { institutionId_moduleKey: { institutionId: institution.id, moduleKey: "admissions" } },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      moduleKey: "admissions",
+      state: "ACTIVE",
+      entitledAt: new Date(),
+      activatedAt: new Date(),
+    },
+  });
+  console.log("  ✓ admissions module entitled + activated for demo tenant");
+
+  // Admission-officer user (legacy role = GUARD, the inert non-actor value per
+  // the FACULTY/LIBRARIAN precedent — capability comes from the ADMISSION_OFFICER
+  // membership role, not the enum). No profile table.
+  const officerPassword = await bcrypt.hash("officer123", 12);
+  const officerUser = await prisma.user.upsert({
+    where: { email: "admissions@demo.edu" },
+    update: {},
+    create: {
+      email: "admissions@demo.edu",
+      passwordHash: officerPassword,
+      role: "GUARD",
+      accountStatus: "ACTIVE",
+      institutionId: institution.id,
+    },
+  });
+  await ensureMembership(officerUser.id, officerUser.institutionId, "ADMISSION_OFFICER", roleIdByKey);
+  console.log("  ✓ Admission officer created (admissions@demo.edu / officer123) + ADMISSION_OFFICER role");
+
+  // One OPEN AdmissionCampaign targeting the seeded BCA program + the ACTIVE
+  // 2026-2027 intake session. Minimal config (one required field + one required
+  // doc type). Keyed on the (institutionId, name) business unique.
+  const demoCampaign = await prisma.admissionCampaign.upsert({
+    where: {
+      institutionId_name: { institutionId: institution.id, name: "BCA Admissions 2026-2027" },
+    },
+    update: {},
+    create: {
+      institutionId: institution.id,
+      name: "BCA Admissions 2026-2027",
+      status: "OPEN",
+      intakeSessionId: session.id,
+      targetProgramId: bcaProgram.id,
+      openAt: new Date("2026-05-01"),
+      closeAt: new Date("2026-06-30"),
+      config: { requiredFields: ["fullName"], requiredDocTypes: ["TRANSCRIPT"] },
+    },
+  });
+  // Ensure the join row for the target program (idempotent on the composite unique).
+  const existingCampaignProgram = await prisma.admissionCampaignProgram.findFirst({
+    where: { institutionId: institution.id, campaignId: demoCampaign.id, programId: bcaProgram.id },
+  });
+  if (!existingCampaignProgram) {
+    await prisma.admissionCampaignProgram.create({
+      data: { institutionId: institution.id, campaignId: demoCampaign.id, programId: bcaProgram.id },
+    });
+  }
+  console.log("  ✓ OPEN AdmissionCampaign 'BCA Admissions 2026-2027' created (BCA, 2026-2027 intake)");
+
+  // Applicant identity: a User (role STUDENT inert) + ACTIVE membership + the
+  // APPLICANT membership role. NO StudentProfile (design §1/§2). The applicant
+  // display name travels on the Application.formData, not on the User.
+  const applicantPassword = await bcrypt.hash("applicant123", 12);
+  const applicantUser = await prisma.user.upsert({
+    where: { email: "applicant@demo.edu" },
+    update: {},
+    create: {
+      email: "applicant@demo.edu",
+      passwordHash: applicantPassword,
+      role: "STUDENT",
+      accountStatus: "ACTIVE",
+      institutionId: institution.id,
+    },
+  });
+  await ensureMembership(applicantUser.id, applicantUser.institutionId, "APPLICANT", roleIdByKey);
+  console.log("  ✓ Applicant identity created (applicant@demo.edu / applicant123) + APPLICANT role, NO StudentProfile");
+
+  // One mid-lifecycle Application (UNDER_REVIEW) by the applicant into the demo
+  // campaign + BCA program. Keyed on the (institutionId, campaignId,
+  // applicantUserId) business unique so re-runs never duplicate.
+  const existingApplication = await prisma.application.findFirst({
+    where: {
+      institutionId: institution.id,
+      campaignId: demoCampaign.id,
+      applicantUserId: applicantUser.id,
+    },
+  });
+  if (!existingApplication) {
+    await prisma.application.create({
+      data: {
+        institutionId: institution.id,
+        campaignId: demoCampaign.id,
+        applicantUserId: applicantUser.id,
+        programId: bcaProgram.id,
+        status: "UNDER_REVIEW",
+        applicationNumber: "APP-DEMO-0001",
+        submittedAt: new Date("2026-05-10"),
+        formData: { fullName: "Asha Patel" },
+      },
+    });
+  }
+  console.log("  ✓ Demo Application (UNDER_REVIEW, APP-DEMO-0001) created for applicant, NO StudentProfile");
+
   console.log("\n✅ Seed completed successfully!");
   console.log("\n📋 Login credentials:");
   console.log("   Admin:     admin@demo.edu / admin123");
@@ -939,6 +1053,8 @@ async function main() {
   console.log("   Guard:     guard@demo.edu / guard123");
   console.log("   Faculty:   faculty.cs@demo.edu / faculty123");
   console.log("   Librarian: librarian@demo.edu / library123");
+  console.log("   Officer:   admissions@demo.edu / officer123");
+  console.log("   Applicant: applicant@demo.edu / applicant123");
   console.log("   Student:   bhavishya@demo.edu / student123");
   console.log("   Super:     superadmin@campusgate.local / superadmin123");
 }
