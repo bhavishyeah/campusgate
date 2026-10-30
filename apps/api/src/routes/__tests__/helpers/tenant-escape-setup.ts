@@ -152,6 +152,22 @@ export interface SeededTenant {
   applicationDocumentId: string;
   admissionOfferId: string;
   enrollmentId: string;
+  // FEAT-004 (Phase-7 fees slice 1) tables (design §D.2/§D.3/§D.4). The four
+  // mutable/guarded tables are seeded here: a FeeStructure + FeeComponent, a
+  // StudentCharge on the ALREADY-seeded studentProfile, and a
+  // payment_transactions CREATED row with a targetChargeIds array. The three
+  // fully-append-only tables (payment_allocations, receipts,
+  // processed_webhook_events) are DELIBERATELY NOT seeded here — their BEFORE
+  // UPDATE OR DELETE trigger blocks even adminClient in the shared teardown (the
+  // application_reviews / student_profile_history precedent); their append-only
+  // behaviour is proven by the self-contained cases in the escape suite + the
+  // fees-behavioral suite. The payment_transactions + student_charges
+  // column-guard triggers forbid DELETE unconditionally, so those two are
+  // deleted in teardown within a scoped trigger-disable (the audit_events dance).
+  feeStructureId: string;
+  feeComponentId: string;
+  studentChargeId: string;
+  paymentTransactionId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -237,6 +253,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const applicationDocumentId = id(`appdoc_${key}`);
   const admissionOfferId = id(`offer_${key}`);
   const enrollmentId = id(`enr_${key}`);
+  // FEAT-004 fees IDs (deterministic so cleanup is exact).
+  const feeStructureId = id(`feestruct_${key}`);
+  const feeComponentId = id(`feecomp_${key}`);
+  const studentChargeId = id(`charge_${key}`);
+  const paymentTransactionId = id(`paytxn_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -744,6 +765,71 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // FEAT-004 Phase-7 fees MUTABLE/GUARDED tables (design §D.2). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: structure -> component; a StudentCharge referencing the
+  // ALREADY-seeded studentProfile (single-identity composite FK) + the structure
+  // + component; a payment_transactions CREATED row (non-terminal) referencing
+  // the same student, carrying targetChargeIds = [the charge]. The three fully
+  // append-only tables (payment_allocations, receipts, processed_webhook_events)
+  // are DELIBERATELY NOT seeded here — their BEFORE UPDATE OR DELETE trigger
+  // blocks even adminClient in the shared teardown; their append-only behaviour
+  // is proven by the self-contained cases. The CREATED payment_transactions row
+  // and the PENDING student_charge are deletable in teardown only with their
+  // column-guard triggers disabled (those triggers forbid DELETE
+  // unconditionally), so teardown does that dance (the audit_events precedent).
+  await adminClient.feeStructure.create({
+    data: {
+      id: feeStructureId,
+      institutionId,
+      name: `${PREFIX}Fee Structure ${key}`,
+      status: "ACTIVE",
+      programId,
+      academicSessionId,
+    },
+  });
+
+  await adminClient.feeComponent.create({
+    data: {
+      id: feeComponentId,
+      institutionId,
+      feeStructureId,
+      category: "TUITION",
+      amountPaise: 5000000n, // ₹50,000
+      currency: "INR",
+    },
+  });
+
+  await adminClient.studentCharge.create({
+    data: {
+      id: studentChargeId,
+      institutionId,
+      studentId: studentProfileId,
+      feeStructureId,
+      feeComponentId,
+      category: "TUITION",
+      amountPaise: 5000000n,
+      currency: "INR",
+      description: `${PREFIX}Tuition ${key}`,
+      status: "PENDING",
+      postedByUserId: userId,
+    },
+  });
+
+  await adminClient.paymentTransaction.create({
+    data: {
+      id: paymentTransactionId,
+      institutionId,
+      studentId: studentProfileId,
+      amountPaise: 5000000n,
+      currency: "INR",
+      status: "CREATED", // non-terminal; teardown deletes it with the guard trigger disabled
+      razorpayOrderId: id(`order_${key}`),
+      targetChargeIds: [studentChargeId],
+      initiatedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -784,6 +870,10 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     applicationDocumentId,
     admissionOfferId,
     enrollmentId,
+    feeStructureId,
+    feeComponentId,
+    studentChargeId,
+    paymentTransactionId,
   };
 }
 
@@ -797,6 +887,43 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // FEAT-004 Phase-7 fees tables FIRST (child -> parent), BEFORE the
+  // student_profiles / programs / academic_sessions deletes below (their
+  // composite FKs are ON DELETE RESTRICT). The three fully append-only tables
+  // (payment_allocations, receipts, processed_webhook_events) are never seeded by
+  // the escape setup, so there is nothing to delete here for them (their
+  // self-contained cases manage their own rows within a scoped trigger-disable).
+  // payment_transactions + student_charges carry column-guard triggers that
+  // forbid DELETE unconditionally, so delete them with those triggers disabled
+  // (the audit_events / student_profile_history dance). Order: payment_transactions
+  // -> student_charges -> fee_components -> fee_structures.
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(
+      `ALTER TABLE "payment_transactions" DISABLE TRIGGER "payment_transactions_guard"`,
+    ),
+  );
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(
+      `ALTER TABLE "student_charges" DISABLE TRIGGER "student_charges_guard"`,
+    ),
+  );
+  try {
+    await withRetry(() => adminClient.paymentTransaction.deleteMany({ where }));
+    await withRetry(() => adminClient.studentCharge.deleteMany({ where }));
+  } finally {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(
+        `ALTER TABLE "payment_transactions" ENABLE TRIGGER "payment_transactions_guard"`,
+      ),
+    );
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(
+        `ALTER TABLE "student_charges" ENABLE TRIGGER "student_charges_guard"`,
+      ),
+    );
+  }
+  await withRetry(() => adminClient.feeComponent.deleteMany({ where }));
+  await withRetry(() => adminClient.feeStructure.deleteMany({ where }));
   // Phase-6 admissions tables FIRST (child -> parent): enrollments + offers +
   // documents + campaign_programs (leaves) -> applications -> campaigns, all
   // BEFORE the student_profiles / programs / academic_sessions deletes below
@@ -908,6 +1035,13 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // FEAT-004 Phase-7 fees MUTABLE/GUARDED tables (the three fully append-only
+    // tables are never seeded by the generic loop, so they are not counted — the
+    // application_reviews precedent). Counted SEQUENTIALLY (session-pooler cap).
+    () => adminClient.paymentTransaction.count({ where }),
+    () => adminClient.studentCharge.count({ where }),
+    () => adminClient.feeComponent.count({ where }),
+    () => adminClient.feeStructure.count({ where }),
     // Phase-6 admissions MUTABLE tables (application_reviews is append-only and
     // never seeded by the generic loop, so it is not counted — the
     // schedule_revisions precedent). Counted SEQUENTIALLY (session-pooler cap).
@@ -1043,6 +1177,20 @@ export const RLS_TABLES = [
   "admission_offers",
   "enrollments",
   "application_reviews",
+  // FEAT-004 Phase-7 fees tables (design §D.2/§D.3/§D.4). The four
+  // mutable/guarded tables (fee_structures, fee_components, student_charges,
+  // payment_transactions) use the default modify pair — the column-guard triggers
+  // on student_charges/payment_transactions enforce immutability at the row level,
+  // NOT via an append-only RLS policy, so they still carry tenant_isolation_modify.
+  // The three fully INSERT-only tables (payment_allocations, receipts,
+  // processed_webhook_events) are append-only (EXPECTED_POLICIES).
+  "fee_structures",
+  "fee_components",
+  "student_charges",
+  "payment_transactions",
+  "payment_allocations",
+  "receipts",
+  "processed_webhook_events",
 ] as const;
 
 /**
@@ -1088,6 +1236,19 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   application_reviews: [
     "tenant_isolation_select",
     "application_reviews_tenant_insert",
+  ],
+  // FEAT-004: the three fully INSERT-only fees tables are append-only (design
+  // §D.3) — the SELECT + INSERT pair, NO modify policy. The four
+  // mutable/guarded fees tables are deliberately ABSENT here so they fall through
+  // to DEFAULT_POLICIES (the standard pair).
+  payment_allocations: [
+    "tenant_isolation_select",
+    "payment_allocations_tenant_insert",
+  ],
+  receipts: ["tenant_isolation_select", "receipts_tenant_insert"],
+  processed_webhook_events: [
+    "tenant_isolation_select",
+    "processed_webhook_events_tenant_insert",
   ],
 };
 

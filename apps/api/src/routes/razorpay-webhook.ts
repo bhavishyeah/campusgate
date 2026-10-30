@@ -78,20 +78,18 @@ export async function razorpayWebhookRoutes(
     const eventId = request.headers["x-razorpay-event-id"] as string | undefined;
 
     // (a) Verify HMAC over the raw Buffer BEFORE any DB access. Bad/absent →
-    //     401, write nothing authoritative (a privileged audit only).
+    //     401. There is NO tenant and NO payer here, so there is no valid audit
+    //     actor (audit_events.actorUserId FKs users(id) — a literal "system"
+    //     would violate it). Record the rejection as a structured server log
+    //     instead of a DB audit (Option A §2); nothing authoritative is written.
     if (
       !Buffer.isBuffer(rawBody) ||
       !gateway.verifyWebhookSignature(rawBody, signature)
     ) {
-      await recordAuditEvent({
-        action: "fees.webhook.signature_rejected",
-        result: "DENIED",
-        actorUserId: "system",
-        actorRoleKey: "SYSTEM",
-        institutionId: null,
-        resourceType: "ProcessedWebhookEvent",
-        metadata: { reason: "invalid or absent signature" },
-      }).catch(() => {});
+      request.log.warn(
+        { reason: "invalid or absent signature" },
+        "razorpay webhook: signature rejected",
+      );
       return reply.status(401).send({ error: "invalid signature" });
     }
 
@@ -127,19 +125,27 @@ export async function razorpayWebhookRoutes(
       select: { id: true, institutionId: true, status: true },
     });
     if (!txRow) {
-      request.log.warn({ razorpayOrderId }, "razorpay webhook: unknown order");
-      await recordAuditEvent({
-        action: "fees.webhook.received",
-        result: "DENIED",
-        actorUserId: "system",
-        actorRoleKey: "SYSTEM",
-        institutionId: null,
-        resourceType: "ProcessedWebhookEvent",
-        metadata: { reason: "unknown order", razorpayOrderId, eventType },
-      }).catch(() => {});
+      // Unattributable (no transaction row) → no tenant and no payer, so there is
+      // no valid audit actor. Record a structured log, not a DB audit (Option A
+      // §2), and 200 so Razorpay stops retrying an event we cannot place.
+      request.log.warn(
+        { reason: "unknown order", razorpayOrderId, eventType },
+        "razorpay webhook: unknown order",
+      );
       return reply.status(200).send({ status: "ignored", reason: "unknown order" });
     }
     const resolvedInstitutionId = txRow.institutionId;
+
+    // Resolve the PAYER's User id for the resolved transaction — the real audit
+    // actor for any webhook audit under this tenant (Option A §1). Uses the
+    // owner-role lookup client (no tenant GUC yet). studentId is a StudentProfile
+    // id, so join to its userId; fall back to the initiating user.
+    const payerRow = await lookupClient.paymentTransaction.findFirst({
+      where: { id: txRow.id },
+      select: { initiatedByUserId: true, student: { select: { userId: true } } },
+    });
+    const payerUserId: string | null =
+      payerRow?.student?.userId ?? payerRow?.initiatedByUserId ?? null;
 
     // Only payment.captured / order.paid are terminal-capture events; anything
     // else is acknowledged as a no-op.
@@ -152,15 +158,26 @@ export async function razorpayWebhookRoutes(
       select: { state: true },
     });
     if (!moduleRow || moduleRow.state !== "ACTIVE") {
-      await recordAuditEvent({
-        action: "fees.webhook.skipped_module_inactive",
-        result: "DENIED",
-        actorUserId: "system",
-        actorRoleKey: "SYSTEM",
-        institutionId: resolvedInstitutionId,
-        resourceType: "ProcessedWebhookEvent",
-        metadata: { razorpayOrderId, eventType, state: moduleRow?.state ?? "NOT_ENTITLED" },
-      }).catch(() => {});
+      // Audited under the resolved payer's User id (Option A §1). If no payer
+      // resolves (data anomaly), fall back to a structured log rather than a
+      // FK-violating "system" actor.
+      if (payerUserId) {
+        await recordAuditEvent({
+          action: "fees.webhook.skipped_module_inactive",
+          result: "DENIED",
+          actorUserId: payerUserId,
+          actorRoleKey: "STUDENT",
+          institutionId: resolvedInstitutionId,
+          resourceType: "ProcessedWebhookEvent",
+          resourceId: txRow.id,
+          metadata: { razorpayOrderId, eventType, state: moduleRow?.state ?? "NOT_ENTITLED" },
+        }).catch(() => {});
+      } else {
+        request.log.warn(
+          { razorpayOrderId, eventType, state: moduleRow?.state ?? "NOT_ENTITLED" },
+          "razorpay webhook: skipped (module inactive), no payer actor to audit",
+        );
+      }
       return reply.status(200).send({ status: "ignored", reason: "module inactive" });
     }
 
@@ -188,19 +205,28 @@ export async function razorpayWebhookRoutes(
         }
 
         if (!isCaptureEvent) {
-          await recordAuditEvent(
-            {
-              action: "fees.webhook.received",
-              result: "SUCCESS",
-              actorUserId: "system",
-              actorRoleKey: "SYSTEM",
-              institutionId: resolvedInstitutionId,
-              resourceType: "ProcessedWebhookEvent",
-              resourceId: txRow.id,
-              metadata: { eventType, razorpayOrderId },
-            },
-            tx,
-          );
+          // Non-capture event acknowledgement — audited under the payer (Option
+          // A §1); skip best-effort if no payer resolved.
+          if (payerUserId) {
+            await recordAuditEvent(
+              {
+                action: "fees.webhook.received",
+                result: "SUCCESS",
+                actorUserId: payerUserId,
+                actorRoleKey: "STUDENT",
+                institutionId: resolvedInstitutionId,
+                resourceType: "ProcessedWebhookEvent",
+                resourceId: txRow.id,
+                metadata: { eventType, razorpayOrderId },
+              },
+              tx,
+            );
+          } else {
+            request.log.warn(
+              { eventType, razorpayOrderId },
+              "razorpay webhook: received non-capture event, no payer actor to audit",
+            );
+          }
           return { noop: true as const };
         }
 
@@ -215,36 +241,55 @@ export async function razorpayWebhookRoutes(
             razorpayOrderId: true,
             razorpayPaymentId: true,
             targetChargeIds: true,
+            initiatedByUserId: true,
           },
         });
         if (!transaction) return { noop: true as const };
 
-        // (3)–(8) Shared idempotent capture routine.
+        // (3)–(8) Shared idempotent capture routine. confirmCapture OWNS the
+        // audit-actor resolution (the payer's User id, Option A §1); the actor
+        // below is only the last-resort fallback it uses when no payer/initiator
+        // resolves (and in that case the capture still commits, audit skipped).
         const confirm = await confirmCapture(tx, {
           institutionId: resolvedInstitutionId,
           transaction,
           razorpayPaymentId,
           actor: {
-            actorUserId: "system",
-            actorRoleKey: "SYSTEM",
+            actorUserId: payerUserId ?? transaction.initiatedByUserId ?? "system",
+            actorRoleKey: "STUDENT",
             actorMembershipId: null,
             requestRef: request.id,
           },
           captureAuditAction: "fees.payment.captured",
         });
+        if (confirm.auditSkipped) {
+          request.log.warn(
+            { razorpayOrderId, transactionId: transaction.id },
+            "razorpay webhook: capture committed but audit skipped (no resolvable payer actor)",
+          );
+        }
         return { captured: confirm.captured, receiptNumber: confirm.receiptNumber };
       });
 
       if ("duplicate" in result) {
-        await recordAuditEvent({
-          action: "fees.webhook.duplicate_ignored",
-          result: "SUCCESS",
-          actorUserId: "system",
-          actorRoleKey: "SYSTEM",
-          institutionId: resolvedInstitutionId,
-          resourceType: "ProcessedWebhookEvent",
-          metadata: { eventId, razorpayOrderId, eventType },
-        }).catch(() => {});
+        // Audited under the resolved payer (Option A §1); skip best-effort if none.
+        if (payerUserId) {
+          await recordAuditEvent({
+            action: "fees.webhook.duplicate_ignored",
+            result: "SUCCESS",
+            actorUserId: payerUserId,
+            actorRoleKey: "STUDENT",
+            institutionId: resolvedInstitutionId,
+            resourceType: "ProcessedWebhookEvent",
+            resourceId: txRow.id,
+            metadata: { eventId, razorpayOrderId, eventType },
+          }).catch(() => {});
+        } else {
+          request.log.warn(
+            { eventId, razorpayOrderId, eventType },
+            "razorpay webhook: duplicate ignored, no payer actor to audit",
+          );
+        }
         return reply.status(200).send({ status: "duplicate" });
       }
       return reply.status(200).send({ status: "ok" });

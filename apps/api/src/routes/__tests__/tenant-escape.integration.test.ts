@@ -1611,6 +1611,333 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── FEAT-004 Phase-7 fees tables (design §D.2/§D.3/§D.4) ──────────────────
+  // fee_structures / fee_components / student_charges / payment_transactions (the
+  // four mutable/guarded tables): cross-tenant read denied, spoofed/cross-tenant
+  // write denied, foreign-parent composite-FK violation, buggy-query backstop,
+  // three-GUC-state fail-closed. The three fully append-only tables
+  // (payment_allocations, receipts, processed_webhook_events) are covered by
+  // their own self-contained cases (3fj) + the policy meta-test — they are NOT
+  // seeded in the shared setup (their trigger blocks the shared teardown).
+
+  it("3fa. fees read escape: tenant A cannot see tenant B's fee rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const structure = await withTenant(A.institutionId, (tx) =>
+      tx.feeStructure.findUnique({ where: { id: B.feeStructureId } }),
+    );
+    expect(structure).toBeNull();
+
+    const component = await withTenant(A.institutionId, (tx) =>
+      tx.feeComponent.findUnique({ where: { id: B.feeComponentId } }),
+    );
+    expect(component).toBeNull();
+
+    const charge = await withTenant(A.institutionId, (tx) =>
+      tx.studentCharge.findUnique({ where: { id: B.studentChargeId } }),
+    );
+    expect(charge).toBeNull();
+
+    const txn = await withTenant(A.institutionId, (tx) =>
+      tx.paymentTransaction.findUnique({ where: { id: B.paymentTransactionId } }),
+    );
+    expect(txn).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownStructures = await withTenant(A.institutionId, (tx) => tx.feeStructure.findMany({}));
+    expect(ownStructures.length).toBeGreaterThan(0);
+    for (const row of ownStructures) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.feeStructureId);
+    }
+  }, 60_000);
+
+  it("3fb. fees spoofed insert: A cannot stamp a fee structure institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.feeStructure.create({
+          data: {
+            id: `${PREFIX}SPOOF_FEESTRUCT`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            name: `${PREFIX}SPOOF Structure`,
+            status: "ACTIVE",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3fc. fees foreign-parent: A cannot create a component referencing B's structure", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, feeStructureId) makes it
+    // physically impossible to reference B's structure under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.feeComponent.create({
+          data: {
+            id: `${PREFIX}FOREIGN_FEECOMP`,
+            institutionId: A.institutionId,
+            feeStructureId: B.feeStructureId, // B's structure under A's tenant
+            category: "LAB",
+            amountPaise: 100000n,
+            currency: "INR",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3fd. fees foreign-parent: A cannot post a charge referencing B's student", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // student_charges.(institutionId, studentId) composite FK forbids charging
+    // another tenant's student — the single-identity guarantee (design §D.2).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.studentCharge.create({
+          data: {
+            id: `${PREFIX}FOREIGN_CHARGE`,
+            institutionId: A.institutionId,
+            studentId: B.studentProfileId, // B's student under A's tenant
+            category: "TUITION",
+            amountPaise: 100000n,
+            currency: "INR",
+            description: `${PREFIX}foreign-parent charge`,
+            status: "PENDING",
+            postedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3fe. fees spoofed update: A cannot flip B's fee structure to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's structure under A's context: RLS makes B's row invisible to A,
+    // so the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.feeStructure.updateMany({
+        where: { id: B.feeStructureId },
+        data: { status: "ARCHIVED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.feeStructure.findUnique({ where: { id: B.feeStructureId } });
+    expect(bRow!.status).toBe("ACTIVE");
+  }, 60_000);
+
+  it("3ff2. fees buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const components = await withTenant(A.institutionId, (tx) => tx.feeComponent.findMany({}));
+    for (const r of components) expect(r.institutionId).toBe(A.institutionId);
+    expect(components.some((r: { id: string }) => r.id === B.feeComponentId)).toBe(false);
+
+    const charges = await withTenant(A.institutionId, (tx) => tx.studentCharge.findMany({}));
+    for (const r of charges) expect(r.institutionId).toBe(A.institutionId);
+    expect(charges.some((r: { id: string }) => r.id === B.studentChargeId)).toBe(false);
+
+    const txns = await withTenant(A.institutionId, (tx) => tx.paymentTransaction.findMany({}));
+    for (const r of txns) expect(r.institutionId).toBe(A.institutionId);
+    expect(txns.some((r: { id: string }) => r.id === B.paymentTransactionId)).toBe(false);
+
+    const aCount = await adminClient.studentCharge.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(charges.length).toBe(aCount);
+  }, 60_000);
+
+  it("3fg. fees fail-closed: unset / empty-string GUC yield zero rows for every mutable table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetStructures = await appClient.feeStructure.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetStructures.length).toBe(0);
+    const unsetTxns = await appClient.paymentTransaction.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetTxns.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all four tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const s = await tx.feeStructure.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const c = await tx.feeComponent.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const ch = await tx.studentCharge.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const t = await tx.paymentTransaction.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return s.length + c.length + ch.length + t.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.feeStructure.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.feeStructureId)).toBe(true);
+  }, 60_000);
+
+  it("3fj. fees append-only tables (self-contained, one tenant): insert OK via webhook path cols, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the application_reviews / schedule_revisions cases +
+    // the audit_events precedent): INSERT one row into EACH of the three fully
+    // append-only fees tables under A (a plain INSERT does NOT trip the BEFORE
+    // UPDATE OR DELETE trigger, and satisfies the <table>_tenant_insert policy),
+    // assert campass_app can read each under A, assert B's context cannot see them
+    // (tenant isolation), then assert UPDATE and DELETE are BOTH denied (REVOKE +
+    // trigger -> restrict_violation). The rows are removed here within THIS test's
+    // own trigger-disable scope so the shared teardown is not blocked. This is the
+    // ONLY place the escape suite touches these three tables.
+    const allocId = `${PREFIX}ALLOC_A`;
+    const receiptId = `${PREFIX}RECEIPT_A`;
+    const eventId = `${PREFIX}PWE_A`;
+
+    // payment_allocations references the seeded payment_transactions + student_charge.
+    await withTenant(A.institutionId, (tx) =>
+      tx.paymentAllocation.create({
+        data: {
+          id: allocId,
+          institutionId: A.institutionId,
+          paymentTransactionId: A.paymentTransactionId,
+          studentChargeId: A.studentChargeId,
+          amountPaise: 100000n,
+          currency: "INR",
+        },
+      }),
+    );
+    // receipts references the seeded payment_transactions.
+    await withTenant(A.institutionId, (tx) =>
+      tx.receipt.create({
+        data: {
+          id: receiptId,
+          institutionId: A.institutionId,
+          paymentTransactionId: A.paymentTransactionId,
+          receiptNumber: `${PREFIX}RCPT_A`,
+          sequence: 1,
+          amountPaise: 100000n,
+          currency: "INR",
+        },
+      }),
+    );
+    // processed_webhook_events (the idempotency ledger). razorpayEventId has a
+    // GLOBAL unique, so use the PREFIX-scoped id to avoid collisions.
+    await withTenant(A.institutionId, (tx) =>
+      tx.processedWebhookEvent.create({
+        data: {
+          id: eventId,
+          institutionId: A.institutionId,
+          razorpayEventId: `${PREFIX}evt_A`,
+          eventType: "payment.captured",
+          paymentTransactionId: A.paymentTransactionId,
+        },
+      }),
+    );
+
+    // Readable by campass_app under A's context.
+    expect(
+      await withTenant(A.institutionId, (tx) =>
+        tx.paymentAllocation.findUnique({ where: { id: allocId } }),
+      ),
+    ).toBeTruthy();
+    expect(
+      await withTenant(A.institutionId, (tx) => tx.receipt.findUnique({ where: { id: receiptId } })),
+    ).toBeTruthy();
+    expect(
+      await withTenant(A.institutionId, (tx) =>
+        tx.processedWebhookEvent.findUnique({ where: { id: eventId } }),
+      ),
+    ).toBeTruthy();
+
+    // Cross-tenant SELECT from B's context returns empty (tenant isolation).
+    expect(
+      await withTenant(B.institutionId, (tx) =>
+        tx.paymentAllocation.findUnique({ where: { id: allocId } }),
+      ),
+    ).toBeNull();
+    expect(
+      await withTenant(B.institutionId, (tx) => tx.receipt.findUnique({ where: { id: receiptId } })),
+    ).toBeNull();
+    expect(
+      await withTenant(B.institutionId, (tx) =>
+        tx.processedWebhookEvent.findUnique({ where: { id: eventId } }),
+      ),
+    ).toBeNull();
+
+    // UPDATE + DELETE denied on all three (REVOKE + the BEFORE UPDATE OR DELETE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.paymentAllocation.update({ where: { id: allocId }, data: { amountPaise: 1n } }),
+      ),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.paymentAllocation.delete({ where: { id: allocId } }),
+      ),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.receipt.update({ where: { id: receiptId }, data: { amountPaise: 1n } }),
+      ),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.receipt.delete({ where: { id: receiptId } })),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.processedWebhookEvent.update({ where: { id: eventId }, data: { eventType: "x" } }),
+      ),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.processedWebhookEvent.delete({ where: { id: eventId } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // The rows survived every attempt.
+    expect(await adminClient.paymentAllocation.findUnique({ where: { id: allocId } })).toBeTruthy();
+    expect(await adminClient.receipt.findUnique({ where: { id: receiptId } })).toBeTruthy();
+    expect(
+      await adminClient.processedWebhookEvent.findUnique({ where: { id: eventId } }),
+    ).toBeTruthy();
+
+    // Clean up these suite-local rows within a scoped trigger-disable so the
+    // shared teardown's payment_transactions/student_charges deletes are not
+    // blocked by a lingering append-only child row.
+    for (const table of [
+      "payment_allocations",
+      "receipts",
+      "processed_webhook_events",
+    ] as const) {
+      const trigger = `${table}_no_update_delete`;
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+    }
+    try {
+      await adminClient.paymentAllocation.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.receipt.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.processedWebhookEvent.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+    } finally {
+      for (const table of [
+        "payment_allocations",
+        "receipts",
+        "processed_webhook_events",
+      ] as const) {
+        const trigger = `${table}_no_update_delete`;
+        await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+      }
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -1700,6 +2027,16 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // FEAT-004: application_reviews joins the append-only set (design §5) —
       // INSERT-only policy + REVOKE + trigger, NO modify policy.
       "application_reviews",
+      // FEAT-004 Phase-7 fees: the three fully INSERT-only tables join the
+      // append-only set (design §D.3) — INSERT-only policy + REVOKE + trigger, NO
+      // modify policy. The four mutable/guarded fees tables (fee_structures,
+      // fee_components, student_charges, payment_transactions) are NOT here — they
+      // carry the standard modify pair (the column-guard triggers enforce
+      // immutability at the row level, not via RLS), asserted by the
+      // EXPECTED_POLICIES/DEFAULT_POLICIES loop above.
+      "payment_allocations",
+      "receipts",
+      "processed_webhook_events",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

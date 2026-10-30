@@ -41,6 +41,8 @@ export interface ConfirmCaptureInput {
     razorpayOrderId: string;
     razorpayPaymentId: string | null;
     targetChargeIds: string[];
+    /** The initiating User id (Stage-1 order creator) — audit-actor fallback. */
+    initiatedByUserId?: string | null;
   };
   /** The captured payment id from the authoritative source (webhook/Razorpay). */
   razorpayPaymentId: string | null;
@@ -57,18 +59,44 @@ export interface ConfirmCaptureResult {
   receiptId?: string;
   receiptNumber?: string;
   allocatedPaise?: string;
+  /** True when the capture audit was skipped (no resolvable payer/initiator). */
+  auditSkipped?: boolean;
 }
 
 export async function confirmCapture(
   tx: Prisma.TransactionClient,
   input: ConfirmCaptureInput,
 ): Promise<ConfirmCaptureResult> {
-  const { institutionId, transaction, actor } = input;
+  const { institutionId, transaction } = input;
 
   // (3) Already CAPTURED → idempotent no-op.
   if (transaction.status === "CAPTURED") {
     return { captured: false, reason: "already_captured" };
   }
+
+  // Resolve the PAYER's User id up-front (NIT-1: studentId is a StudentProfile
+  // id, not a User id). This single resolution is reused as (a) the audit actor
+  // — a system-initiated webhook/reconcile records the capture under the payer's
+  // real User id, never a literal "system" that FK-violates audit_events — and
+  // (b) the notify recipient (step 8). FEAT-002 passed actorUserId:"system",
+  // which has no users(id) row, rolling back every real capture; resolving the
+  // payer here fixes that in place without weakening the audit FK (Option A).
+  const payerProfile = await tx.studentProfile.findFirst({
+    where: { id: transaction.studentId, institutionId },
+    select: { userId: true },
+  });
+  // Fall back to the initiating user if the profile has no linked user (should
+  // not happen for a payer-initiated charge, but money capture must NEVER fail
+  // on an audit-actor gap). If neither resolves, the audit is best-effort (skip
+  // with a warning) rather than a rollback.
+  const auditActorUserId =
+    payerProfile?.userId ?? transaction.initiatedByUserId ?? null;
+  const actor: ConfirmActor = {
+    actorUserId: auditActorUserId ?? input.actor.actorUserId,
+    actorRoleKey: payerProfile?.userId ? "STUDENT" : input.actor.actorRoleKey,
+    actorMembershipId: input.actor.actorMembershipId ?? null,
+    requestRef: input.actor.requestRef ?? null,
+  };
 
   const now = new Date();
 
@@ -161,51 +189,51 @@ export async function confirmCapture(
     },
   });
 
-  // (7) Audit capture + receipt issuance in-tx.
-  await recordAuditEvent(
-    {
-      action: input.captureAuditAction,
-      result: "SUCCESS",
-      actorUserId: actor.actorUserId,
-      actorRoleKey: actor.actorRoleKey,
-      actorMembershipId: actor.actorMembershipId ?? null,
-      requestRef: actor.requestRef ?? null,
-      institutionId,
-      resourceType: "PaymentTransaction",
-      resourceId: transaction.id,
-      metadata: {
-        razorpayOrderId: transaction.razorpayOrderId,
-        allocatedPaise: plan.allocatedTotal.toString(),
-        amountPaise: transaction.amountPaise.toString(),
+  // (7) Audit capture + receipt issuance in-tx — under the PAYER's real User id.
+  //     If no actor resolved (no payer user + no initiator — a data anomaly), the
+  //     audit is skipped best-effort rather than rolling back a captured payment
+  //     on an audit-actor gap (Option A). A warning is left by the caller.
+  if (auditActorUserId) {
+    await recordAuditEvent(
+      {
+        action: input.captureAuditAction,
+        result: "SUCCESS",
+        actorUserId: actor.actorUserId,
+        actorRoleKey: actor.actorRoleKey,
+        actorMembershipId: actor.actorMembershipId ?? null,
+        requestRef: actor.requestRef ?? null,
+        institutionId,
+        resourceType: "PaymentTransaction",
+        resourceId: transaction.id,
+        metadata: {
+          razorpayOrderId: transaction.razorpayOrderId,
+          allocatedPaise: plan.allocatedTotal.toString(),
+          amountPaise: transaction.amountPaise.toString(),
+        },
       },
-    },
-    tx,
-  );
-  await recordAuditEvent(
-    {
-      action: "fees.receipt.issued",
-      result: "SUCCESS",
-      actorUserId: actor.actorUserId,
-      actorRoleKey: actor.actorRoleKey,
-      actorMembershipId: actor.actorMembershipId ?? null,
-      requestRef: actor.requestRef ?? null,
-      institutionId,
-      resourceType: "Receipt",
-      resourceId: receipt.id,
-      metadata: { receiptNumber, amountPaise: transaction.amountPaise.toString() },
-    },
-    tx,
-  );
+      tx,
+    );
+    await recordAuditEvent(
+      {
+        action: "fees.receipt.issued",
+        result: "SUCCESS",
+        actorUserId: actor.actorUserId,
+        actorRoleKey: actor.actorRoleKey,
+        actorMembershipId: actor.actorMembershipId ?? null,
+        requestRef: actor.requestRef ?? null,
+        institutionId,
+        resourceType: "Receipt",
+        resourceId: receipt.id,
+        metadata: { receiptNumber, amountPaise: transaction.amountPaise.toString() },
+      },
+      tx,
+    );
+  }
 
-  // (8) Resolve the recipient User id from the StudentProfile (NIT-1: studentId
-  //     is a StudentProfile id, not a User id) and notify inside the same tx.
-  const profile = await tx.studentProfile.findFirst({
-    where: { id: transaction.studentId, institutionId },
-    select: { userId: true },
-  });
-  if (profile?.userId) {
+  // (8) Notify the payer inside the same tx (reusing the up-front resolution).
+  if (payerProfile?.userId) {
     await notifyUser(
-      profile.userId,
+      payerProfile.userId,
       {
         title: "Payment received",
         body: `Your payment has been confirmed. Receipt ${receiptNumber}.`,
@@ -221,5 +249,6 @@ export async function confirmCapture(
     receiptId: receipt.id,
     receiptNumber,
     allocatedPaise: plan.allocatedTotal.toString(),
+    auditSkipped: !auditActorUserId,
   };
 }

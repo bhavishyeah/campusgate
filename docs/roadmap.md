@@ -31,6 +31,12 @@ level during backend-first; the user-facing demo is deferred to the frontend pas
   mark present/absent/late/excused → submit → finalize), correction request/review
   (faculty request with reason, HOD/ADMIN approve/reject), student attendance view
   (own records + rate), department reports + export
+- Phase 7 (slice 1) — fees UI (Option A, backend only; `apps/web` fees screens deferred):
+  accountant fee-structure/component management, charge posting (single + bulk), the
+  per-student ledger (charges + allocations + computed outstanding), payments/receipts
+  lists, and reconciliation; the STUDENT self-service screens (own charges/outstanding/
+  receipts + the Razorpay checkout that calls `POST /api/fees/payments` then the
+  checkout-callback `POST /api/fees/payments/verify`). The webhook is server-only (no UI).
 - Phase 5+ — each phase adds to this list as it ships backend-only
 
 Keep this list current as phases land so the frontend pass has an exact scope.
@@ -378,6 +384,30 @@ structure change preserves history; cross-tenant escape extended.
 **Definition of Done (demoable).** Payments and adjustments are auditable; a replayed
 webhook does not double-charge; ledger balances reconcile; refunds are permissioned and
 stepped-up.
+
+**Slice 1 — SHIPPED (backend only, Option A).** The money-critical core landed:
+`FeeStructure` + `FeeComponent`, the immutable-snapshot `StudentCharge` ledger (all money
+INTEGER PAISE / `BIGINT`, currency `INR`, crossing every JSON boundary as a decimal string),
+the Razorpay (INR) payment spine where the **webhook is the sole authoritative, idempotent
+writer** of `CAPTURED`/allocations/receipt (idempotency by DB construction — a global unique
+event id + a partial unique payment id + a one-receipt-per-transaction unique), server-side
+signature verification (checkout payment signature + webhook HMAC via Node `crypto`),
+oldest-due-first allocation, receipts issued only post-capture, computed outstanding, and a
+reconciliation path. `fees` is a gated module (`requireModuleActive("fees")` on every
+operational route; the webhook is signature-gated only). New `fees.*` permissions + an
+additive fees-scoped `ACCOUNTANT` template role; `STUDENT` gets `fees.view_own`. The frontend
+is deferred (see the deferred-frontend scope list above).
+
+**Slice 7.1 — DEFERRED (not built in slice 1).** Scholarships, concessions, waivers, fee
+**adjustments**, **refunds**, and the full financial report set land as **NEW ledger-entry
+tables** (e.g. `FeeAdjustment`, `Refund`) plus **new allocation entries** and **forward
+charge-status transitions** — **never** edits to posted `student_charges`, `CAPTURED`
+`payment_transactions`, `payment_allocations`, or `receipts` (the slice-1 append-only /
+column-guard model guarantees this drop-in works without rewriting posted rows). The
+`fees.refund` and `fees.adjust` permission keys are **forward-declared, unbound** in slice 1
+(defined in the catalogue, consumed by no route, bound to no role); 7.1 wires their
+step-up-gated routes with `requireStepUp` + the permission
+([`superadmin-security.md`](./superadmin-security.md) §5.2).
 
 ---
 
