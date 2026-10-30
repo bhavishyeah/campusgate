@@ -366,7 +366,10 @@ export class ReliabilityEngine {
       const currentScore = chronological[chronological.length - 1].score;
       const tenthAgoScore =
         chronological[chronological.length - 11].score;
-      improvementIndicator = currentScore - tenthAgoScore >= 0.5;
+      // Use an epsilon tolerance so floating-point representation error
+      // (e.g. 0.7 - 0.2 === 0.49999999999999994) does not drop a legitimate
+      // 0.5 improvement below the threshold.
+      improvementIndicator = currentScore - tenthAgoScore >= 0.5 - 1e-9;
     }
 
     return {

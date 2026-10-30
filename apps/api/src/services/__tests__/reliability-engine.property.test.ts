@@ -363,7 +363,7 @@ describe('ReliabilityEngine - Property 16: Score improvement indicator', () => {
     if (scores.length < 11) return false;
     const currentScore = scores[scores.length - 1];
     const tenthAgoScore = scores[scores.length - 11];
-    return currentScore - tenthAgoScore >= 0.5;
+    return currentScore - tenthAgoScore >= 0.5 - 1e-9;
   }
 
   // Generate valid score values (0.0 to 5.0, 1 decimal place)
