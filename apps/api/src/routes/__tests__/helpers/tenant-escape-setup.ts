@@ -138,6 +138,20 @@ export interface SeededTenant {
   libraryLoanId: string;
   bookReservationId: string;
   libraryFineId: string;
+  // Phase-6 admissions tables (design §5). The FIVE standard-pair tables
+  // (admission_campaigns, admission_campaign_programs, applications,
+  // application_documents, admission_offers, enrollments) are seeded here so the
+  // read/spoofed-write/foreign-parent escape tests can prove campass_app cannot
+  // see or forge the other tenant's rows. application_reviews is APPEND-ONLY (its
+  // BEFORE UPDATE OR DELETE trigger blocks even adminClient in the shared
+  // teardown), so it is EXCLUDED from this generic seed/cleanup loop and proven
+  // by the self-contained case — the schedule_revisions / audit_events precedent.
+  admissionCampaignId: string;
+  admissionCampaignProgramId: string;
+  applicationId: string;
+  applicationDocumentId: string;
+  admissionOfferId: string;
+  enrollmentId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -215,6 +229,14 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const libraryLoanId = id(`lloan_${key}`);
   const bookReservationId = id(`bresv_${key}`);
   const libraryFineId = id(`lfine_${key}`);
+  // Phase-6 admissions IDs (deterministic so cleanup is exact). application_reviews
+  // is append-only and NOT seeded here.
+  const admissionCampaignId = id(`camp_${key}`);
+  const admissionCampaignProgramId = id(`campprog_${key}`);
+  const applicationId = id(`app_${key}`);
+  const applicationDocumentId = id(`appdoc_${key}`);
+  const admissionOfferId = id(`offer_${key}`);
+  const enrollmentId = id(`enr_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -647,6 +669,81 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-6 admissions MUTABLE tables (design §5). Seeded via the RLS-bypassing
+  // adminClient in child-safe order so the RESTRICT composite FKs are satisfied:
+  // campaign (targets the seeded program + session) -> campaign_program join ->
+  // application (the seeded applicant user + program) -> document; a live ISSUED
+  // offer on the application; an enrollment referencing the ALREADY-seeded
+  // studentProfile + session (the single-identity composite FK). The append-only
+  // application_reviews table is DELIBERATELY NOT seeded here — its BEFORE UPDATE
+  // OR DELETE trigger blocks even adminClient in the shared teardown (the
+  // schedule_revisions / audit_events precedent); its escape behaviour is covered
+  // by the self-contained append-only case.
+  await adminClient.admissionCampaign.create({
+    data: {
+      id: admissionCampaignId,
+      institutionId,
+      name: `${PREFIX}Campaign ${key}`,
+      status: "OPEN",
+      intakeSessionId: academicSessionId,
+      targetProgramId: programId,
+      config: { requiredFields: [], requiredDocTypes: [] },
+    },
+  });
+
+  await adminClient.admissionCampaignProgram.create({
+    data: {
+      id: admissionCampaignProgramId,
+      institutionId,
+      campaignId: admissionCampaignId,
+      programId,
+    },
+  });
+
+  await adminClient.application.create({
+    data: {
+      id: applicationId,
+      institutionId,
+      campaignId: admissionCampaignId,
+      applicantUserId: userId,
+      programId,
+      status: "ELIGIBLE",
+      applicationNumber: id(`APPNO_${key}`),
+      formData: { fullName: `${PREFIX}Applicant ${key}` },
+    },
+  });
+
+  await adminClient.applicationDocument.create({
+    data: {
+      id: applicationDocumentId,
+      institutionId,
+      applicationId,
+      docType: "TRANSCRIPT",
+      reference: id(`ref_${key}`),
+    },
+  });
+
+  await adminClient.admissionOffer.create({
+    data: {
+      id: admissionOfferId,
+      institutionId,
+      applicationId,
+      offeredProgramId: programId,
+      status: "ISSUED",
+    },
+  });
+
+  await adminClient.enrollment.create({
+    data: {
+      id: enrollmentId,
+      institutionId,
+      applicationId,
+      studentProfileId,
+      academicSessionId,
+      enrolledByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -681,6 +778,12 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     libraryLoanId,
     bookReservationId,
     libraryFineId,
+    admissionCampaignId,
+    admissionCampaignProgramId,
+    applicationId,
+    applicationDocumentId,
+    admissionOfferId,
+    enrollmentId,
   };
 }
 
@@ -694,6 +797,18 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-6 admissions tables FIRST (child -> parent): enrollments + offers +
+  // documents + campaign_programs (leaves) -> applications -> campaigns, all
+  // BEFORE the student_profiles / programs / academic_sessions deletes below
+  // (their composite FKs are ON DELETE RESTRICT). The append-only
+  // application_reviews is never seeded by the generic loop, so there is nothing
+  // to delete here for it (the schedule_revisions / audit_events precedent).
+  await withRetry(() => adminClient.enrollment.deleteMany({ where }));
+  await withRetry(() => adminClient.admissionOffer.deleteMany({ where }));
+  await withRetry(() => adminClient.applicationDocument.deleteMany({ where }));
+  await withRetry(() => adminClient.admissionCampaignProgram.deleteMany({ where }));
+  await withRetry(() => adminClient.application.deleteMany({ where }));
+  await withRetry(() => adminClient.admissionCampaign.deleteMany({ where }));
   // Phase-4 attendance tables FIRST (child -> parent): corrections -> records ->
   // sessions, BEFORE the scheduled_classes / class_enrollments / student_profiles
   // deletes below (their composite FKs are ON DELETE RESTRICT). The append-only
@@ -793,6 +908,15 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-6 admissions MUTABLE tables (application_reviews is append-only and
+    // never seeded by the generic loop, so it is not counted — the
+    // schedule_revisions precedent). Counted SEQUENTIALLY (session-pooler cap).
+    () => adminClient.enrollment.count({ where }),
+    () => adminClient.admissionOffer.count({ where }),
+    () => adminClient.applicationDocument.count({ where }),
+    () => adminClient.admissionCampaignProgram.count({ where }),
+    () => adminClient.application.count({ where }),
+    () => adminClient.admissionCampaign.count({ where }),
     // Phase-4 attendance MUTABLE tables (attendance_record_history is append-only
     // and never seeded by the generic loop, so it is not counted — the
     // schedule_revisions precedent). Counted SEQUENTIALLY (session-pooler cap).
@@ -910,6 +1034,15 @@ export const RLS_TABLES = [
   "library_loans",
   "book_reservations",
   "library_fines",
+  // Phase-6 admissions tables (design §5). The five standard tables + the join
+  // use the default modify pair; application_reviews is append-only (EXPECTED_POLICIES).
+  "admission_campaigns",
+  "admission_campaign_programs",
+  "applications",
+  "application_documents",
+  "admission_offers",
+  "enrollments",
+  "application_reviews",
 ] as const;
 
 /**
@@ -948,6 +1081,13 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   attendance_record_history: [
     "tenant_isolation_select",
     "attendance_record_history_tenant_insert",
+  ],
+  // FEAT-004: application_reviews is append-only (design §5) — the SELECT +
+  // INSERT pair, NO modify policy. The other five Phase-6 tables + the join are
+  // deliberately ABSENT here so they fall through to DEFAULT_POLICIES.
+  application_reviews: [
+    "tenant_isolation_select",
+    "application_reviews_tenant_insert",
   ],
 };
 

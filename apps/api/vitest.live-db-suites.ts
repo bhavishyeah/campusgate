@@ -26,5 +26,6 @@ export const LIVE_DB_SUITES = [
   'src/**/classes-behavioral.integration.test.ts',
   'src/**/attendance-behavioral.integration.test.ts',
   'src/**/library-behavioral.integration.test.ts',
+  'src/**/admissions-behavioral.integration.test.ts',
   'src/**/sis-regression.integration.test.ts',
 ];

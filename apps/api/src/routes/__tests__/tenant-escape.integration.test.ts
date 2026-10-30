@@ -1338,6 +1338,279 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     expect(aVisible.some((r: { id: string }) => r.id === A.bookTitleId)).toBe(true);
   }, 60_000);
 
+  // ─── FEAT-004 Phase-6 admissions tables (design §5) ────────────────────────
+  // admission_campaigns / admission_campaign_programs / applications /
+  // application_documents / admission_offers / enrollments (the six mutable
+  // tables): cross-tenant read denied, spoofed/cross-tenant write denied,
+  // foreign-parent composite-FK violation, buggy-query backstop, three-GUC-state
+  // fail-closed. The append-only application_reviews table is covered by its own
+  // self-contained case (3zz) + the policy meta-test — it is NOT seeded in the
+  // shared setup (its trigger blocks the shared teardown).
+
+  it("3tt. admissions read escape: tenant A cannot see tenant B's Phase-6 rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const campaign = await withTenant(A.institutionId, (tx) =>
+      tx.admissionCampaign.findUnique({ where: { id: B.admissionCampaignId } }),
+    );
+    expect(campaign).toBeNull();
+
+    const join = await withTenant(A.institutionId, (tx) =>
+      tx.admissionCampaignProgram.findUnique({ where: { id: B.admissionCampaignProgramId } }),
+    );
+    expect(join).toBeNull();
+
+    const application = await withTenant(A.institutionId, (tx) =>
+      tx.application.findUnique({ where: { id: B.applicationId } }),
+    );
+    expect(application).toBeNull();
+
+    const doc = await withTenant(A.institutionId, (tx) =>
+      tx.applicationDocument.findUnique({ where: { id: B.applicationDocumentId } }),
+    );
+    expect(doc).toBeNull();
+
+    const offer = await withTenant(A.institutionId, (tx) =>
+      tx.admissionOffer.findUnique({ where: { id: B.admissionOfferId } }),
+    );
+    expect(offer).toBeNull();
+
+    const enrollment = await withTenant(A.institutionId, (tx) =>
+      tx.enrollment.findUnique({ where: { id: B.enrollmentId } }),
+    );
+    expect(enrollment).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownApplications = await withTenant(A.institutionId, (tx) => tx.application.findMany({}));
+    expect(ownApplications.length).toBeGreaterThan(0);
+    for (const row of ownApplications) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.applicationId);
+    }
+  }, 60_000);
+
+  it("3uu. admissions spoofed insert: A cannot stamp a campaign institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.admissionCampaign.create({
+          data: {
+            id: `${PREFIX}SPOOF_CAMP`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            name: `${PREFIX}SPOOF Campaign`,
+            status: "OPEN",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3vv. admissions foreign-parent: A cannot create an application referencing B's campaign", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, campaignId) makes it
+    // physically impossible to reference B's campaign under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.application.create({
+          data: {
+            id: `${PREFIX}FOREIGN_APP`,
+            institutionId: A.institutionId,
+            campaignId: B.admissionCampaignId, // B's campaign under A's tenant
+            applicantUserId: A.userId,
+            programId: A.programId,
+            status: "DRAFT",
+            applicationNumber: `${PREFIX}FOREIGN_APPNO`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3ww. admissions foreign-parent: A cannot enroll B's studentProfile under A's tenant", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // enrollments.(institutionId, studentProfileId) composite FK forbids linking
+    // another tenant's student — the single-identity guarantee (design §4).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.enrollment.create({
+          data: {
+            id: `${PREFIX}FOREIGN_ENR`,
+            institutionId: A.institutionId,
+            applicationId: A.applicationId,
+            studentProfileId: B.studentProfileId, // B's student under A's tenant
+            academicSessionId: A.academicSessionId,
+            enrolledByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3xx. admissions spoofed update: A cannot flip B's offer to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's offer under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.admissionOffer.updateMany({
+        where: { id: B.admissionOfferId },
+        data: { status: "DECLINED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.admissionOffer.findUnique({
+      where: { id: B.admissionOfferId },
+    });
+    expect(bRow!.status).toBe("ISSUED");
+  }, 60_000);
+
+  it("3yy. admissions buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const campaigns = await withTenant(A.institutionId, (tx) => tx.admissionCampaign.findMany({}));
+    for (const r of campaigns) expect(r.institutionId).toBe(A.institutionId);
+    expect(campaigns.some((r: { id: string }) => r.id === B.admissionCampaignId)).toBe(false);
+
+    const joins = await withTenant(A.institutionId, (tx) => tx.admissionCampaignProgram.findMany({}));
+    for (const r of joins) expect(r.institutionId).toBe(A.institutionId);
+    expect(joins.some((r: { id: string }) => r.id === B.admissionCampaignProgramId)).toBe(false);
+
+    const applications = await withTenant(A.institutionId, (tx) => tx.application.findMany({}));
+    for (const r of applications) expect(r.institutionId).toBe(A.institutionId);
+    expect(applications.some((r: { id: string }) => r.id === B.applicationId)).toBe(false);
+
+    const docs = await withTenant(A.institutionId, (tx) => tx.applicationDocument.findMany({}));
+    for (const r of docs) expect(r.institutionId).toBe(A.institutionId);
+    expect(docs.some((r: { id: string }) => r.id === B.applicationDocumentId)).toBe(false);
+
+    const offers = await withTenant(A.institutionId, (tx) => tx.admissionOffer.findMany({}));
+    for (const r of offers) expect(r.institutionId).toBe(A.institutionId);
+    expect(offers.some((r: { id: string }) => r.id === B.admissionOfferId)).toBe(false);
+
+    const enrollments = await withTenant(A.institutionId, (tx) => tx.enrollment.findMany({}));
+    for (const r of enrollments) expect(r.institutionId).toBe(A.institutionId);
+    expect(enrollments.some((r: { id: string }) => r.id === B.enrollmentId)).toBe(false);
+
+    const aCount = await adminClient.application.count({
+      where: { institutionId: A.institutionId },
+    });
+    expect(applications.length).toBe(aCount);
+  }, 60_000);
+
+  it("3zza. admissions fail-closed: unset / empty-string GUC yield zero rows for every mutable table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetCampaigns = await appClient.admissionCampaign.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetCampaigns.length).toBe(0);
+    const unsetApplications = await appClient.application.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetApplications.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all six tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const c = await tx.admissionCampaign.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const j = await tx.admissionCampaignProgram.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const a = await tx.application.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const d = await tx.applicationDocument.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const o = await tx.admissionOffer.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const e = await tx.enrollment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return c.length + j.length + a.length + d.length + o.length + e.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.application.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.applicationId)).toBe(true);
+  }, 60_000);
+
+  it("3zz. application_reviews APPEND-ONLY (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the schedule_revisions / attendance_record_history
+    // cases + the audit_events precedent): INSERT one review under A against the
+    // ALREADY-seeded application (a plain INSERT does NOT trip the BEFORE UPDATE
+    // OR DELETE trigger, and satisfies the application_reviews_tenant_insert
+    // policy), assert campass_app can read it under A, assert B's context cannot
+    // see it (tenant isolation), then assert UPDATE and DELETE are BOTH denied
+    // (REVOKE + trigger -> restrict_violation). The row is removed here within
+    // THIS test's own trigger-disable scope so the shared teardown is not blocked.
+    // This is the ONLY place the escape suite touches application_reviews.
+    const reviewId = `${PREFIX}AREV_A`;
+    await withTenant(A.institutionId, (tx) =>
+      tx.applicationReview.create({
+        data: {
+          id: reviewId,
+          institutionId: A.institutionId,
+          applicationId: A.applicationId,
+          reviewerUserId: A.userId,
+          decision: "RECOMMEND_ELIGIBLE",
+          notes: `${PREFIX}note`,
+        },
+      }),
+    );
+
+    // Readable by campass_app under A's context.
+    const readBack = await withTenant(A.institutionId, (tx) =>
+      tx.applicationReview.findUnique({ where: { id: reviewId } }),
+    );
+    expect(readBack).toBeTruthy();
+
+    // Cross-tenant SELECT from B's context returns empty (tenant isolation).
+    const foreign = await withTenant(B.institutionId, (tx) =>
+      tx.applicationReview.findUnique({ where: { id: reviewId } }),
+    );
+    expect(foreign).toBeNull();
+
+    // UPDATE denied (REVOKE UPDATE + the BEFORE UPDATE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.applicationReview.update({ where: { id: reviewId }, data: { notes: "mutate" } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // DELETE denied (REVOKE DELETE + the BEFORE DELETE trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.applicationReview.delete({ where: { id: reviewId } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // The row survived both attempts.
+    const still = await adminClient.applicationReview.findUnique({ where: { id: reviewId } });
+    expect(still).toBeTruthy();
+
+    // Clean up this suite-local review row within a scoped trigger-disable so the
+    // shared teardown's applications delete is not blocked by a lingering
+    // append-only row.
+    await adminClient.$executeRawUnsafe(
+      `ALTER TABLE "application_reviews" DISABLE TRIGGER "application_reviews_no_update_delete"`,
+    );
+    try {
+      await adminClient.applicationReview.deleteMany({
+        where: { institutionId: { startsWith: PREFIX } },
+      });
+    } finally {
+      await adminClient.$executeRawUnsafe(
+        `ALTER TABLE "application_reviews" ENABLE TRIGGER "application_reviews_no_update_delete"`,
+      );
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -1424,6 +1697,9 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "schedule_revisions",
       // Phase-4: attendance_record_history joins the append-only set (design §10).
       "attendance_record_history",
+      // FEAT-004: application_reviews joins the append-only set (design §5) —
+      // INSERT-only policy + REVOKE + trigger, NO modify policy.
+      "application_reviews",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

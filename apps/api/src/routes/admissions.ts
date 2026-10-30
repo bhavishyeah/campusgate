@@ -254,7 +254,19 @@ export async function admissionsRoutes(app: FastifyInstance) {
   });
 
   // ─── AUTHENTICATED SURFACE ────────────────────────────────────────────────────
-  app.addHook("preHandler", authenticate);
+  // Every route below is registered inside an ENCAPSULATED child plugin whose
+  // `preHandler` hook is `authenticate`. Encapsulation is what keeps the hook OFF
+  // the PUBLIC `/register` route above: a `preHandler` added via `addHook` applies
+  // to EVERY route in its encapsulation context regardless of declaration order,
+  // so declaring `/register` before `addHook` on the SAME instance would NOT
+  // exempt it (Fastify hook semantics). Moving the authenticated routes into their
+  // own `register` scope is the standard Fastify idiom for a public-route-in-a-
+  // plugin; `/register` stays on the outer (hook-free) instance, and every route
+  // here keeps `authenticate` + per-route `requirePermission` + `requireModuleActive`.
+  // The enclosing `admissionsRoutes` scope (helpers like `actor`,
+  // `resolveOrCreateApplicant`, `denyEnroll`, …) is reachable by closure.
+  await app.register(async (app) => {
+    app.addHook("preHandler", authenticate);
 
   // ═══ CAMPAIGNS (admissions.campaigns.manage / .applications.view) ═════════════
 
@@ -1696,6 +1708,7 @@ export async function admissionsRoutes(app: FastifyInstance) {
       });
     },
   );
+  }); // end authenticated-surface child plugin (encapsulated `authenticate` hook)
 
   // ─── Enroll helpers ─────────────────────────────────────────────────────────
 
