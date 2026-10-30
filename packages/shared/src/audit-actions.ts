@@ -130,6 +130,24 @@ export const AUDIT_ACTIONS = [
   { key: "library.fine.waived", module: "library", description: "LibraryFine waived" },
   { key: "library.fine.paid", module: "library", description: "LibraryFine marked paid" },
   { key: "library.overdue.reminded", module: "library", description: "Overdue reminder emitted to a student" },
+  // admissions.* (17) — Phase 6 Admissions mutations (past-tense)
+  { key: "admissions.applicant.registered", module: "admissions", description: "Applicant self-registered (User + ACTIVE membership + APPLICANT role)" },
+  { key: "admissions.campaign.created", module: "admissions", description: "Admission campaign created" },
+  { key: "admissions.campaign.updated", module: "admissions", description: "Admission campaign updated" },
+  { key: "admissions.campaign.opened", module: "admissions", description: "Admission campaign opened (DRAFT/CLOSED -> OPEN)" },
+  { key: "admissions.campaign.closed", module: "admissions", description: "Admission campaign closed (OPEN -> CLOSED)" },
+  { key: "admissions.application.submitted", module: "admissions", description: "Application submitted (DRAFT -> SUBMITTED)" },
+  { key: "admissions.application.withdrawn", module: "admissions", description: "Application withdrawn by applicant" },
+  { key: "admissions.application.status_changed", module: "admissions", description: "Application status advanced via the state machine" },
+  { key: "admissions.application.rejected", module: "admissions", description: "Application rejected" },
+  { key: "admissions.application.enrolled", module: "admissions", description: "Application enrolled (create-or-link StudentProfile)" },
+  { key: "admissions.document.added", module: "admissions", description: "Application document added" },
+  { key: "admissions.document.verified", module: "admissions", description: "Application document verified" },
+  { key: "admissions.review.recorded", module: "admissions", description: "Append-only ApplicationReview decision recorded" },
+  { key: "admissions.offer.issued", module: "admissions", description: "Admission offer issued" },
+  { key: "admissions.offer.accepted", module: "admissions", description: "Admission offer accepted by applicant" },
+  { key: "admissions.offer.declined", module: "admissions", description: "Admission offer declined by applicant" },
+  { key: "admissions.offer.expired", module: "admissions", description: "Admission offer expired" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

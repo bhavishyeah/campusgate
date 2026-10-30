@@ -408,13 +408,47 @@ BEGIN
 END $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- j. PLACEHOLDER — admissions.* catalogue seed.
---
---    FEAT-002 fills THIS section with the pinned literal markers (the same
---    seed-block shape + join the Phase 4/5 seeds use so catalogue-sync.test.ts
---    parses it): the NEW APPLICANT + ADMISSION_OFFICER template "roles" rows
---    (institutionId = NULL), the admissions.* "permissions" rows
---    (ON CONFLICT ("key") DO NOTHING), and the "role_permissions" pairs
---    (INSERT ... SELECT ... FROM (VALUES ...) AS m("roleKey","permKey") JOIN
---    "roles" r ... JOIN "permissions" p ... ON CONFLICT ("roleId","permissionId")
---    DO NOTHING). Intentionally left empty by FEAT-001.
+-- j. Seed the seven admissions.* permissions + their role_permissions pairs,
+--    using the same seed-block shape + join + markers the earlier seeds use so
+--    the catalogue-sync meta-test parses this block too. The ADMISSION_OFFICER
+--    and APPLICANT template roles are NEW (the LIBRARIAN precedent) — so their
+--    "roles" rows ARE inserted here (institutionId = NULL). ROLE_PERMISSIONS
+--    lockstep (design §6.2): ADMISSION_OFFICER x6 staff keys (admissions-only),
+--    ADMIN x6, APPLICANT x1 (admissions.view_own);
+--    STUDENT/HOD/GUARD/FACULTY/LIBRARIAN/SUPER_ADMIN none.
+-- ─────────────────────────────────────────────────────────────────────────────
+INSERT INTO "roles" ("id","key","name","institutionId") VALUES
+  ('role_admission_officer', 'ADMISSION_OFFICER', 'Admission Officer', NULL),
+  ('role_applicant',         'APPLICANT',         'Applicant',         NULL)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO "permissions" ("id","key","module","description") VALUES
+  ('perm_admissions_campaigns_manage',    'admissions.campaigns.manage',    'admissions', 'Create/update/open/close campaigns + manage offered programs + config'),
+  ('perm_admissions_applications_view',   'admissions.applications.view',   'admissions', 'Staff read of applications/documents/reviews/offers'),
+  ('perm_admissions_applications_manage', 'admissions.applications.manage', 'admissions', 'Create/advance applications on behalf; verify documents; request documents; shortlist; reject'),
+  ('perm_admissions_applications_review', 'admissions.applications.review', 'admissions', 'Record an (append-only) ApplicationReview decision'),
+  ('perm_admissions_offers_manage',       'admissions.offers.manage',       'admissions', 'Issue/expire offers (officer side)'),
+  ('perm_admissions_enroll',              'admissions.enroll',              'admissions', 'Enroll an ACCEPTED application (create-or-link StudentProfile)'),
+  ('perm_admissions_view_own',            'admissions.view_own',            'admissions', 'Applicant reads only their own applications/documents/offers; submits/withdraws own; accepts/declines own offer')
+ON CONFLICT ("key") DO NOTHING;
+
+INSERT INTO "role_permissions" ("id","roleId","permissionId")
+SELECT 'rp_' || r."key" || '__' || p."key", r."id", p."id"
+FROM (VALUES
+  ('ADMISSION_OFFICER', 'admissions.campaigns.manage'),
+  ('ADMISSION_OFFICER', 'admissions.applications.view'),
+  ('ADMISSION_OFFICER', 'admissions.applications.manage'),
+  ('ADMISSION_OFFICER', 'admissions.applications.review'),
+  ('ADMISSION_OFFICER', 'admissions.offers.manage'),
+  ('ADMISSION_OFFICER', 'admissions.enroll'),
+  ('ADMIN',             'admissions.campaigns.manage'),
+  ('ADMIN',             'admissions.applications.view'),
+  ('ADMIN',             'admissions.applications.manage'),
+  ('ADMIN',             'admissions.applications.review'),
+  ('ADMIN',             'admissions.offers.manage'),
+  ('ADMIN',             'admissions.enroll'),
+  ('APPLICANT',         'admissions.view_own')
+) AS m("roleKey","permKey")
+JOIN "roles"       r ON r."key" = m."roleKey" AND r."institutionId" IS NULL
+JOIN "permissions" p ON p."key" = m."permKey"
+ON CONFLICT ("roleId", "permissionId") DO NOTHING;

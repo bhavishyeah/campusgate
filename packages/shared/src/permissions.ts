@@ -349,6 +349,45 @@ export const PERMISSIONS = [
     description: "A student reads only their own loans/history/reservations/fines and searches the catalogue; requests/cancels their own reservations",
   },
 
+  // admissions.* — Phase 6 Admissions: campaigns, applications, documents,
+  // reviews, offers, enrollment. Gated module (requireModuleActive("admissions"))
+  // in addition to permission.
+  {
+    key: "admissions.campaigns.manage",
+    module: "admissions",
+    description: "Create/update/open/close campaigns + manage offered programs + config",
+  },
+  {
+    key: "admissions.applications.view",
+    module: "admissions",
+    description: "Staff read of applications/documents/reviews/offers",
+  },
+  {
+    key: "admissions.applications.manage",
+    module: "admissions",
+    description: "Create/advance applications on behalf; verify documents; request documents; shortlist; reject",
+  },
+  {
+    key: "admissions.applications.review",
+    module: "admissions",
+    description: "Record an (append-only) ApplicationReview decision",
+  },
+  {
+    key: "admissions.offers.manage",
+    module: "admissions",
+    description: "Issue/expire offers (officer side)",
+  },
+  {
+    key: "admissions.enroll",
+    module: "admissions",
+    description: "Enroll an ACCEPTED application (create-or-link StudentProfile)",
+  },
+  {
+    key: "admissions.view_own",
+    module: "admissions",
+    description: "Applicant reads only their own applications/documents/offers; submits/withdraws own; accepts/declines own offer",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -415,6 +454,15 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "library.reservations.manage",
     "library.fines.manage",
   ],
+  ADMISSION_OFFICER: [
+    "admissions.campaigns.manage",
+    "admissions.applications.view",
+    "admissions.applications.manage",
+    "admissions.applications.review",
+    "admissions.offers.manage",
+    "admissions.enroll",
+  ],
+  APPLICANT: ["admissions.view_own"],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -492,6 +540,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "library.return",
     "library.reservations.manage",
     "library.fines.manage",
+    "admissions.campaigns.manage",
+    "admissions.applications.view",
+    "admissions.applications.manage",
+    "admissions.applications.review",
+    "admissions.offers.manage",
+    "admissions.enroll",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

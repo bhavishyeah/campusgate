@@ -605,6 +605,183 @@ export const libraryReportQuerySchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+// ─── ADMISSIONS (Phase 6) ────────────────────────────────────────────────────
+
+// Enum members mirror the pg enums added by the phase6_admissions migration.
+export const admissionCampaignStatusEnum = z.enum(["DRAFT", "OPEN", "CLOSED"]);
+export const applicationStatusEnum = z.enum([
+  "DRAFT",
+  "SUBMITTED",
+  "UNDER_REVIEW",
+  "DOCUMENTS_REQUIRED",
+  "ELIGIBLE",
+  "SHORTLISTED",
+  "OFFERED",
+  "ACCEPTED",
+  "ENROLLED",
+  "REJECTED",
+  "WITHDRAWN",
+]);
+export const applicationReviewDecisionEnum = z.enum([
+  "RECOMMEND_ELIGIBLE",
+  "RECOMMEND_REJECT",
+  "REQUEST_DOCUMENTS",
+  "SHORTLIST",
+  "NOTE",
+]);
+export const admissionOfferStatusEnum = z.enum(["ISSUED", "ACCEPTED", "DECLINED", "EXPIRED"]);
+
+// Applicant onboarding (PUBLIC POST /api/admissions/register; §8). Creates the
+// applicant identity only — NO StudentProfile fields are accepted. institutionId
+// is the ONE documented exception to "institutionId originates from the token".
+export const admissionRegisterSchema = z
+  .object({
+    institutionId: z.string().min(1, "Institution is required"),
+    email: z.string().email("Invalid email address"),
+    password: z.string().min(8, "Password must be at least 8 characters"),
+    name: z.string().min(2, "Name must be at least 2 characters").max(200),
+  })
+  .strict();
+
+// Campaign config (§8): NOT a generic form engine — exactly
+// { requiredFields: string[], requiredDocTypes: string[] } with bounded lengths
+// and non-empty keys.
+export const campaignConfigSchema = z
+  .object({
+    requiredFields: z.array(z.string().min(1, "Field key must be non-empty").max(100)).max(50).default([]),
+    requiredDocTypes: z.array(z.string().min(1, "Doc type must be non-empty").max(100)).max(50).default([]),
+  })
+  .strict();
+
+// Campaign create/update (§8). name required non-empty; status optional;
+// intakeSessionId/targetProgramId/programIds optional (resolved in-handler);
+// openAt <= closeAt when both present; config validated against campaignConfigSchema.
+const campaignTimesOrdered = (data: { openAt?: string; closeAt?: string }) =>
+  data.openAt == null || data.closeAt == null || new Date(data.openAt) <= new Date(data.closeAt);
+
+export const createCampaignSchema = z
+  .object({
+    name: z.string().min(1, "Name is required").max(200),
+    status: admissionCampaignStatusEnum.optional(),
+    intakeSessionId: z.string().min(1).optional(),
+    targetProgramId: z.string().min(1).optional(),
+    programIds: z.array(z.string().min(1)).max(200).optional(),
+    openAt: z.string().datetime("Invalid open time").optional(),
+    closeAt: z.string().datetime("Invalid close time").optional(),
+    config: campaignConfigSchema.optional(),
+  })
+  .strict()
+  .refine(campaignTimesOrdered, {
+    message: "openAt must be on or before closeAt",
+    path: ["closeAt"],
+  });
+
+export const updateCampaignSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    status: admissionCampaignStatusEnum.optional(),
+    intakeSessionId: z.string().min(1).nullish(),
+    targetProgramId: z.string().min(1).nullish(),
+    programIds: z.array(z.string().min(1)).max(200).optional(),
+    openAt: z.string().datetime("Invalid open time").nullish(),
+    closeAt: z.string().datetime("Invalid close time").nullish(),
+    config: campaignConfigSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (data) =>
+      data.openAt == null || data.closeAt == null || new Date(data.openAt) <= new Date(data.closeAt),
+    {
+      message: "openAt must be on or before closeAt",
+      path: ["closeAt"],
+    },
+  );
+
+// Application create (§8). Serves BOTH self-service and officer-on-behalf: the
+// optional applicantEmail/applicantName are the officer-on-behalf inputs (the
+// handler forces applicantUserId = request.user.userId for self-service).
+export const createApplicationSchema = z
+  .object({
+    campaignId: z.string().min(1, "Campaign is required"),
+    programId: z.string().min(1, "Program is required"),
+    formData: z.record(z.string(), z.unknown()).optional(),
+    applicantEmail: z.string().email("Invalid email address").optional(),
+    applicantName: z.string().min(2).max(200).optional(),
+  })
+  .strict();
+
+// Document add (§8). docType validated against the campaign's requiredDocTypes
+// in-handler; reference required non-empty with a length cap.
+export const addApplicationDocumentSchema = z
+  .object({
+    docType: z.string().min(1, "Document type is required").max(100),
+    reference: z.string().min(1, "Reference is required").max(2000),
+    fileName: z.string().max(300).optional(),
+    contentType: z.string().max(200).optional(),
+  })
+  .strict();
+
+// Status transition (§8). Target status in enum; legality checked by the §3 table.
+export const changeApplicationStatusSchema = z
+  .object({
+    status: applicationStatusEnum,
+    reason: z.string().max(2000).optional(),
+  })
+  .strict();
+
+// Submit / withdraw (§8). No body; .strict() rejects stray keys.
+export const submitApplicationSchema = z.object({}).strict();
+
+export const withdrawApplicationSchema = z
+  .object({
+    reason: z.string().max(2000).optional(),
+  })
+  .strict();
+
+// Application review (§8). Append-only decision.
+export const recordApplicationReviewSchema = z
+  .object({
+    decision: applicationReviewDecisionEnum,
+    notes: z.string().max(4000).optional(),
+  })
+  .strict();
+
+// Interview set (§8). Sets interviewAt on the application.
+export const setApplicationInterviewSchema = z
+  .object({
+    interviewAt: z.string().datetime("Invalid interview time"),
+  })
+  .strict();
+
+// Offer issue (§8). offeredProgramId required; expiresAt optional, must be future
+// (checked in-handler); state preconditions enforced in-handler.
+export const issueOfferSchema = z
+  .object({
+    offeredProgramId: z.string().min(1, "Offered program is required"),
+    expiresAt: z.string().datetime("Invalid expiry time").optional(),
+  })
+  .strict();
+
+// Offer accept / decline (applicant) / expire (officer) (§8). No body.
+export const acceptOfferSchema = z.object({}).strict();
+
+export const declineOfferSchema = z
+  .object({
+    reason: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const expireOfferSchema = z.object({}).strict();
+
+// Enroll (§8). enrollmentNo required; academicSessionId optional (used when the
+// campaign has no intakeSessionId — resolution enforced in-handler, else 422).
+export const enrollApplicationSchema = z
+  .object({
+    enrollmentNo: z.string().min(1, "Enrollment number is required"),
+    academicSessionId: z.string().min(1).optional(),
+  })
+  .strict();
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -684,3 +861,23 @@ export type WaiveLibraryFineInput = z.infer<typeof waiveLibraryFineSchema>;
 export type PayLibraryFineInput = z.infer<typeof payLibraryFineSchema>;
 export type CatalogueSearchQueryInput = z.infer<typeof catalogueSearchQuerySchema>;
 export type LibraryReportQueryInput = z.infer<typeof libraryReportQuerySchema>;
+export type AdmissionCampaignStatusValue = z.infer<typeof admissionCampaignStatusEnum>;
+export type ApplicationStatusValue = z.infer<typeof applicationStatusEnum>;
+export type ApplicationReviewDecisionValue = z.infer<typeof applicationReviewDecisionEnum>;
+export type AdmissionOfferStatusValue = z.infer<typeof admissionOfferStatusEnum>;
+export type AdmissionRegisterInput = z.infer<typeof admissionRegisterSchema>;
+export type CampaignConfigInput = z.infer<typeof campaignConfigSchema>;
+export type CreateCampaignInput = z.infer<typeof createCampaignSchema>;
+export type UpdateCampaignInput = z.infer<typeof updateCampaignSchema>;
+export type CreateApplicationInput = z.infer<typeof createApplicationSchema>;
+export type AddApplicationDocumentInput = z.infer<typeof addApplicationDocumentSchema>;
+export type ChangeApplicationStatusInput = z.infer<typeof changeApplicationStatusSchema>;
+export type SubmitApplicationInput = z.infer<typeof submitApplicationSchema>;
+export type WithdrawApplicationInput = z.infer<typeof withdrawApplicationSchema>;
+export type RecordApplicationReviewInput = z.infer<typeof recordApplicationReviewSchema>;
+export type SetApplicationInterviewInput = z.infer<typeof setApplicationInterviewSchema>;
+export type IssueOfferInput = z.infer<typeof issueOfferSchema>;
+export type AcceptOfferInput = z.infer<typeof acceptOfferSchema>;
+export type DeclineOfferInput = z.infer<typeof declineOfferSchema>;
+export type ExpireOfferInput = z.infer<typeof expireOfferSchema>;
+export type EnrollApplicationInput = z.infer<typeof enrollApplicationSchema>;

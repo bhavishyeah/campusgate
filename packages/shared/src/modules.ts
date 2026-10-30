@@ -23,6 +23,7 @@ export const MODULES = [
   { key: "examinations", name: "Examinations", description: "Exams (future)" },
   { key: "fees", name: "Fees", description: "Fees (future)" },
   { key: "library", name: "Library", description: "Library (future)" },
+  { key: "admissions", name: "Admissions", description: "Admissions (Phase 6)" },
 ] as const satisfies readonly ModuleDef[];
 
 export type ModuleKey = (typeof MODULES)[number]["key"];
@@ -49,4 +50,11 @@ export const MODULE_DEPENDENCIES: Record<ModuleKey, readonly ModuleKey[]> = {
   examinations: ["academic_sessions", "class_course", "student_enrollment"],
   fees: ["student_management"],
   library: [],
+  // admissions is foundational-not-gated (design §6.1): only its own row must be
+  // ENTITLED->ACTIVE. Its real prerequisites are foundational Program/Session/
+  // StudentProfile data, which have NO ACTIVE InstitutionModule rows — adding
+  // gated-module edges would permanently block activation. Those prerequisites are
+  // validated at operation time via composite FKs + in-handler lookups, not by a
+  // gated-module activation edge.
+  admissions: [],
 };
