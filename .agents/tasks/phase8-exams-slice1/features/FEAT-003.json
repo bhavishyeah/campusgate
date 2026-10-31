@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-003",
+  "type": "test",
+  "description": "Live-DB behavioral suite + tenant-escape extension. Add the exams-behavioral integration suite (AC-1..7, AC-11) proving the real withTenant/RLS/trigger/step-up behavior against the deployed DB, wire it into vitest.live-db-suites.ts so the default fast run stays fast, and extend the tenant-escape suite + helper to cover every one of the nine new exams tables (AC-10). Depends on FEAT-001 (deployed tables + triggers + RLS) and FEAT-002 (the routes/engine the behavioral suite exercises). Grounded in design.md section 19 and design-review.md NIT 3 (the SeededTenant + countRemainingTestRows additions).",
+  "status": "pending",
+  "steps": [
+    "Read .agents/tasks/phase8-exams-slice1/design.md (section 19) and design-review.md (NIT 3) and context.json FIRST, and confirm FEAT-001 + FEAT-002 landed (migration deployed, routes registered, fast suite green). Do not re-explore what context.json already states.",
+    "Add apps/api/src/routes/__tests__/exams-behavioral.integration.test.ts (NO vi.mock('@campusgate/db') — real connections) covering: AC-2 faculty-scope DENIED + 403 with a DENIED audit and no row written; AC-3 a mark change after MARKS_LOCKED writes a MarksRecordHistory row (append-only, never silent overwrite); AC-4 two concurrent allocations into a room of capacity N never produce N+1 occupants (one succeeds, one 409 room full); AC-5 illegal exam status transitions (e.g. DRAFT->PUBLISHED, PUBLISHED->MARKS_OPEN, any DELETE) raise restrict_violation at the DB; AC-6 publish without a valid x-step-up => 401, and with a valid token + APPROVED status creates a new ResultPublication version + immutable snapshots and moves the exam to PUBLISHED; AC-7 a publisher with mfaEnabled=false cannot complete /mfa/verify and thus cannot publish (401); AC-11 a correction publish produces version = prior + 1 with no prior version/snapshot row mutated or deleted; AC-1 a student with only exams.results.view_own sees nothing for a non-PUBLISHED exam and exactly the latest PUBLISHED snapshot once published. Use the withRetry/serial pattern and session-pooler-friendly connection discipline from the existing live-DB suites. Clean up any rows it creates (child-first, with the guard-trigger-disable dance for the append-only/column-guard tables).",
+    "Add 'src/**/exams-behavioral.integration.test.ts' to LIVE_DB_SUITES in apps/api/vitest.live-db-suites.ts so the default npm test run excludes it and the integration run covers it.",
+    "Extend apps/api/src/routes/__tests__/helpers/tenant-escape-setup.ts for every new exams table (AC-10): add all nine tables to RLS_TABLES; add the three INSERT-only tables (marks_record_history, result_publications, result_snapshots) to EXPECTED_POLICIES as [tenant_isolation_select, <table>_tenant_insert] (the six mutable/column-guard tables deliberately fall through to DEFAULT_POLICIES); extend the exported SeededTenant interface + the seedTenant return object with the new exam-table ids; seed exam fixtures for BOTH tenants inside seedTenant in child-safe order (examination -> grading_scheme -> grade_band -> exam_schedule -> candidate -> assessment -> marks_record) referencing the already-seeded program/term/session/subject/studentProfile; do NOT seed the three INSERT-only tables (the payment_allocations/receipts/application_reviews precedent); extend cleanup with the guard-trigger-disable teardown dance for examinations (examinations_guard) and marks_records (marks_records_guard) plus child-first deletes of the six seeded tables BEFORE the shared student_profiles/programs/sessions deletes; add the six seeded mutable/guard exam tables to countRemainingTestRows (the three INSERT-only excluded). Mirror the existing slice2GuardedTables dance (~line 946).",
+    "Extend apps/api/src/routes/__tests__/tenant-escape.integration.test.ts so the read-escape + spoofed-insert-escape coverage includes the nine new tables (the policy-shape loop already iterates RLS_TABLES; add the per-table read/spoofed-write cases consistent with the existing phase blocks).",
+    "Run the integration suites in isolation and the fast suite, fixing any issues until both pass."
+  ],
+  "acceptance_criteria": [
+    "npm run test:integration -w @campusgate/api runs the new exams-behavioral suite and it passes in isolation (AC-1..7, AC-11 all covered).",
+    "npm run test:integration -w @campusgate/api runs the extended tenant-escape suite and it passes with all nine new tables present in RLS_TABLES, the three INSERT-only tables in EXPECTED_POLICIES, and countRemainingTestRows returning 0 after cleanup (AC-10).",
+    "npm test -w @campusgate/api stays fully green (the new live-DB suite is excluded from the fast run via the live-db-suites glob)."
+  ],
+  "verification": [
+    "npm run test:integration -w @campusgate/api",
+    "npm test -w @campusgate/api"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

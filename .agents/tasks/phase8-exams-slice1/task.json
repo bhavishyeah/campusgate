@@ -1,0 +1,7 @@
+{
+  "task_id": "task-phase8-exams-slice1",
+  "task_description": "CAMPASS Phase 8 Examinations & Results, Slice 8.1 (backend only), implemented directly on branch main in c:\\campusgate with NO worktree, NO push, NO deploy. Deliver the exam DB foundation (nine tenant-owned tables + four enums, hand-authored a-j migration mirroring the frozen fees-slice2 house style, RLS + append-only/column-guard triggers, guarded campass_app GRANT refresh), the exams.* RBAC catalogue additions wired into the migration seed + catalogue-sync, the module gating on examinations, the pure deterministic BigInt grading engine with exhaustive unit tests, the full route layer (setup, schedules + capacity-aware allocation, candidates, assessments, faculty-scoped marks entry with audited post-lock corrections, moderation/approval, MFA step-up publication, student published-only reads, staff reports + ExcelJS export), the live-DB behavioral suite, and the tenant-escape extension covering every new exams table. The fast suite (npm test -w @campusgate/api, currently 454 pass) must stay green; each live-DB suite must pass in isolation.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

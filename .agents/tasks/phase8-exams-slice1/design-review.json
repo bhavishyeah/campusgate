@@ -1,0 +1,30 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "MEDIUM",
+      "title": "ADMIN role binding in §14.1 is internally contradictory ('all eight' vs the table vs the next clause)",
+      "where": "§14.1 (ROLE_PERMISSIONS edits paragraph); cross-checks §14.2 seed, §12 separation-of-duties, catalogue-sync.test.ts set-equality",
+      "problem": "§14.1 says 'ADMIN gets all eight' exams.* keys, but the same table binds exams.marks.enter to FACULTY only and exams.results.view_own to STUDENT only, and the very next clause plus the §12 invariant say 'ADMIN does NOT receive exams.marks.enter'. 'All eight' contradicts the table and itself. catalogue-sync.test.ts asserts EXACT set-equality between ROLE_PERMISSIONS and the migration role_permissions seed pairs, so following 'all eight' literally would both violate the stated separation of duties (ADMIN gains marks entry) and grant ADMIN a STUDENT-only read, and any mismatch between shared and the seed turns the meta-test red. This is RBAC on access-critical code and must be unambiguous.",
+      "fix": "Delete 'ADMIN gets all eight'. State the exact ADMIN set matching the §14.1 table and §12: ADMIN bound to the six keys exams.manage, exams.grading.manage, exams.candidates.manage, exams.moderate, exams.results.publish, exams.results.view (NOT exams.marks.enter, NOT exams.results.view_own). HOD gets the same six; FACULTY gets exams.marks.enter; STUDENT gets exams.results.view_own. The §14.2 role_permissions VALUES list must contain exactly 6 ADMIN + 6 HOD + 1 FACULTY + 1 STUDENT = 14 pairs."
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "title": "§14.3 declares audit keys exams.marks.locked and exams.moderation.opened that no documented path emits",
+      "where": "§14.3 (audit keys) vs the §14.3 'every transition uses exams.examination.status_changed' rule and the §12 matrix",
+      "problem": "§14.3 removed exams.exam.approved on the rationale that a status transition is audited under exams.examination.status_changed with {from,to} 'like every other transition', but still declares exams.marks.locked (MARKS_OPEN->MARKS_LOCKED) and exams.moderation.opened (MARKS_LOCKED->MODERATION), which are themselves status transitions. Per the stated rule they'd be emitted as status_changed, leaving these two keys declared-but-unused — the same dead-value shape just fixed for SUPERSEDED and exams.exam.approved. Harmless at runtime (audit keys are validated only in recordAuditEvent, not migration-mirrored) but a self-inconsistency in an access-critical audit spec.",
+      "fix": "Either delete exams.marks.locked + exams.moderation.opened and state the lock and moderation-open transitions are audited under exams.examination.status_changed {from,to} like all others; or keep them and state explicitly that those two transitions emit the dedicated keys INSTEAD of status_changed, reconciling the exception with the '{every other transition} uses status_changed' sentence."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "§19 tenant-escape extension omits the SeededTenant interface and countRemainingTestRows additions",
+      "where": "§19 (test plan, tenant-escape bullet) vs apps/api/src/routes/__tests__/helpers/tenant-escape-setup.ts",
+      "problem": "§19 names RLS_TABLES, EXPECTED_POLICIES, seedBothTenants and cleanup, but adding a seeded table to the real suite also requires extending the exported SeededTenant interface (each seeded id is a typed field), returning the new ids from seedTenant, and extending countRemainingTestRows (the teardown total==0 assertion). Those two spots are not named, so the 'extend the suite for EVERY new table' requirement is under-specified.",
+      "fix": "Add to §19: extend the SeededTenant interface + seedTenant return with the new exam-table ids, and add the six seeded mutable/guarded exam tables to countRemainingTestRows (the three INSERT-only tables are excluded from the generic seed/count loop, mirroring payment_allocations/receipts/processed_webhook_events)."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase8-exams-slice1\\design-review.md"
+}

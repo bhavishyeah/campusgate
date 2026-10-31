@@ -450,6 +450,38 @@ audit; cross-tenant escape extended.
 **Definition of Done (demoable).** Only authorized users enter/approve/modify/publish
 results per the configured workflow; a student sees results only after publication.
 
+**Slice 8.1 — SHIPPED (backend only).** The access-and-correctness-critical exam
+foundation landed: ten tenant-owned exam tables (`examinations`, `grading_schemes`,
+`grade_bands`, `exam_schedules`, `candidates`, `assessments`, `marks_records`,
+`marks_record_history`, `result_publications`, `result_snapshots`) behind ENABLE+FORCE
+RLS with nullif-guarded fail-closed policies, a hand-authored lettered a–j migration
+`20261206000000_phase8_exams_slice1` (strictly additive — **no DROP** on existing tables,
+the 14 frozen dirs byte-untouched, `prisma migrate status` up to date at 15 migrations).
+The `/api/exams` route surface covers exam setup, the forward-only status lifecycle
+(DRAFT→SCHEDULED→MARKS_OPEN→MARKS_LOCKED→MODERATION→APPROVED→PUBLISHED, column-guard
+trigger enforced), capacity-aware room allocation (library advisory-lock idiom + partial
+unique backstop), faculty-scoped marks entry (scope from ACTIVE `FacultyAssignment`,
+deactivated/out-of-scope write → 403 + `DENIED` audit, no row written), post-`MARKS_LOCKED`
+audited append-only corrections (`marks_record_history`), moderation/approval, and
+step-up-gated append-only versioned result publication (`requireStepUp("exams.results.publish")`
++ `requirePermission`). A pure integer/BigInt grading engine (`services/exams/grading.ts`)
+bands on basis points with a single documented round-half-up step and a typed `GradingError`
+on misconfiguration — no float touches the computation or a boundary. Student reads return
+only the latest PUBLISHED version's snapshot; unpublished state is invisible at both the
+query layer and the `exams.results.view_own` vs `exams.results.view` permission split. RBAC:
+ADMIN and HOD each bind exactly the six management keys (`exams.manage`,
+`exams.grading.manage`, `exams.candidates.manage`, `exams.moderate`, `exams.results.publish`,
+`exams.results.view`), FACULTY `exams.marks.enter` only, STUDENT `exams.results.view_own`
+only (14 role_permissions pairs; catalogue-sync set-equality is the self-enforcing backstop).
+Every lifecycle transition is audited under the single `exams.examination.status_changed`
+key (no dead `exams.marks.locked` / `exams.moderation.opened` keys). `MODULE_DEPENDENCIES`
+is unchanged (`examinations` keeps its three foundational edges); routes are gated by
+`requireModuleActive("examinations")`. Verification run: clean `npm ci` + workspace build
+green (`turbo build` 3/3 successful); `npm test -w @campusgate/api` **484/484** green (was
+454 before the slice); both new live-DB suites green **in isolation** (`exams-behavioral`
+7/7, extended `tenant-escape` 82/82 with teardown total 0). The frontend remains deferred
+(see the deferred-frontend scope list above).
+
 ---
 
 ## Phase 9 — Institutional operations
