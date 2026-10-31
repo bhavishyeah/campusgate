@@ -1548,8 +1548,10 @@ export async function examsRoutes(app: FastifyInstance) {
         const examIds = [...new Set(candidateRows.map((c) => c.examId))];
         const results: Array<{ examId: string; version: number; snapshots: unknown[] }> = [];
         for (const examId of examIds) {
-          const latest = await latestPublication(tx, institutionId, examId);
-          if (!latest) continue; // unpublished ⇒ invisible to students
+          // Latest PUBLISHED only (status-filtered) — a SUPERSEDED/unpublished
+          // version must never leak to a student, even if it is the max version.
+          const latest = await latestPublishedPublication(tx, institutionId, examId);
+          if (!latest) continue; // unpublished/superseded ⇒ invisible to students
           const snapshots = await tx.resultSnapshot.findMany({
             where: { institutionId, resultPublicationId: latest.id, studentId: student.id },
             orderBy: { subjectId: "asc" },
@@ -1574,8 +1576,10 @@ export async function examsRoutes(app: FastifyInstance) {
           select: { id: true },
         });
         if (!student) return { published: false as const };
-        const latest = await latestPublication(tx, institutionId, examId);
-        if (!latest) return { published: false as const }; // unpublished ⇒ invisible
+        // Latest PUBLISHED only (status-filtered) — a SUPERSEDED/unpublished
+        // version must never leak to a student, even if it is the max version.
+        const latest = await latestPublishedPublication(tx, institutionId, examId);
+        if (!latest) return { published: false as const }; // unpublished/superseded ⇒ invisible
         const snapshots = await tx.resultSnapshot.findMany({
           where: { institutionId, resultPublicationId: latest.id, studentId: student.id },
           orderBy: { subjectId: "asc" },
