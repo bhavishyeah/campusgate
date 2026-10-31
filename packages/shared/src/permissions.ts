@@ -499,6 +499,39 @@ export const PERMISSIONS = [
     description: "Staff re-evaluation processing (transition + re-mark on a PUBLISHED exam)",
   },
 
+  // faculty.* — Phase 9.1 Faculty Management: academic qualifications, per-term
+  // workload (+ policy), teaching history, and the consolidated directory read.
+  // Gated module (requireModuleActive("faculty_management")) in addition to
+  // permission. The module registry key is `faculty_management`; the permission/
+  // audit KEY prefix is `faculty.*` (the exams examinations->exams.* precedent).
+  // Separation of duties (design §B.8): FACULTY never gets a .manage/.directory.view
+  // staff key; staff roles never get the SELF-scope faculty.view_own.
+  {
+    key: "faculty.qualifications.manage",
+    module: "faculty_management",
+    description: "Create/update/delete + list faculty qualifications (staff)",
+  },
+  {
+    key: "faculty.workload.manage",
+    module: "faculty_management",
+    description: "Create/update/recompute workload + manage workload policy (staff)",
+  },
+  {
+    key: "faculty.teaching_history.manage",
+    module: "faculty_management",
+    description: "Reconcile/append + read teaching history (staff)",
+  },
+  {
+    key: "faculty.directory.view",
+    module: "faculty_management",
+    description: "Read any faculty member's consolidated academic profile (staff)",
+  },
+  {
+    key: "faculty.view_own",
+    module: "faculty_management",
+    description: "Faculty self-service read of OWN profile/workload/history/qualifications",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -559,7 +592,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.results.view_own",
     "exams.reeval.request_own",
   ],
-  FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own", "exams.marks.enter"],
+  FACULTY: [
+    "classes.view_own",
+    "attendance.mark",
+    "attendance.view_own",
+    "exams.marks.enter",
+    "faculty.view_own",
+  ],
   // ACCOUNTANT — additive platform template role (FACULTY/LIBRARIAN/
   // ADMISSION_OFFICER precedent); fees-scoped ONLY (grants no exams/library/etc).
   ACCOUNTANT: [
@@ -627,6 +666,10 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.results.publish",
     "exams.results.view",
     "exams.reeval.manage",
+    "faculty.qualifications.manage",
+    "faculty.workload.manage",
+    "faculty.teaching_history.manage",
+    "faculty.directory.view",
   ],
   ADMIN: [
     "admin.users.view",
@@ -692,6 +735,10 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.results.publish",
     "exams.results.view",
     "exams.reeval.manage",
+    "faculty.qualifications.manage",
+    "faculty.workload.manage",
+    "faculty.teaching_history.manage",
+    "faculty.directory.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

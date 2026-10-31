@@ -24,6 +24,7 @@ export const MODULES = [
   { key: "fees", name: "Fees", description: "Fees (future)" },
   { key: "library", name: "Library", description: "Library (future)" },
   { key: "admissions", name: "Admissions", description: "Admissions (Phase 6)" },
+  { key: "faculty_management", name: "Faculty Management", description: "Academic faculty records — qualifications, workload, teaching history (Phase 9)" },
 ] as const satisfies readonly ModuleDef[];
 
 export type ModuleKey = (typeof MODULES)[number]["key"];
@@ -63,4 +64,11 @@ export const MODULE_DEPENDENCIES: Record<ModuleKey, readonly ModuleKey[]> = {
   // validated at operation time via composite FKs + in-handler lookups, not by a
   // gated-module activation edge.
   admissions: [],
+  // faculty_management is foundational-not-gated (the attendance/fees/admissions
+  // precedent): only its own row must be ENTITLED->ACTIVE. Its real prerequisites
+  // (FacultyProfile / User / Department) are FOUNDATIONAL data with NO ACTIVE
+  // InstitutionModule row — a gated-module edge would PERMANENTLY block activation.
+  // Those prerequisites are validated at operation time via composite FKs +
+  // in-handler lookups, not by a gated-module activation edge.
+  faculty_management: [],
 };

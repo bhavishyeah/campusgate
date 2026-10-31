@@ -37,6 +37,7 @@ const SEEDING_MIGRATION_DIRS = [
   "20261129000000_phase7_fees_slice2",
   "20261206000000_phase8_exams_slice1",
   "20261213000000_phase8_exams_slice2",
+  "20261220000000_phase9_faculty_management",
 ];
 
 function migrationSql(dir: string): string {

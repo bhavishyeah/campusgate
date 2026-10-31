@@ -208,6 +208,17 @@ export interface SeededTenant {
   // trigger-disable because its column guard forbids DELETE unconditionally.
   resultPublicationId: string;
   reevalRequestId: string;
+  // Phase-9.1 Faculty Management (design §B.2). The THREE mutable tables
+  // (faculty_qualifications, faculty_workload_policies, faculty_workloads) are
+  // seeded here (standard RLS pair), children of the ALREADY-seeded
+  // facultyProfile + academicTerm. faculty_teaching_history is STRICTLY
+  // append-only (its BEFORE UPDATE OR DELETE trigger blocks even adminClient in
+  // the shared teardown), so it is EXCLUDED from this generic seed/cleanup loop
+  // and proven by the self-contained append-only case — the marks_record_history
+  // / schedule_revisions precedent.
+  facultyQualificationId: string;
+  facultyWorkloadPolicyId: string;
+  facultyWorkloadId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -312,6 +323,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   // Phase-8 slice 8.2 IDs (deterministic so cleanup is exact).
   const resultPublicationId = id(`rpub_${key}`);
   const reevalRequestId = id(`reeval_${key}`);
+  // Phase-9.1 faculty-management IDs (deterministic so cleanup is exact). The
+  // append-only faculty_teaching_history is NOT seeded here (self-contained case).
+  const facultyQualificationId = id(`fqual_${key}`);
+  const facultyWorkloadPolicyId = id(`fwpol_${key}`);
+  const facultyWorkloadId = id(`fwork_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1045,6 +1061,47 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.1 Faculty Management MUTABLE tables (design §B.2). Seeded via the
+  // RLS-bypassing adminClient, children of the ALREADY-seeded facultyProfile +
+  // academicTerm: a qualification, the one-per-institution workload policy, and a
+  // workload row for the seeded faculty + term. The append-only
+  // faculty_teaching_history is DELIBERATELY NOT seeded here (its trigger blocks
+  // the shared teardown); its append-only behaviour is proven by the
+  // self-contained case.
+  await adminClient.facultyQualification.create({
+    data: {
+      id: facultyQualificationId,
+      institutionId,
+      facultyId: facultyProfileId,
+      kind: "DEGREE",
+      title: `${PREFIX}M.Tech ${key}`,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.facultyWorkloadPolicy.create({
+    data: {
+      id: facultyWorkloadPolicyId,
+      institutionId,
+      maxWeeklyHours: 40,
+      updatedByUserId: userId,
+    },
+  });
+
+  await adminClient.facultyWorkload.create({
+    data: {
+      id: facultyWorkloadId,
+      institutionId,
+      facultyId: facultyProfileId,
+      academicTermId,
+      teachingHours: 4,
+      nonTeachingHours: 0,
+      totalHours: 4,
+      overAllocated: false,
+      updatedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1100,6 +1157,9 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     marksRecordId,
     resultPublicationId,
     reevalRequestId,
+    facultyQualificationId,
+    facultyWorkloadPolicyId,
+    facultyWorkloadId,
   };
 }
 
@@ -1113,6 +1173,32 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.1 Faculty Management tables FIRST (leaves), BEFORE the
+  // faculty_profiles / academic_terms deletes below (their composite FKs are ON
+  // DELETE RESTRICT). The three mutable tables are deleted directly; the
+  // append-only faculty_teaching_history carries a BEFORE UPDATE OR DELETE
+  // trigger that blocks even adminClient, so it is deleted within a scoped
+  // trigger-disable (the marks_record_history / student_profile_history dance).
+  // A self-contained append-only case seeds + self-cleans history rows; if it
+  // errored mid-way it can leave residue, so delete defensively here (no-op when
+  // empty).
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(
+      `ALTER TABLE "faculty_teaching_history" DISABLE TRIGGER "faculty_teaching_history_no_update_delete"`,
+    ),
+  );
+  try {
+    await withRetry(() => adminClient.facultyTeachingHistory.deleteMany({ where }));
+  } finally {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(
+        `ALTER TABLE "faculty_teaching_history" ENABLE TRIGGER "faculty_teaching_history_no_update_delete"`,
+      ),
+    );
+  }
+  await withRetry(() => adminClient.facultyWorkload.deleteMany({ where }));
+  await withRetry(() => adminClient.facultyWorkloadPolicy.deleteMany({ where }));
+  await withRetry(() => adminClient.facultyQualification.deleteMany({ where }));
   // Phase-8 exams tables FIRST (child -> parent), BEFORE the student_profiles /
   // subjects / programs / academic_sessions / terms deletes below (their
   // composite FKs are ON DELETE RESTRICT). The three INSERT-only tables
@@ -1363,6 +1449,12 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-9.1 faculty-management MUTABLE tables (faculty_teaching_history is
+    // append-only and never seeded by the generic loop, so it is not counted —
+    // the marks_record_history precedent). Counted SEQUENTIALLY (pooler cap).
+    () => adminClient.facultyWorkload.count({ where }),
+    () => adminClient.facultyWorkloadPolicy.count({ where }),
+    () => adminClient.facultyQualification.count({ where }),
     // Phase-8 exams MUTABLE/GUARDED tables (the two INSERT-only snapshot/history
     // tables are never seeded by the generic loop, so they are not counted — the
     // payment_allocations precedent). reeval_requests + the seeded
@@ -1564,6 +1656,13 @@ export const RLS_TABLES = [
   // the append-only pair to the default modify pair in 8.2 (its immutability is
   // now a column guard), so its EXPECTED_POLICIES entry is REMOVED below.
   "reeval_requests",
+  // Phase-9.1 Faculty Management tables (design §B.2). The three mutable tables
+  // (faculty_qualifications, faculty_workload_policies, faculty_workloads) use the
+  // default modify pair; faculty_teaching_history is append-only (EXPECTED_POLICIES).
+  "faculty_qualifications",
+  "faculty_workload_policies",
+  "faculty_workloads",
+  "faculty_teaching_history",
 ] as const;
 
 /**
@@ -1657,6 +1756,13 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   result_snapshots: [
     "tenant_isolation_select",
     "result_snapshots_tenant_insert",
+  ],
+  // Phase-9.1: faculty_teaching_history is STRICTLY append-only (design §B.2.4) —
+  // the SELECT + INSERT pair, NO modify policy. The three mutable faculty tables
+  // are deliberately ABSENT here so they fall through to DEFAULT_POLICIES.
+  faculty_teaching_history: [
+    "tenant_isolation_select",
+    "faculty_teaching_history_tenant_insert",
   ],
 };
 

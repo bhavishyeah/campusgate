@@ -1315,3 +1315,78 @@ export type PutMarksInput = z.infer<typeof putMarksSchema>;
 export type CorrectMarkInput = z.infer<typeof correctMarkSchema>;
 export type CreateGradingSchemeInput = z.infer<typeof createGradingSchemeSchema>;
 export type PatchGradingSchemeInput = z.infer<typeof patchGradingSchemeSchema>;
+
+// ─── Phase 9.1 Faculty Management ────────────────────────────────────────────
+// institutionId / userId are NEVER accepted from the body — always from the
+// verified token. facultyId / academicTermId / qualification id come from the
+// path and are existence-validated by composite FK + in-handler lookup, not
+// trusted from input. documentRef is a metadata string/URL only — NO upload.
+
+export const facultyQualificationKindEnum = z.enum([
+  "DEGREE",
+  "CERTIFICATION",
+  "DIPLOMA",
+  "OTHER",
+]);
+
+const qualificationYearSchema = z
+  .number()
+  .int()
+  .min(1900)
+  .max(new Date().getFullYear() + 1);
+
+export const createFacultyQualificationSchema = z.object({
+  title: z.string().min(1).max(200),
+  kind: facultyQualificationKindEnum.optional(),
+  issuingBody: z.string().min(1).max(200).optional(),
+  field: z.string().min(1).max(200).optional(),
+  year: qualificationYearSchema.optional(),
+  documentRef: z.string().min(1).max(2048).optional(),
+});
+
+// All fields optional; at least one must be present. NOTE: a PATCH that passes
+// validation and writes ALWAYS records faculty.qualification.updated — even a
+// semantic no-op (audits the staff action, not a field diff) — design §B.11 F8.
+export const patchFacultyQualificationSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    kind: facultyQualificationKindEnum.optional(),
+    issuingBody: z.string().min(1).max(200).optional(),
+    field: z.string().min(1).max(200).optional(),
+    year: qualificationYearSchema.optional(),
+    documentRef: z.string().min(1).max(2048).optional(),
+  })
+  .refine(
+    (v) =>
+      v.title !== undefined ||
+      v.kind !== undefined ||
+      v.issuingBody !== undefined ||
+      v.field !== undefined ||
+      v.year !== undefined ||
+      v.documentRef !== undefined,
+    { message: "no updatable fields provided" },
+  );
+
+export const putWorkloadPolicySchema = z.object({
+  maxWeeklyHours: z.number().int().min(1).max(168),
+});
+
+// nonTeachingHours / override / overrideReason. overrideReason is REQUIRED when
+// override === true (design §B.11). The over-allocation 422 decision itself is
+// service-owned (needs the policy row + computed total).
+export const patchFacultyWorkloadSchema = z
+  .object({
+    nonTeachingHours: z.number().int().min(0).max(168).optional(),
+    override: z.boolean().optional(),
+    overrideReason: z.string().min(1).max(500).optional(),
+  })
+  .refine((v) => v.override !== true || (v.overrideReason !== undefined && v.overrideReason.length > 0), {
+    message: "overrideReason is required when override is true",
+    path: ["overrideReason"],
+  });
+
+export type FacultyQualificationKindValue = z.infer<typeof facultyQualificationKindEnum>;
+export type CreateFacultyQualificationInput = z.infer<typeof createFacultyQualificationSchema>;
+export type PatchFacultyQualificationInput = z.infer<typeof patchFacultyQualificationSchema>;
+export type PutWorkloadPolicyInput = z.infer<typeof putWorkloadPolicySchema>;
+export type PatchFacultyWorkloadInput = z.infer<typeof patchFacultyWorkloadSchema>;

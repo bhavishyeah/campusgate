@@ -1,0 +1,77 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "N1",
+      "severity": "NIT",
+      "where": "§B.3 section (j) role_permissions INSERT skeleton",
+      "problem": "The role_permissions skeleton joins roles with `JOIN \"roles\" r ON r.\"key\" = m.\"roleKey\"` and omits the `AND r.\"institutionId\" IS NULL` template-role predicate that all 13 existing seed blocks use (verified across identity_rbac_b2, phase1_academics, module_system, phase2_sis, phase3_classes, phase4_attendance, phase5_library, phase6_admissions, phase7_fees_slice1, phase8_exams_slice1/2). roles_key_institutionId_key permits tenant-scoped roles sharing a template key, so an unscoped join could bind faculty permissions to a non-template role; a coder copying the skeleton verbatim would diverge from the invariant house pattern. Non-blocking: the skeleton illustrates the parser's AS m( end-marker and §B.14 commits to mirroring the frozen house style.",
+      "fix": "Add `AND r.\"institutionId\" IS NULL` to the roles join and use the house forms (deterministic id `'rp_' || r.\"key\" || '__' || p.\"key\"` and `ON CONFLICT (\"roleId\", \"permissionId\") DO NOTHING`); both are parser-safe since the end-marker is `AS m(`.",
+      "status": "NEW"
+    },
+    {
+      "id": "F1",
+      "severity": "HIGH",
+      "status": "CLOSED",
+      "where": "§B.1 module-registry rationale",
+      "resolution": "Rewritten to cite only attendance/fees/admissions as the [] precedent, with an explicit 'Counter-example, acknowledged' paragraph on examinations' real non-empty edge, the distinguishing 'is the prerequisite a gated module?' test, and a warning not to 'fix' examinations. Re-verified against the real packages/shared/src/modules.ts."
+    },
+    {
+      "id": "F2",
+      "severity": "MEDIUM",
+      "status": "CLOSED",
+      "where": "§B.9 routes 9/12/13",
+      "resolution": "Added read-only policyMaxWeeklyHours (number|null) to routes 9, 12, 13, resolved server-side with no extra permission, making overAllocated interpretable for faculty.view_own and faculty.directory.view readers; editable policy view stays on faculty.workload.manage."
+    },
+    {
+      "id": "F3",
+      "severity": "MEDIUM",
+      "status": "CLOSED",
+      "where": "§B.4 teaching-hours derivation + §B.13",
+      "resolution": "Counting unit specified as distinct (subjectId, classSectionId) ACTIVE assignments counted separately; PRIMARY-only (SUBSTITUTE/ASSISTANT excluded + surfaced as excludedAssignmentIds); null contactHoursPerWeek -> 0 + unestimatedSubjectIds; computeWorkload input is {subjectId, classSectionId, role, status} with four mandated unit tests; OQ-5 added. Verified the real FacultyAssignmentRole has three values and attendance-authz allows section-less + section-specific coexistence."
+    },
+    {
+      "id": "F4",
+      "severity": "MEDIUM",
+      "status": "CLOSED",
+      "where": "§B.3(j) + Acceptance Criterion 4",
+      "resolution": "Made prescriptive: permissions block first ending at ON CONFLICT (\"key\") DO NOTHING with no earlier ON CONFLICT; role_permissions second in the mandatory FROM (VALUES ...) AS m(\"roleKey\",\"permKey\") form (plain VALUES forbidden); AC4 restates appending the new dir to the hardcoded SEEDING_MIGRATION_DIRS. Verified the parser end-markers in catalogue-sync.test.ts."
+    },
+    {
+      "id": "F5",
+      "severity": "NIT",
+      "status": "CLOSED",
+      "where": "§B.5 vs §B.10 restrict_violation status code",
+      "resolution": "§B.5 now says 500 with rationale (no legal UPDATE/DELETE path => code defect), matching §B.10 and cross-referencing it; deliberate divergence from exams' 409 documented. Verified exams.ts isRestrictViolation maps to 409 at all sites."
+    },
+    {
+      "id": "F6",
+      "severity": "NIT",
+      "status": "CLOSED",
+      "where": "§A.4 + §B.3 frozen-dirs count",
+      "resolution": "Replaced the bare number with the byte-identical rule plus derivation (16 = the 15 the slice-2 header names plus slice-2 itself). Verified the slice-2 header says 'fifteen'."
+    },
+    {
+      "id": "F7",
+      "severity": "NIT",
+      "status": "CLOSED",
+      "where": "§B.10 qualification delete error handling",
+      "resolution": "Added entry: deleteMany({where:{id,institutionId,facultyId}}); count 0 -> DENIED audit + 404 'qualification not found' (not silent 200); deleteMany chosen so 0-row is a count not a P2025 throw."
+    },
+    {
+      "id": "F8",
+      "severity": "NIT",
+      "status": "CLOSED",
+      "where": "§B.11 patch audit behavior",
+      "resolution": "§B.11 states a successful PATCH always records faculty.qualification.updated even on a semantic no-op (audit records the staff action, not a diff)."
+    },
+    {
+      "id": "F9",
+      "severity": "NIT",
+      "status": "CLOSED",
+      "where": "§B.2.2 @@unique([institutionId]) vs OQ-2",
+      "resolution": "Annotated as a deliberate this-slice commitment with a note that widening to per-term/per-designation later requires DROP+RECREATE (non-additive), explicitly deferred with OQ-2 to its own later slice."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase9-faculty-management\\design-review.md"
+}

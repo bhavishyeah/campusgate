@@ -314,6 +314,10 @@ model Institution {
   resultPublications           ResultPublication[]
   resultSnapshots              ResultSnapshot[]
   reevalRequests               ReevalRequest[]
+  facultyQualifications        FacultyQualification[]
+  facultyWorkloadPolicies      FacultyWorkloadPolicy[]
+  facultyWorkloads             FacultyWorkload[]
+  facultyTeachingHistory       FacultyTeachingHistory[]
 
   @@map("institutions")
 }
@@ -941,6 +945,8 @@ model AcademicTerm {
   scheduledClasses     ScheduledClass[]
   attendanceSessions   AttendanceSession[]
   examinations         Examination[]
+  facultyWorkloads       FacultyWorkload[]
+  facultyTeachingHistory FacultyTeachingHistory[]
 
   @@unique([academicSessionId, ordinal])
   @@unique([id, institutionId])
@@ -1310,6 +1316,7 @@ model Subject {
   assessments        Assessment[]
   resultSnapshots    ResultSnapshot[]
   reevalRequests     ReevalRequest[]
+  facultyTeachingHistory FacultyTeachingHistory[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -1337,6 +1344,7 @@ model ClassSection {
   enrollments      ClassEnrollment[]
   scheduledClasses ScheduledClass[]
   assignments      FacultyAssignment[]
+  facultyTeachingHistory FacultyTeachingHistory[]
 
   @@unique([institutionId, programId, academicSessionId, academicTermId, label])
   @@unique([id, institutionId])
@@ -1382,6 +1390,9 @@ model FacultyProfile {
   assignments        FacultyAssignment[]
   scheduledClasses   ScheduledClass[]
   attendanceSessions AttendanceSession[]
+  qualifications     FacultyQualification[]
+  workloads          FacultyWorkload[]
+  teachingHistory    FacultyTeachingHistory[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -2906,4 +2917,128 @@ model ReevalRequest {
   @@index([institutionId, candidateId])
   @@index([institutionId, status])
   @@map("reeval_requests")
+}
+
+// ─── FACULTY MANAGEMENT (Phase 9.1, tenant-owned) ───────────────────────────
+// Academic domain records that REFERENCE the authoritative FacultyProfile
+// identity + FacultyAssignment academic assignments — never duplicating them.
+// All tables carry institutionId + the (id, institutionId) composite anchor;
+// composite same-tenant FKs, RLS (ENABLE+FORCE), and CHECKs live in the
+// hand-authored migration 20261220000000_phase9_faculty_management.
+
+model FacultyQualification {
+  id              String                   @id @default(cuid())
+  institutionId   String
+  institution     Institution              @relation(fields: [institutionId], references: [id])
+  facultyId       String
+  faculty         FacultyProfile           @relation(fields: [facultyId], references: [id])
+  kind            FacultyQualificationKind @default(DEGREE)
+  title           String // e.g. "M.Tech Computer Science"
+  issuingBody     String? // institution / board / university
+  field           String? // field of study / specialization
+  year            Int? // year awarded
+  documentRef     String? // metadata string/URL only — NO blob (Document Mgmt owns storage later)
+  createdByUserId String // recorded actor id, NO FK (the 8.1 createdByUserId precedent)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  // Mutable (editable-with-audit). Standard RLS pair; composite same-tenant FK
+  // (institutionId, facultyId)->faculty_profiles and CHECK char_length(title) >= 1
+  // are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, facultyId])
+  @@map("faculty_qualifications")
+}
+
+model FacultyWorkloadPolicy {
+  id              String      @id @default(cuid())
+  institutionId   String
+  institution     Institution @relation(fields: [institutionId], references: [id])
+  maxWeeklyHours  Int // workload-policy max (teaching + non-teaching), per week
+  updatedByUserId String // recorded actor id, NO FK
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // One policy per institution — a deliberate this-slice commitment (design
+  // §B.2.2 F9). Standard RLS pair; CHECK maxWeeklyHours > 0 is raw SQL.
+  @@unique([institutionId]) // one policy per institution
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("faculty_workload_policies")
+}
+
+model FacultyWorkload {
+  id               String         @id @default(cuid())
+  institutionId    String
+  institution      Institution    @relation(fields: [institutionId], references: [id])
+  facultyId        String
+  faculty          FacultyProfile @relation(fields: [facultyId], references: [id])
+  academicTermId   String
+  academicTerm     AcademicTerm   @relation(fields: [academicTermId], references: [id])
+  teachingHours    Int // derived from ACTIVE PRIMARY FacultyAssignment + Subject.contactHoursPerWeek
+  nonTeachingHours Int            @default(0) // admin/research etc. (staff-entered)
+  totalHours       Int // computed = teaching + nonTeaching (persisted for query + audit)
+  overAllocated    Boolean        @default(false) // total > policy max
+  overrideReason   String? // set when staff deliberately exceed the max
+  lastReconciledAt DateTime? // when teachingHours was last derived from assignments
+  updatedByUserId  String // recorded actor id, NO FK
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Mutable (recompute-audited). Standard RLS pair; composite same-tenant FKs
+  // (institutionId, facultyId)->faculty_profiles, (institutionId, academicTermId)
+  // ->academic_terms, and CHECKs (totalHours = teachingHours + nonTeachingHours;
+  // teachingHours >= 0; nonTeachingHours >= 0) are raw SQL in the migration.
+  @@unique([institutionId, facultyId, academicTermId]) // one workload row per faculty per term
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, facultyId])
+  @@index([institutionId, academicTermId])
+  @@map("faculty_workloads")
+}
+
+model FacultyTeachingHistory {
+  id                 String                           @id @default(cuid())
+  institutionId      String
+  institution        Institution                      @relation(fields: [institutionId], references: [id])
+  facultyId          String
+  faculty            FacultyProfile                   @relation(fields: [facultyId], references: [id])
+  subjectId          String
+  subject            Subject                          @relation(fields: [subjectId], references: [id])
+  classSectionId     String?
+  classSection       ClassSection?                    @relation(fields: [classSectionId], references: [id])
+  academicTermId     String
+  academicTerm       AcademicTerm                     @relation(fields: [academicTermId], references: [id])
+  sourceAssignmentId String? // recorded FacultyAssignment id, NO FK (assignment is mutable; decoupling)
+  role               FacultyAssignmentRole
+  changeType         FacultyTeachingHistoryChangeType // ASSIGNED | ENDED
+  effectiveAt        DateTime // assignedAt (ASSIGNED) or endedAt (ENDED)
+  recordedByUserId   String // recorded actor id, NO FK
+  createdAt          DateTime                         @default(now())
+
+  // STRICTLY append-only (the marks_record_history precedent): createdAt only (no
+  // updatedAt). Append-only RLS pair {tenant_isolation_select,
+  // faculty_teaching_history_tenant_insert} + the unconditional-raise
+  // faculty_teaching_history_no_update_delete BEFORE UPDATE OR DELETE trigger +
+  // composite same-tenant FKs ((institutionId, facultyId)->faculty_profiles,
+  // (institutionId, subjectId)->subjects, (institutionId, classSectionId)->
+  // class_sections, (institutionId, academicTermId)->academic_terms) are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, facultyId])
+  @@index([institutionId, facultyId, academicTermId])
+  @@map("faculty_teaching_history")
+}
+
+enum FacultyQualificationKind {
+  DEGREE
+  CERTIFICATION
+  DIPLOMA
+  OTHER
+}
+
+enum FacultyTeachingHistoryChangeType {
+  ASSIGNED
+  ENDED
 }

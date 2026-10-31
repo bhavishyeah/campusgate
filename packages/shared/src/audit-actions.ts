@@ -207,6 +207,17 @@ export const AUDIT_ACTIONS = [
   { key: "exams.reeval.transitioned", module: "examinations", description: "Re-evaluation request advanced ({from,to}) incl. REJECTED" },
   { key: "exams.reeval.remarked", module: "examinations", description: "A marks_records row re-marked under an UNDER_REVIEW re-eval request (CORRECTED history row)" },
   { key: "exams.results.superseded", module: "examinations", description: "Prior published version flipped to SUPERSEDED on re-publication" },
+  // faculty.* (8) — Phase 9.1 Faculty Management mutations (past-tense). No
+  // migration mirror (validated only in recordAuditEvent). The permission/audit
+  // KEY prefix is faculty.*; the module registry key is faculty_management.
+  { key: "faculty.qualification.created", module: "faculty_management", description: "Faculty qualification created" },
+  { key: "faculty.qualification.updated", module: "faculty_management", description: "Faculty qualification updated (audits the staff action, no field diff)" },
+  { key: "faculty.qualification.deleted", module: "faculty_management", description: "Faculty qualification deleted (staff removal of an erroneous record)" },
+  { key: "faculty.workload.recomputed", module: "faculty_management", description: "Faculty workload recomputed from ACTIVE assignments + Subject.contactHoursPerWeek" },
+  { key: "faculty.workload.updated", module: "faculty_management", description: "Faculty workload updated (nonTeachingHours / override)" },
+  { key: "faculty.workload.overallocated", module: "faculty_management", description: "Faculty workload written over the policy max with an explicit override + reason" },
+  { key: "faculty.workload_policy.updated", module: "faculty_management", description: "Per-institution faculty workload policy upserted" },
+  { key: "faculty.teaching_history.reconciled", module: "faculty_management", description: "Teaching-history ledger reconciled from FacultyAssignment rows (append-only)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

@@ -2605,6 +2605,184 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-9.1 Faculty Management tables (design §B.2) ──────────────────────
+  // The three mutable tables (faculty_qualifications, faculty_workload_policies,
+  // faculty_workloads): cross-tenant read denied, spoofed/cross-tenant write
+  // denied, foreign-parent composite-FK violation, buggy-query backstop,
+  // three-GUC-state fail-closed. faculty_teaching_history (STRICTLY append-only):
+  // a self-contained case — insert OK, cross-tenant SELECT empty, UPDATE+DELETE
+  // both denied.
+
+  it("3q1. faculty read escape: tenant A cannot see tenant B's faculty rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.facultyQualification.findUnique({ where: { id: B.facultyQualificationId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.facultyWorkloadPolicy.findUnique({ where: { id: B.facultyWorkloadPolicyId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.facultyWorkload.findUnique({ where: { id: B.facultyWorkloadId } }))).toBeNull();
+
+    // Unscoped lists under A return only A's rows, never B's.
+    const ownQuals = await withTenant(A.institutionId, (tx) => tx.facultyQualification.findMany({}));
+    expect(ownQuals.length).toBeGreaterThan(0);
+    for (const row of ownQuals) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.facultyQualificationId);
+    }
+  }, 60_000);
+
+  it("3q2. faculty spoofed insert: A cannot stamp a qualification/workload institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.facultyQualification.create({
+          data: {
+            id: `${PREFIX}SPOOF_FQUAL`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            facultyId: B.facultyProfileId,
+            kind: "DEGREE",
+            title: `${PREFIX}SPOOF`,
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.facultyWorkload.create({
+          data: {
+            id: `${PREFIX}SPOOF_FWORK`,
+            institutionId: B.institutionId, // spoof
+            facultyId: B.facultyProfileId,
+            academicTermId: B.academicTermId,
+            teachingHours: 1,
+            nonTeachingHours: 0,
+            totalHours: 1,
+            updatedByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3q3. faculty foreign-parent: A cannot reference B's faculty profile / term", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, facultyId) makes it physically
+    // impossible to reference B's faculty profile under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.facultyQualification.create({
+          data: {
+            id: `${PREFIX}FOREIGN_FQUAL`,
+            institutionId: A.institutionId,
+            facultyId: B.facultyProfileId, // B's faculty under A's tenant
+            kind: "DEGREE",
+            title: `${PREFIX}foreign`,
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // And a workload cannot reference B's academic term under A.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.facultyWorkload.create({
+          data: {
+            id: `${PREFIX}FOREIGN_FWORK`,
+            institutionId: A.institutionId,
+            facultyId: A.facultyProfileId,
+            academicTermId: B.academicTermId, // B's term under A's tenant
+            teachingHours: 1,
+            nonTeachingHours: 0,
+            totalHours: 1,
+            updatedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3q4. faculty buggy-query backstop + fail-closed (unset / empty-string GUC)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // (i) unscoped findMany under A returns only A's rows.
+    const quals = await withTenant(A.institutionId, (tx) => tx.facultyQualification.findMany({}));
+    for (const r of quals) expect(r.institutionId).toBe(A.institutionId);
+    expect(quals.some((r: { id: string }) => r.id === B.facultyQualificationId)).toBe(false);
+
+    const workloads = await withTenant(A.institutionId, (tx) => tx.facultyWorkload.findMany({}));
+    for (const r of workloads) expect(r.institutionId).toBe(A.institutionId);
+    expect(workloads.some((r: { id: string }) => r.id === B.facultyWorkloadId)).toBe(false);
+
+    // (ii) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.facultyQualification.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (iii) empty-string GUC => nullif(...,'') => NULL => no rows.
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const q = await tx.facultyQualification.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const w = await tx.facultyWorkload.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const p = await tx.facultyWorkloadPolicy.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return q.length + w.length + p.length;
+    });
+    expect(empty).toBe(0);
+  }, 60_000);
+
+  it("3q5. faculty_teaching_history APPEND-ONLY (self-contained): insert OK, cross-tenant SELECT empty, UPDATE+DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the 3p7 exams append-only case): INSERT one ledger
+    // row under A, read under A, empty under B, then prove UPDATE + DELETE are both
+    // denied (REVOKE + append-only trigger). Removed here within this test's
+    // trigger-disable scope so the shared teardown is not blocked.
+    const histId = `${PREFIX}FTHIST_A`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.facultyTeachingHistory.create({
+        data: {
+          id: histId,
+          institutionId: A.institutionId,
+          facultyId: A.facultyProfileId,
+          subjectId: A.subjectId,
+          classSectionId: A.classSectionId,
+          academicTermId: A.academicTermId,
+          sourceAssignmentId: A.facultyAssignmentId,
+          role: "PRIMARY",
+          changeType: "ASSIGNED",
+          effectiveAt: new Date("2026-07-01T00:00:00.000Z"),
+          recordedByUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable under A, empty under B.
+    expect(await withTenant(A.institutionId, (tx) => tx.facultyTeachingHistory.findUnique({ where: { id: histId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.facultyTeachingHistory.findUnique({ where: { id: histId } }))).toBeNull();
+
+    // STRICTLY append-only: UPDATE + DELETE both denied (REVOKE + trigger).
+    await expect(withTenant(A.institutionId, (tx) => tx.facultyTeachingHistory.update({ where: { id: histId }, data: { role: "ASSISTANT" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.facultyTeachingHistory.delete({ where: { id: histId } }))).rejects.toBeTruthy();
+
+    // Survived.
+    expect(await adminClient.facultyTeachingHistory.findUnique({ where: { id: histId } })).toBeTruthy();
+
+    // Clean up within a scoped trigger-disable so the shared teardown is not blocked.
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "faculty_teaching_history" DISABLE TRIGGER "faculty_teaching_history_no_update_delete"`);
+    try {
+      await adminClient.facultyTeachingHistory.deleteMany({ where: { id: histId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "faculty_teaching_history" ENABLE TRIGGER "faculty_teaching_history_no_update_delete"`);
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -2722,6 +2900,11 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // payment_transactions precedent), so it is NOT here.
       "marks_record_history",
       "result_snapshots",
+      // Phase-9.1: faculty_teaching_history is STRICTLY append-only (design
+      // §B.2.4) — INSERT-only policy + REVOKE + trigger, NO modify policy. The
+      // three mutable faculty tables carry the standard modify pair (asserted by
+      // the EXPECTED_POLICIES/DEFAULT_POLICIES loop above).
+      "faculty_teaching_history",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(
