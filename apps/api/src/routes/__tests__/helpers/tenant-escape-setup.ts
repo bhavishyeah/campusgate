@@ -178,6 +178,26 @@ export interface SeededTenant {
   // append-only behaviour is proven by the self-contained cases.
   concessionDefinitionId: string;
   refundId: string;
+  // Phase-8 exams tables (design §7). The SIX mutable/column-guard tables are
+  // seeded here (examinations + marks_records carry column-guard triggers; the
+  // other four are standard-pair). Seed order respects the RESTRICT composite
+  // FKs: examination -> grading_scheme -> grade_band -> exam_schedule ->
+  // assessment -> candidate -> marks_record. The THREE INSERT-only tables
+  // (marks_record_history, result_publications, result_snapshots) are
+  // DELIBERATELY NOT seeded here — their BEFORE UPDATE OR DELETE trigger blocks
+  // even adminClient in the shared teardown (the payment_allocations / receipts /
+  // application_reviews precedent); their append-only behaviour is proven by the
+  // self-contained case in the escape suite + the exams-behavioral suite. The
+  // examinations + marks_records column-guard triggers forbid DELETE
+  // unconditionally, so teardown deletes those two within a scoped
+  // trigger-disable (the audit_events dance).
+  examinationId: string;
+  gradingSchemeId: string;
+  gradeBandId: string;
+  examScheduleId: string;
+  assessmentId: string;
+  candidateId: string;
+  marksRecordId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -271,6 +291,14 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   // Phase-7 fees slice 7.1 IDs (deterministic so cleanup is exact).
   const concessionDefinitionId = id(`concdef_${key}`);
   const refundId = id(`refund_${key}`);
+  // Phase-8 exams IDs (deterministic so cleanup is exact).
+  const examinationId = id(`exam_${key}`);
+  const examGradingSchemeId = id(`gscheme_${key}`);
+  const gradeBandId = id(`gband_${key}`);
+  const examScheduleId = id(`eschedule_${key}`);
+  const assessmentId = id(`assess_${key}`);
+  const candidateId = id(`cand_${key}`);
+  const marksRecordId = id(`mark_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -877,6 +905,100 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-8 exams MUTABLE/GUARDED tables (design §7). Seeded via the
+  // RLS-bypassing adminClient in child-safe RESTRICT order against the
+  // ALREADY-seeded session/term/program/subject/student: examination ->
+  // grading_scheme -> grade_band -> exam_schedule (on the seeded subject) ->
+  // assessment (on the seeded subject) -> candidate (the seeded studentProfile,
+  // single-identity composite FK) -> marks_record (on that candidate +
+  // assessment). The three INSERT-only tables are NOT seeded here (their triggers
+  // block the shared teardown). examinations + marks_records carry column-guard
+  // triggers that forbid DELETE unconditionally, so teardown disables them.
+  await adminClient.examination.create({
+    data: {
+      id: examinationId,
+      institutionId,
+      academicSessionId,
+      academicTermId,
+      programId,
+      name: `${PREFIX}Exam ${key}`,
+      type: "MIDTERM",
+      status: "MARKS_OPEN",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.gradingScheme.create({
+    data: {
+      id: examGradingSchemeId,
+      institutionId,
+      name: `${PREFIX}Scheme ${key}`,
+      isActive: true,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.gradeBand.create({
+    data: {
+      id: gradeBandId,
+      institutionId,
+      gradingSchemeId: examGradingSchemeId,
+      minPercentBps: 0,
+      maxPercentBps: 10000,
+      gradeLabel: "A",
+      gradePoints: 1000,
+      isPassing: true,
+      ordinal: 0,
+    },
+  });
+
+  await adminClient.examSchedule.create({
+    data: {
+      id: examScheduleId,
+      institutionId,
+      examId: examinationId,
+      subjectId,
+      room: id(`ROOM_${key}`),
+      roomCapacity: 30,
+      startsAt: new Date("2026-12-01T09:00:00.000Z"),
+      endsAt: new Date("2026-12-01T12:00:00.000Z"),
+    },
+  });
+
+  await adminClient.assessment.create({
+    data: {
+      id: assessmentId,
+      institutionId,
+      examId: examinationId,
+      subjectId,
+      name: "FINAL",
+      maxMarks: 100,
+      weight: 100,
+    },
+  });
+
+  await adminClient.candidate.create({
+    data: {
+      id: candidateId,
+      institutionId,
+      examId: examinationId,
+      studentId: studentProfileId,
+    },
+  });
+
+  await adminClient.marksRecord.create({
+    data: {
+      id: marksRecordId,
+      institutionId,
+      examId: examinationId,
+      assessmentId,
+      candidateId,
+      studentId: studentProfileId,
+      marks: 80,
+      enteredByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -923,6 +1045,13 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     paymentTransactionId,
     concessionDefinitionId,
     refundId,
+    examinationId,
+    gradingSchemeId: examGradingSchemeId,
+    gradeBandId,
+    examScheduleId,
+    assessmentId,
+    candidateId,
+    marksRecordId,
   };
 }
 
@@ -936,6 +1065,38 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-8 exams tables FIRST (child -> parent), BEFORE the student_profiles /
+  // subjects / programs / academic_sessions / terms deletes below (their
+  // composite FKs are ON DELETE RESTRICT). The three INSERT-only tables
+  // (marks_record_history, result_publications, result_snapshots) are never
+  // seeded by the generic loop, so there is nothing to delete here for them (the
+  // payment_allocations / application_reviews precedent). marks_records +
+  // examinations carry column-guard triggers that forbid DELETE unconditionally,
+  // so delete them with those triggers disabled (the audit_events dance). Order:
+  // marks_records -> candidates -> assessments -> exam_schedules -> grade_bands
+  // -> grading_schemes -> examinations.
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" DISABLE TRIGGER "marks_records_guard"`),
+  );
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" DISABLE TRIGGER "examinations_guard"`),
+  );
+  try {
+    await withRetry(() => adminClient.marksRecord.deleteMany({ where }));
+    await withRetry(() => adminClient.candidate.deleteMany({ where }));
+    await withRetry(() => adminClient.assessment.deleteMany({ where }));
+    await withRetry(() => adminClient.examSchedule.deleteMany({ where }));
+    await withRetry(() => adminClient.gradeBand.deleteMany({ where }));
+    await withRetry(() => adminClient.gradingScheme.deleteMany({ where }));
+    await withRetry(() => adminClient.examination.deleteMany({ where }));
+  } finally {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" ENABLE TRIGGER "marks_records_guard"`),
+    );
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" ENABLE TRIGGER "examinations_guard"`),
+    );
+  }
   // Phase-7 fees slice 7.1 tables FIRST (child -> parent), BEFORE the slice-1
   // fees teardown below (refund_reversals/concession_credits -> refunds/
   // student_concessions reference student_charges/payment_transactions with ON
@@ -1118,6 +1279,16 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-8 exams MUTABLE/GUARDED tables (the three INSERT-only tables are
+    // never seeded by the generic loop, so they are not counted — the
+    // payment_allocations precedent). Counted SEQUENTIALLY (session-pooler cap).
+    () => adminClient.marksRecord.count({ where }),
+    () => adminClient.candidate.count({ where }),
+    () => adminClient.assessment.count({ where }),
+    () => adminClient.examSchedule.count({ where }),
+    () => adminClient.gradeBand.count({ where }),
+    () => adminClient.gradingScheme.count({ where }),
+    () => adminClient.examination.count({ where }),
     // FEAT-004 Phase-7 fees MUTABLE/GUARDED tables (the three fully append-only
     // tables are never seeded by the generic loop, so they are not counted — the
     // application_reviews precedent). Counted SEQUENTIALLY (session-pooler cap).
@@ -1284,6 +1455,22 @@ export const RLS_TABLES = [
   "refunds",
   "refund_reversals",
   "adjustments",
+  // Phase-8 exams tables (design §7.3). The seven mutable/column-guard tables
+  // (examinations, grading_schemes, grade_bands, exam_schedules, candidates,
+  // assessments, marks_records) use the default modify pair — the column-guard
+  // triggers on examinations/marks_records enforce immutability at the row level,
+  // NOT via an append-only RLS policy, so they still carry tenant_isolation_modify.
+  // The three INSERT-only tables are append-only (EXPECTED_POLICIES).
+  "examinations",
+  "grading_schemes",
+  "grade_bands",
+  "exam_schedules",
+  "candidates",
+  "assessments",
+  "marks_records",
+  "marks_record_history",
+  "result_publications",
+  "result_snapshots",
 ] as const;
 
 /**
@@ -1361,6 +1548,23 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
     "refund_reversals_tenant_insert",
   ],
   adjustments: ["tenant_isolation_select", "adjustments_tenant_insert"],
+  // Phase-8 exams: the three INSERT-only tables are append-only (design §7.4) —
+  // the SELECT + INSERT pair, NO modify policy. The seven mutable/column-guard
+  // exam tables are deliberately ABSENT here so they fall through to
+  // DEFAULT_POLICIES (examinations/marks_records row immutability is a column
+  // guard, not an append-only RLS policy — the payment_transactions precedent).
+  marks_record_history: [
+    "tenant_isolation_select",
+    "marks_record_history_tenant_insert",
+  ],
+  result_publications: [
+    "tenant_isolation_select",
+    "result_publications_tenant_insert",
+  ],
+  result_snapshots: [
+    "tenant_isolation_select",
+    "result_snapshots_tenant_insert",
+  ],
 };
 
 /** The default policy pair every non-special table must carry. */

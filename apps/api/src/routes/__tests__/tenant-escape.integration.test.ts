@@ -2189,6 +2189,262 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-8 exams tables (design §7) ──────────────────────────────────────
+  // The seven mutable/column-guard tables (examinations, grading_schemes,
+  // grade_bands, exam_schedules, candidates, assessments, marks_records):
+  // cross-tenant read denied, spoofed/cross-tenant write denied, foreign-parent
+  // composite-FK violation, buggy-query backstop, three-GUC-state fail-closed.
+  // The three INSERT-only tables (marks_record_history, result_publications,
+  // result_snapshots): a self-contained append-only case.
+
+  it("3p1. exams read escape: tenant A cannot see tenant B's exam rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.examination.findUnique({ where: { id: B.examinationId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.gradingScheme.findUnique({ where: { id: B.gradingSchemeId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.gradeBand.findUnique({ where: { id: B.gradeBandId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.examSchedule.findUnique({ where: { id: B.examScheduleId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.assessment.findUnique({ where: { id: B.assessmentId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.candidate.findUnique({ where: { id: B.candidateId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.marksRecord.findUnique({ where: { id: B.marksRecordId } }))).toBeNull();
+
+    // Unscoped lists under A still return only A's rows, never B's.
+    const ownExams = await withTenant(A.institutionId, (tx) => tx.examination.findMany({}));
+    expect(ownExams.length).toBeGreaterThan(0);
+    for (const row of ownExams) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.examinationId);
+    }
+  }, 60_000);
+
+  it("3p2. exams spoofed insert: A cannot stamp an examination institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.examination.create({
+          data: {
+            id: `${PREFIX}SPOOF_EXAM`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            academicSessionId: B.academicSessionId,
+            academicTermId: B.academicTermId,
+            programId: B.programId,
+            name: `${PREFIX}SPOOF Exam`,
+            type: "MIDTERM",
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3p3. exams foreign-parent: A cannot schedule referencing B's exam, nor mark referencing B's candidate", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, examId) makes it physically
+    // impossible to reference B's exam under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.examSchedule.create({
+          data: {
+            id: `${PREFIX}FOREIGN_ESCHED`,
+            institutionId: A.institutionId,
+            examId: B.examinationId, // B's exam under A's tenant
+            subjectId: A.subjectId,
+            room: `${PREFIX}R`,
+            roomCapacity: 10,
+            startsAt: new Date("2026-12-02T09:00:00.000Z"),
+            endsAt: new Date("2026-12-02T12:00:00.000Z"),
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // And a marks_record cannot reference B's candidate under A.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.marksRecord.create({
+          data: {
+            id: `${PREFIX}FOREIGN_MARK`,
+            institutionId: A.institutionId,
+            examId: A.examinationId,
+            assessmentId: A.assessmentId,
+            candidateId: B.candidateId, // B's candidate under A's tenant
+            studentId: A.studentProfileId,
+            marks: 10,
+            enteredByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3p4. exams buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const marks = await withTenant(A.institutionId, (tx) => tx.marksRecord.findMany({}));
+    for (const r of marks) expect(r.institutionId).toBe(A.institutionId);
+    expect(marks.some((r: { id: string }) => r.id === B.marksRecordId)).toBe(false);
+
+    const candidates = await withTenant(A.institutionId, (tx) => tx.candidate.findMany({}));
+    for (const r of candidates) expect(r.institutionId).toBe(A.institutionId);
+    expect(candidates.some((r: { id: string }) => r.id === B.candidateId)).toBe(false);
+
+    const aCount = await adminClient.examination.count({ where: { institutionId: A.institutionId } });
+    const aExams = await withTenant(A.institutionId, (tx) => tx.examination.findMany({}));
+    expect(aExams.length).toBe(aCount);
+  }, 60_000);
+
+  it("3p5. exams fail-closed: unset / empty-string GUC yield zero rows for the mutable tables", async () => {
+    // (i) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.examination.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows.
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const e = await tx.examination.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const m2 = await tx.marksRecord.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return e.length + m2.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC.
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.examination.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.examinationId)).toBe(true);
+  }, 60_000);
+
+  it("3p6. exams column-guard: examinations DELETE and an illegal status jump both raise; marks_records DELETE raises", async () => {
+    const A = seeded.A!;
+
+    // DELETE on examinations is forbidden by examinations_guard.
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.examination.delete({ where: { id: A.examinationId } })),
+    ).rejects.toBeTruthy();
+
+    // An illegal backward/skip transition is forbidden (seeded status MARKS_OPEN).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.examination.update({ where: { id: A.examinationId }, data: { status: "DRAFT" } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // DELETE on marks_records is forbidden by marks_records_guard.
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.marksRecord.delete({ where: { id: A.marksRecordId } })),
+    ).rejects.toBeTruthy();
+
+    // The rows survived.
+    expect(await adminClient.examination.findUnique({ where: { id: A.examinationId } })).toBeTruthy();
+    expect(await adminClient.marksRecord.findUnique({ where: { id: A.marksRecordId } })).toBeTruthy();
+  }, 60_000);
+
+  it("3p7. exams append-only tables (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the 3g2 fees append-only case): INSERT one row into
+    // each of the three INSERT-only exam tables under A, assert read under A,
+    // empty under B, then UPDATE + DELETE denied (REVOKE + trigger). Rows removed
+    // here within THIS test's trigger-disable scope so the shared teardown is not
+    // blocked. This is the ONLY place the escape suite touches these three tables.
+    const histId = `${PREFIX}MHIST_A`;
+    const pubId = `${PREFIX}PUB_A`;
+    const snapId = `${PREFIX}SNAP_A`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.marksRecordHistory.create({
+        data: {
+          id: histId,
+          institutionId: A.institutionId,
+          marksRecordId: A.marksRecordId,
+          changeType: "MARKED",
+          previousMarks: null,
+          newMarks: 80,
+          actorUserId: A.userId,
+        },
+      }),
+    );
+    await withTenant(A.institutionId, (tx) =>
+      tx.resultPublication.create({
+        data: {
+          id: pubId,
+          institutionId: A.institutionId,
+          examId: A.examinationId,
+          version: 1,
+          status: "PUBLISHED",
+          gradingSchemeId: A.gradingSchemeId,
+          publishedByUserId: A.userId,
+        },
+      }),
+    );
+    await withTenant(A.institutionId, (tx) =>
+      tx.resultSnapshot.create({
+        data: {
+          id: snapId,
+          institutionId: A.institutionId,
+          resultPublicationId: pubId,
+          examId: A.examinationId,
+          candidateId: A.candidateId,
+          studentId: A.studentProfileId,
+          subjectId: A.subjectId,
+          percentBps: 8000,
+          gradeLabel: "A",
+          gradePoints: 1000,
+          passed: true,
+        },
+      }),
+    );
+
+    // Readable under A.
+    expect(await withTenant(A.institutionId, (tx) => tx.marksRecordHistory.findUnique({ where: { id: histId } }))).toBeTruthy();
+    expect(await withTenant(A.institutionId, (tx) => tx.resultPublication.findUnique({ where: { id: pubId } }))).toBeTruthy();
+    expect(await withTenant(A.institutionId, (tx) => tx.resultSnapshot.findUnique({ where: { id: snapId } }))).toBeTruthy();
+
+    // Empty under B.
+    expect(await withTenant(B.institutionId, (tx) => tx.marksRecordHistory.findUnique({ where: { id: histId } }))).toBeNull();
+    expect(await withTenant(B.institutionId, (tx) => tx.resultPublication.findUnique({ where: { id: pubId } }))).toBeNull();
+    expect(await withTenant(B.institutionId, (tx) => tx.resultSnapshot.findUnique({ where: { id: snapId } }))).toBeNull();
+
+    // UPDATE + DELETE denied on all three.
+    await expect(withTenant(A.institutionId, (tx) => tx.marksRecordHistory.update({ where: { id: histId }, data: { reason: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.marksRecordHistory.delete({ where: { id: histId } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.resultSnapshot.update({ where: { id: snapId }, data: { gradeLabel: "F" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.resultSnapshot.delete({ where: { id: snapId } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.update({ where: { id: pubId }, data: { status: "SUPERSEDED" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.delete({ where: { id: pubId } }))).rejects.toBeTruthy();
+
+    // Survived every attempt.
+    expect(await adminClient.marksRecordHistory.findUnique({ where: { id: histId } })).toBeTruthy();
+    expect(await adminClient.resultSnapshot.findUnique({ where: { id: snapId } })).toBeTruthy();
+
+    // Clean up within a scoped trigger-disable (child -> parent) so the shared
+    // teardown is not blocked. result_snapshots -> result_publications ->
+    // marks_record_history.
+    const tables = [
+      { table: "result_snapshots", trigger: "result_snapshots_no_update_delete" },
+      { table: "result_publications", trigger: "result_publications_no_update_delete" },
+      { table: "marks_record_history", trigger: "marks_record_history_no_update_delete" },
+    ] as const;
+    for (const { table, trigger } of tables) {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+    }
+    try {
+      await adminClient.resultSnapshot.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.resultPublication.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.marksRecordHistory.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+    } finally {
+      for (const { table, trigger } of tables) {
+        await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+      }
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -2297,6 +2553,14 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "concession_credits",
       "refund_reversals",
       "adjustments",
+      // Phase-8 exams: the three INSERT-only tables join the append-only set
+      // (design §7.4) — INSERT-only policy + REVOKE + trigger, NO modify policy.
+      // The seven mutable/column-guard exam tables are NOT here — they carry the
+      // standard modify pair (examinations/marks_records immutability is a column
+      // guard, not an RLS policy — the payment_transactions precedent).
+      "marks_record_history",
+      "result_publications",
+      "result_snapshots",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(
