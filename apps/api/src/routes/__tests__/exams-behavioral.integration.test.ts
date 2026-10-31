@@ -145,32 +145,46 @@ async function ensureMembership(userId: string, roleKey: string): Promise<void> 
 // ─── exam-row teardown (child-first, with the guard-disable dance) ───────────
 async function clearExams(): Promise<void> {
   const where = { institutionId: { startsWith: PFX } };
-  // INSERT-only tables first (append-only triggers), then the column-guard tables.
-  for (const t of ["result_snapshots", "result_publications", "marks_record_history"] as const) {
+  // Strictly append-only INSERT-only tables first (append-only triggers). Slice
+  // 8.2: result_snapshots + marks_record_history stay append-only; result_
+  // publications moved to a COLUMN GUARD (result_publications_guard), handled in
+  // the column-guard block below alongside reeval_requests.
+  for (const t of ["result_snapshots", "marks_record_history"] as const) {
     await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "${t}" DISABLE TRIGGER "${t}_no_update_delete"`));
   }
   try {
     await withRetry(() => adminClient.resultSnapshot.deleteMany({ where }));
-    await withRetry(() => adminClient.resultPublication.deleteMany({ where }));
     await withRetry(() => adminClient.marksRecordHistory.deleteMany({ where }));
   } finally {
-    for (const t of ["result_snapshots", "result_publications", "marks_record_history"] as const) {
+    for (const t of ["result_snapshots", "marks_record_history"] as const) {
       await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "${t}" ENABLE TRIGGER "${t}_no_update_delete"`));
     }
   }
-  await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" DISABLE TRIGGER "marks_records_guard"`));
-  await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" DISABLE TRIGGER "examinations_guard"`));
+  // Column-guard tables (DELETE forbidden unconditionally): reeval_requests ->
+  // marks_records -> ... -> result_publications -> examinations (child-first).
+  const guarded = [
+    { table: "reeval_requests", trigger: "reeval_requests_guard" },
+    { table: "marks_records", trigger: "marks_records_guard" },
+    { table: "examinations", trigger: "examinations_guard" },
+    { table: "result_publications", trigger: "result_publications_guard" },
+  ] as const;
+  for (const { table, trigger } of guarded) {
+    await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`));
+  }
   try {
+    await withRetry(() => adminClient.reevalRequest.deleteMany({ where }));
     await withRetry(() => adminClient.marksRecord.deleteMany({ where }));
     await withRetry(() => adminClient.candidate.deleteMany({ where }));
     await withRetry(() => adminClient.assessment.deleteMany({ where }));
     await withRetry(() => adminClient.examSchedule.deleteMany({ where }));
+    await withRetry(() => adminClient.resultPublication.deleteMany({ where }));
     await withRetry(() => adminClient.gradeBand.deleteMany({ where }));
     await withRetry(() => adminClient.gradingScheme.deleteMany({ where }));
     await withRetry(() => adminClient.examination.deleteMany({ where }));
   } finally {
-    await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" ENABLE TRIGGER "marks_records_guard"`));
-    await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" ENABLE TRIGGER "examinations_guard"`));
+    for (const { table, trigger } of guarded) {
+      await withRetry(() => adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`));
+    }
   }
   await deleteAuditEvents();
 }
@@ -574,10 +588,12 @@ describe("Phase-8 exams behavioral (real DB, real routes, real RLS)", () => {
     expect(pub2.statusCode).toBe(201);
     expect(pub2.json().version).toBe(2);
 
-    // The prior version row + snapshot are untouched (append-only).
+    // Slice 8.2: the prior version header is now flipped to SUPERSEDED by the
+    // re-publication supersede flip (the only legal mutation of its row); every
+    // other column + its snapshot are untouched (the column guard + append-only).
     const v1pubAfter = await adminClient.resultPublication.findFirst({ where: { id: v1pub!.id } });
     expect(v1pubAfter!.version).toBe(1);
-    expect(v1pubAfter!.status).toBe("PUBLISHED");
+    expect(v1pubAfter!.status).toBe("SUPERSEDED");
     const v1snapAfter = await adminClient.resultSnapshot.findFirst({ where: { id: v1snap!.id } });
     expect(v1snapAfter!.percentBps).toBe(v1snap!.percentBps);
 
@@ -594,4 +610,335 @@ describe("Phase-8 exams behavioral (real DB, real routes, real RLS)", () => {
     });
     expect(pub3.statusCode).toBe(400);
   }, 180_000);
+
+  // ─── Slice 8.2: re-evaluation, supplementary, history, supersede ───────────
+
+  // Drive an exam to a PUBLISHED v1 with one 80/100 mark for the seeded student.
+  async function publishV1(): Promise<{ examId: string; assessmentId: string; candidateId: string }> {
+    const examId = await createExam();
+    const assessmentId = await createAssessment(examId, subjectA, 100, 100);
+    const candidateId = await registerCandidate(examId, studentProfileA);
+    await createActiveScheme();
+    await toMarksOpen(examId);
+    const enter = await app.inject({
+      method: "PUT",
+      url: `/api/exams/${examId}/marks`,
+      headers: authHeader(facultyToken()),
+      payload: { marks: [{ assessmentId, candidateId, marks: 80 }] },
+    });
+    expect(enter.statusCode).toBe(200);
+    expect(await advance(examId, "MARKS_LOCKED")).toBe(200);
+    expect(await advance(examId, "MODERATION")).toBe(200);
+    expect(await advance(examId, "APPROVED")).toBe(200);
+    const pub = await app.inject({
+      method: "POST",
+      url: `/api/exams/${examId}/publish`,
+      headers: { ...authHeader(adminToken()), ...stepUpHeader(adminUser, "exams.results.publish") },
+      payload: {},
+    });
+    expect(pub.statusCode).toBe(201);
+    return { examId, assessmentId, candidateId };
+  }
+
+  it("8.2 AC-8/9/9a/12/13: end-to-end re-eval (request -> UNDER_REVIEW -> remark -> REMARKED -> re-publish supersedes); student sees only latest", async () => {
+    const { examId, assessmentId, candidateId } = await publishV1();
+
+    // Student requests re-evaluation of their OWN published result.
+    const reqRes = await app.inject({
+      method: "POST",
+      url: "/api/exams/me/reeval",
+      headers: authHeader(studentToken()),
+      payload: { examId, subjectId: subjectA, reason: "please recount the final" },
+    });
+    expect(reqRes.statusCode).toBe(201);
+    const reevalId = reqRes.json().id as string;
+    expect(reqRes.json().status).toBe("REQUESTED");
+
+    // A duplicate OPEN request is blocked by the partial unique (409).
+    const dup = await app.inject({
+      method: "POST",
+      url: "/api/exams/me/reeval",
+      headers: authHeader(studentToken()),
+      payload: { examId, subjectId: subjectA, reason: "again" },
+    });
+    expect(dup.statusCode).toBe(409);
+
+    // FACULTY / STUDENT cannot manage (403 on the staff route).
+    const facList = await app.inject({ method: "GET", url: "/api/exams/reeval", headers: authHeader(facultyToken()) });
+    expect(facList.statusCode).toBe(403);
+    const stuList = await app.inject({ method: "GET", url: "/api/exams/reeval", headers: authHeader(studentToken()) });
+    expect(stuList.statusCode).toBe(403);
+
+    // Re-mark BEFORE UNDER_REVIEW is rejected (request not under review).
+    const marksRec = await adminClient.marksRecord.findFirst({ where: { institutionId: instA, examId, assessmentId, candidateId } });
+    const earlyRemark = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/remark`,
+      headers: authHeader(adminToken()),
+      payload: { marksRecordId: marksRec!.id, marks: 90, reason: "early" },
+    });
+    expect(earlyRemark.statusCode).toBe(409);
+
+    // Staff advances to UNDER_REVIEW.
+    const toReview = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/transition`,
+      headers: authHeader(adminToken()),
+      payload: { to: "UNDER_REVIEW" },
+    });
+    expect(toReview.statusCode).toBe(200);
+
+    // An illegal transition (UNDER_REVIEW -> CLOSED) is rejected 409.
+    const illegal = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/transition`,
+      headers: authHeader(adminToken()),
+      payload: { to: "CLOSED" },
+    });
+    expect(illegal.statusCode).toBe(409);
+
+    // An out-of-range re-mark is rejected 400 + DENIED audit.
+    const oor = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/remark`,
+      headers: authHeader(adminToken()),
+      payload: { marksRecordId: marksRec!.id, marks: 101, reason: "too high" },
+    });
+    expect(oor.statusCode).toBe(400);
+
+    // The real re-mark: 80 -> 95. The exam stays PUBLISHED; a CORRECTED history row is written.
+    const remark = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/remark`,
+      headers: authHeader(adminToken()),
+      payload: { marksRecordId: marksRec!.id, marks: 95, reason: "recount correct" },
+    });
+    expect(remark.statusCode).toBe(200);
+    expect(remark.json().previousMarks).toBe(80);
+    expect(remark.json().newMarks).toBe(95);
+    const examRow = await adminClient.examination.findUnique({ where: { id: examId } });
+    expect(examRow!.status).toBe("PUBLISHED"); // lifecycle untouched
+
+    // Staff records the re-mark done.
+    const toRemarked = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/transition`,
+      headers: authHeader(adminToken()),
+      payload: { to: "REMARKED" },
+    });
+    expect(toRemarked.statusCode).toBe(200);
+
+    // Re-publish: version 2 is created and version 1 is flipped to SUPERSEDED.
+    const pub2 = await app.inject({
+      method: "POST",
+      url: `/api/exams/${examId}/publish`,
+      headers: { ...authHeader(adminToken()), ...stepUpHeader(adminUser, "exams.results.publish") },
+      payload: { reason: "re-evaluation outcome" },
+    });
+    expect(pub2.statusCode).toBe(201);
+    expect(pub2.json().version).toBe(2);
+
+    const v1 = await adminClient.resultPublication.findFirst({ where: { institutionId: instA, examId, version: 1 } });
+    const v2 = await adminClient.resultPublication.findFirst({ where: { institutionId: instA, examId, version: 2 } });
+    expect(v1!.status).toBe("SUPERSEDED");
+    expect(v2!.status).toBe("PUBLISHED");
+    const supersededAudit = await adminClient.auditEvent.count({ where: { institutionId: instA, action: "exams.results.superseded", result: "SUCCESS" } });
+    expect(supersededAudit).toBeGreaterThanOrEqual(1);
+
+    // Staff closes the request.
+    const close = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/transition`,
+      headers: authHeader(adminToken()),
+      payload: { to: "CLOSED" },
+    });
+    expect(close.statusCode).toBe(200);
+
+    // Student history: ONLY the latest PUBLISHED version (v2, 95%).
+    const hist = await app.inject({ method: "GET", url: "/api/exams/me/results/history", headers: authHeader(studentToken()) });
+    expect(hist.statusCode).toBe(200);
+    const entry = (hist.json().history as Array<Record<string, unknown>>).find((h) => h.examId === examId);
+    expect(entry).toBeTruthy();
+    expect(entry!.version).toBe(2);
+    expect((entry!.subjects as Array<Record<string, unknown>>)[0].percentBps).toBe(9500);
+
+    // Staff history shows BOTH versions (incl. superseded).
+    const staffHist = await app.inject({
+      method: "GET",
+      url: `/api/exams/students/${studentProfileA}/results/history`,
+      headers: authHeader(adminToken()),
+    });
+    expect(staffHist.statusCode).toBe(200);
+    const versions = (staffHist.json().history as Array<Record<string, unknown>>)
+      .filter((h) => h.examId === examId)
+      .map((h) => ({ v: h.version, s: h.status }));
+    expect(versions).toContainEqual({ v: 1, s: "SUPERSEDED" });
+    expect(versions).toContainEqual({ v: 2, s: "PUBLISHED" });
+  }, 240_000);
+
+  it("8.2 AC-5/9a: remark out-of-scope record rejected; transition outcomePublicationId scope enforced", async () => {
+    const { examId, candidateId } = await publishV1();
+
+    // Request + move to UNDER_REVIEW.
+    const reqRes = await app.inject({
+      method: "POST",
+      url: "/api/exams/me/reeval",
+      headers: authHeader(studentToken()),
+      payload: { examId, subjectId: subjectA, reason: "recount" },
+    });
+    expect(reqRes.statusCode).toBe(201);
+    const reevalId = reqRes.json().id as string;
+    expect((await app.inject({ method: "POST", url: `/api/exams/reeval/${reevalId}/transition`, headers: authHeader(adminToken()), payload: { to: "UNDER_REVIEW" } })).statusCode).toBe(200);
+
+    // A fabricated / out-of-scope marksRecordId is 404.
+    const bogus = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/remark`,
+      headers: authHeader(adminToken()),
+      payload: { marksRecordId: `${PFX}NOPE`, marks: 50, reason: "x" },
+    });
+    expect(bogus.statusCode).toBe(404);
+
+    // Transition to REMARKED with an outcomePublicationId that belongs to ANOTHER
+    // exam is rejected 404 (scope check). Build a second published exam's pub id.
+    const other = await publishV1();
+    const otherPub = await adminClient.resultPublication.findFirst({ where: { institutionId: instA, examId: other.examId, version: 1 } });
+    const badOutcome = await app.inject({
+      method: "POST",
+      url: `/api/exams/reeval/${reevalId}/transition`,
+      headers: authHeader(adminToken()),
+      payload: { to: "REMARKED", outcomePublicationId: otherPub!.id },
+    });
+    expect(badOutcome.statusCode).toBe(404);
+    expect(candidateId).toBeTruthy();
+  }, 240_000);
+
+  it("8.2 AC-10/11: supplementary linkage enforced; eligibility registers only non-passing; ineligible allowlist rejected atomically", async () => {
+    // Parent exam: one student passes (80%) and we need a failing student. Create
+    // a second student and give them a failing mark on the parent.
+    const parentId = await createExam();
+    const parentAssessment = await createAssessment(parentId, subjectA, 100, 100);
+    const c1 = await registerCandidate(parentId, studentProfileA); // will pass
+    // a failing student
+    const failUser = id("u_fail");
+    const failStudent = id("sp_fail");
+    await withRetry(() => adminClient.user.create({ data: { id: failUser, email: `${failUser.toLowerCase()}@a.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA } }));
+    await withRetry(() => adminClient.studentProfile.create({ data: { id: failStudent, userId: failUser, institutionId: instA, enrollmentNo: id("ENR_fail"), name: `${PFX}Fail`, departmentId: deptA, program: "T", semester: 1, status: "ACTIVE" } }));
+    await withRetry(() => adminClient.classEnrollment.create({ data: { id: id("enroll_fail"), institutionId: instA, classSectionId: sectionA, studentId: failStudent, status: "ENROLLED" } }));
+    const c2 = await registerCandidate(parentId, failStudent);
+    await createActiveScheme(); // F < 40%, P >= 40%
+    await toMarksOpen(parentId);
+    await app.inject({ method: "PUT", url: `/api/exams/${parentId}/marks`, headers: authHeader(facultyToken()), payload: { marks: [{ assessmentId: parentAssessment, candidateId: c1, marks: 80 }, { assessmentId: parentAssessment, candidateId: c2, marks: 10 }] } });
+    expect(await advance(parentId, "MARKS_LOCKED")).toBe(200);
+    expect(await advance(parentId, "MODERATION")).toBe(200);
+    expect(await advance(parentId, "APPROVED")).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/exams/${parentId}/publish`, headers: { ...authHeader(adminToken()), ...stepUpHeader(adminUser, "exams.results.publish") }, payload: {} })).statusCode).toBe(201);
+
+    // Creating a SUPPLEMENTARY exam WITHOUT a parent is rejected 400.
+    const noParent = await app.inject({
+      method: "POST",
+      url: "/api/exams",
+      headers: authHeader(adminToken()),
+      payload: { academicSessionId: sessionA, academicTermId: termA, programId: programA, name: "Supp no parent", type: "SUPPLEMENTARY" },
+    });
+    expect(noParent.statusCode).toBe(400);
+
+    // Creating a NON-supplementary exam WITH a parent link is rejected 400.
+    const wrongType = await app.inject({
+      method: "POST",
+      url: "/api/exams",
+      headers: authHeader(adminToken()),
+      payload: { academicSessionId: sessionA, academicTermId: termA, programId: programA, name: "Final w/ parent", type: "FINAL", parentExaminationId: parentId },
+    });
+    expect(wrongType.statusCode).toBe(400);
+
+    // A proper SUPPLEMENTARY exam linked to the parent.
+    const suppRes = await app.inject({
+      method: "POST",
+      url: "/api/exams",
+      headers: authHeader(adminToken()),
+      payload: { academicSessionId: sessionA, academicTermId: termA, programId: programA, name: "Supplementary", type: "SUPPLEMENTARY", parentExaminationId: parentId },
+    });
+    expect(suppRes.statusCode).toBe(201);
+    const suppId = suppRes.json().id as string;
+    expect(suppRes.json().type).toBe("SUPPLEMENTARY");
+
+    // Omitting studentIds registers the FULL eligible (non-passing) set = {failStudent}.
+    const regAll = await app.inject({
+      method: "POST",
+      url: `/api/exams/${suppId}/candidates/supplementary`,
+      headers: authHeader(adminToken()),
+      payload: { subjectIds: [subjectA] },
+    });
+    expect(regAll.statusCode).toBe(201);
+    expect(regAll.json().eligibleCount).toBe(1);
+    expect(regAll.json().registered).toBe(1);
+    const suppCands = await adminClient.candidate.findMany({ where: { institutionId: instA, examId: suppId } });
+    expect(suppCands.length).toBe(1);
+    expect(suppCands[0].studentId).toBe(failStudent);
+
+    // A second SUPPLEMENTARY to test the allowlist contract.
+    const supp2Res = await app.inject({
+      method: "POST",
+      url: "/api/exams",
+      headers: authHeader(adminToken()),
+      payload: { academicSessionId: sessionA, academicTermId: termA, programId: programA, name: "Supplementary 2", type: "SUPPLEMENTARY", parentExaminationId: parentId },
+    });
+    const supp2Id = supp2Res.json().id as string;
+
+    // An allowlist naming the PASSING student is rejected atomically (409) — no row.
+    const rejectReg = await app.inject({
+      method: "POST",
+      url: `/api/exams/${supp2Id}/candidates/supplementary`,
+      headers: authHeader(adminToken()),
+      payload: { subjectIds: [subjectA], studentIds: [studentProfileA] },
+    });
+    expect(rejectReg.statusCode).toBe(409);
+    expect(await adminClient.candidate.count({ where: { institutionId: instA, examId: supp2Id } })).toBe(0);
+
+    // An allowlist naming the failing (eligible) student registers exactly it.
+    const okReg = await app.inject({
+      method: "POST",
+      url: `/api/exams/${supp2Id}/candidates/supplementary`,
+      headers: authHeader(adminToken()),
+      payload: { subjectIds: [subjectA], studentIds: [failStudent] },
+    });
+    expect(okReg.statusCode).toBe(201);
+    expect(okReg.json().registered).toBe(1);
+
+    // Registering supplementary candidates on a non-SUPPLEMENTARY exam is 409.
+    const onRegular = await app.inject({
+      method: "POST",
+      url: `/api/exams/${parentId}/candidates/supplementary`,
+      headers: authHeader(adminToken()),
+      payload: { subjectIds: [subjectA] },
+    });
+    expect(onRegular.statusCode).toBe(409);
+  }, 300_000);
+
+  it("8.2 AC-14: staff history .xlsx streams a valid workbook + writes exams.results.exported", async () => {
+    await publishV1();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/exams/students/${studentProfileA}/results/history.xlsx`,
+      headers: authHeader(adminToken()),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("spreadsheetml");
+    // XLSX is a ZIP — the magic bytes are 'PK'.
+    expect(res.rawPayload.slice(0, 2).toString("latin1")).toBe("PK");
+    const exported = await adminClient.auditEvent.count({ where: { institutionId: instA, action: "exams.results.exported", result: "SUCCESS" } });
+    expect(exported).toBeGreaterThanOrEqual(1);
+  }, 180_000);
+
+  it("8.2 AC-8: a student cannot request re-eval against an unpublished exam (404, no leak)", async () => {
+    const examId = await createExam();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/exams/me/reeval",
+      headers: authHeader(studentToken()),
+      payload: { examId, subjectId: subjectA, reason: "nothing published" },
+    });
+    expect(res.statusCode).toBe(404);
+  }, 120_000);
 });

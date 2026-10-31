@@ -199,6 +199,14 @@ export const AUDIT_ACTIONS = [
   { key: "exams.grading_scheme.updated", module: "examinations", description: "Grading scheme (+ bands) updated" },
   { key: "exams.results.published", module: "examinations", description: "Results published (new append-only version + immutable snapshots)" },
   { key: "exams.results.exported", module: "examinations", description: "Results exported (XLSX)" },
+  // exams.* (4) — Phase 8 slice 8.2 re-evaluation + supersede. Plural-consistent
+  // with the 8.1 exams.results.* family. No migration mirror (validated only in
+  // recordAuditEvent). Every key is emitted by a route (no dead keys); the
+  // migration backfill emits none.
+  { key: "exams.reeval.requested", module: "examinations", description: "Student requested re-evaluation of a published result" },
+  { key: "exams.reeval.transitioned", module: "examinations", description: "Re-evaluation request advanced ({from,to}) incl. REJECTED" },
+  { key: "exams.reeval.remarked", module: "examinations", description: "A marks_records row re-marked under an UNDER_REVIEW re-eval request (CORRECTED history row)" },
+  { key: "exams.results.superseded", module: "examinations", description: "Prior published version flipped to SUPERSEDED on re-publication" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

@@ -1150,12 +1150,24 @@ const cuidLikeString = z.string().min(1).max(64);
 
 export const examinationTypeEnum = z.enum(["MIDTERM", "FINAL", "INTERNAL", "SUPPLEMENTARY"]);
 
+export const reevalRequestStatusEnum = z.enum([
+  "REQUESTED",
+  "UNDER_REVIEW",
+  "REMARKED",
+  "CLOSED",
+  "REJECTED",
+]);
+
 export const createExaminationSchema = z.object({
   academicSessionId: cuidLikeString,
   academicTermId: cuidLikeString,
   programId: cuidLikeString,
   name: z.string().min(1).max(200),
   type: examinationTypeEnum,
+  // Slice 8.2: optional self-link for a SUPPLEMENTARY exam. The cross-field rule
+  // (type === SUPPLEMENTARY ⇔ parentExaminationId present, same-tenant) is
+  // service-owned (assertSupplementaryLinkage) because it needs a DB existence check.
+  parentExaminationId: cuidLikeString.optional(),
 });
 
 export const patchExaminationSchema = z
@@ -1243,7 +1255,54 @@ export const patchGradingSchemeSchema = z
     message: "no updatable fields provided",
   });
 
+// ─── Slice 8.2: re-evaluation + supplementary registration schemas ──────────
+
+export const createReevalRequestSchema = z.object({
+  examId: cuidLikeString,
+  subjectId: cuidLikeString,
+  reason: z.string().min(1).max(500),
+});
+
+// Shape only; the (from,to) legality, the optimistic concurrency guard, and the
+// outcomePublicationId existence/scope check are service-owned (they need the
+// current DB row). `note` is required for REJECTED; outcomePublicationId is only
+// meaningful for REMARKED.
+export const transitionReevalSchema = z
+  .object({
+    to: z.enum(["UNDER_REVIEW", "REMARKED", "CLOSED", "REJECTED"]),
+    note: z.string().min(1).max(500).optional(),
+    outcomePublicationId: cuidLikeString.optional(),
+  })
+  .refine((v) => v.to !== "REJECTED" || v.note !== undefined, {
+    message: "note is required when rejecting a re-evaluation request",
+  })
+  .refine((v) => v.outcomePublicationId === undefined || v.to === "REMARKED", {
+    message: "outcomePublicationId is only permitted when transitioning to REMARKED",
+  });
+
+export const remarkReevalSchema = z.object({
+  marksRecordId: cuidLikeString,
+  marks: z.number().int().min(0),
+  reason: z.string().min(1).max(500),
+});
+
+export const listReevalQuerySchema = z.object({
+  status: reevalRequestStatusEnum.optional(),
+  examId: cuidLikeString.optional(),
+});
+
+export const registerSupplementaryCandidatesSchema = z.object({
+  subjectIds: z.array(cuidLikeString).min(1).max(1000),
+  studentIds: z.array(cuidLikeString).max(5000).optional(),
+});
+
 export type ExaminationTypeValue = z.infer<typeof examinationTypeEnum>;
+export type ReevalRequestStatusValue = z.infer<typeof reevalRequestStatusEnum>;
+export type CreateReevalRequestInput = z.infer<typeof createReevalRequestSchema>;
+export type TransitionReevalInput = z.infer<typeof transitionReevalSchema>;
+export type RemarkReevalInput = z.infer<typeof remarkReevalSchema>;
+export type ListReevalQueryInput = z.infer<typeof listReevalQuerySchema>;
+export type RegisterSupplementaryCandidatesInput = z.infer<typeof registerSupplementaryCandidatesSchema>;
 export type CreateExaminationInput = z.infer<typeof createExaminationSchema>;
 export type PatchExaminationInput = z.infer<typeof patchExaminationSchema>;
 export type AdvanceExamStatusInput = z.infer<typeof advanceExamStatusSchema>;

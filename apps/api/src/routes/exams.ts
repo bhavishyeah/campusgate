@@ -14,6 +14,11 @@ import {
   correctMarkSchema,
   createGradingSchemeSchema,
   patchGradingSchemeSchema,
+  createReevalRequestSchema,
+  transitionReevalSchema,
+  remarkReevalSchema,
+  listReevalQuerySchema,
+  registerSupplementaryCandidatesSchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -23,6 +28,11 @@ import {
   resolveMarkingFaculty,
   assertFacultyAssigned,
 } from "../services/attendance-authz.js";
+import {
+  reevalTransitionLegal,
+  assertSupplementaryLinkage,
+  computeSupplementaryEligible,
+} from "../services/exams/reeval.js";
 import {
   gradeSubject,
   GradingError,
@@ -183,6 +193,28 @@ export async function examsRoutes(app: FastifyInstance) {
         if (!term) return deny("academic term not found", 404);
         if (!program) return deny("program not found", 404);
 
+        // Slice 8.2: SUPPLEMENTARY ⇔ parentExaminationId pairing + same-tenant
+        // parent existence (service-owned; the composite FK is the hard backstop).
+        const linkage = await assertSupplementaryLinkage(tx, institutionId, {
+          type: data.type,
+          parentExaminationId: data.parentExaminationId,
+        });
+        if (linkage) {
+          await recordAuditEvent(
+            {
+              action: "exams.examination.created",
+              result: "DENIED",
+              ...actor(request),
+              institutionId,
+              resourceType: "Examination",
+              resourceId: data.parentExaminationId ?? "",
+              metadata: { reason: linkage.message, type: data.type },
+            },
+            tx,
+          );
+          return deny(linkage.message, 400);
+        }
+
         const exam = await tx.examination.create({
           data: {
             institutionId,
@@ -193,6 +225,7 @@ export async function examsRoutes(app: FastifyInstance) {
             type: data.type,
             status: "DRAFT",
             createdByUserId: request.user.userId,
+            parentExaminationId: data.parentExaminationId ?? null,
           },
         });
         await recordAuditEvent(
@@ -1255,6 +1288,40 @@ export async function examsRoutes(app: FastifyInstance) {
           throw err;
         }
 
+        // Slice 8.2 (design §8.3): on a re-publication, flip the immediately-prior
+        // PUBLISHED version to SUPERSEDED within the SAME tx, under the advisory
+        // lock the route already holds. Post-backfill (migration §m / finding 2),
+        // the prior (= then-max) version is the SOLE PUBLISHED row for the scope,
+        // so exactly one row flips; count !== 1 ⇒ a concurrent/illegal state → 409.
+        // The column guard permits exactly this PUBLISHED->SUPERSEDED write and
+        // rejects every other mutation (surfaces as a 409 via isRestrictViolation).
+        if (nextVersion > 1) {
+          const priorVersion = nextVersion - 1;
+          let flipped;
+          try {
+            flipped = await tx.resultPublication.updateMany({
+              where: { institutionId, examId, version: priorVersion, status: "PUBLISHED" },
+              data: { status: "SUPERSEDED" },
+            });
+          } catch (err) {
+            if (isRestrictViolation(err)) return deny("prior version not in PUBLISHED state", 409);
+            throw err;
+          }
+          if (flipped.count !== 1) return deny("prior version not in PUBLISHED state", 409);
+          await recordAuditEvent(
+            {
+              action: "exams.results.superseded",
+              result: "SUCCESS",
+              ...actor(request),
+              institutionId,
+              resourceType: "ResultPublication",
+              resourceId: publication.id,
+              metadata: { supersededVersion: priorVersion, byVersion: nextVersion },
+            },
+            tx,
+          );
+        }
+
         // First publish advances APPROVED -> PUBLISHED; a correction stays PUBLISHED.
         if (exam.status === "APPROVED") {
           const n = await advanceExamStatus(tx, institutionId, examId, "APPROVED", "PUBLISHED");
@@ -1283,7 +1350,8 @@ export async function examsRoutes(app: FastifyInstance) {
 
   // ─── Staff result reports (exams.results.view) ──────────────────────────────
 
-  // Resolve the latest PUBLISHED publication + its snapshots for a scope.
+  // Resolve the latest publication (by version, NO status filter) for a scope.
+  // Staff/internal reads where status tagging is explicit.
   async function latestPublication(
     tx: Prisma.TransactionClient,
     institutionId: string,
@@ -1291,6 +1359,21 @@ export async function examsRoutes(app: FastifyInstance) {
   ) {
     return tx.resultPublication.findFirst({
       where: { institutionId, examId },
+      orderBy: { version: "desc" },
+    });
+  }
+
+  // Slice 8.2 (finding 3): the latest PUBLISHED publication for a scope —
+  // status = 'PUBLISHED' AND version desc. Used for ALL student-facing reads so a
+  // stray superseded row at max version can never leak; NEVER returns a SUPERSEDED
+  // version. Do NOT substitute latestPublication (max-version-only) on a student path.
+  async function latestPublishedPublication(
+    tx: Prisma.TransactionClient,
+    institutionId: string,
+    examId: string,
+  ) {
+    return tx.resultPublication.findFirst({
+      where: { institutionId, examId, status: "PUBLISHED" },
       orderBy: { version: "desc" },
     });
   }
@@ -1503,6 +1586,649 @@ export async function examsRoutes(app: FastifyInstance) {
       return reply.send(data);
     },
   );
+
+  // ─── Slice 8.2: Re-evaluation — student self-service (§8.1) ─────────────────
+
+  app.post(
+    "/me/reeval",
+    { preHandler: [requirePermission("exams.reeval.request_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const parsed = createReevalRequestSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { examId, subjectId, reason } = parsed.data;
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const student = await tx.studentProfile.findFirst({
+          where: { userId, institutionId },
+          select: { id: true },
+        });
+        if (!student) return deny("no student profile", 404);
+
+        // Latest PUBLISHED only (status-filtered, finding 3) — a superseded /
+        // unpublished version is invisible to the student.
+        const latest = await latestPublishedPublication(tx, institutionId, examId);
+        if (!latest) return deny("no published result", 404);
+
+        const candidate = await tx.candidate.findFirst({
+          where: { institutionId, examId, studentId: student.id },
+          select: { id: true },
+        });
+        if (!candidate) return deny("no published result", 404);
+
+        // The caller must own a snapshot for (latest publication, self, subject);
+        // a missing snapshot is a 404 that never reveals another student's data.
+        const snapshot = await tx.resultSnapshot.findFirst({
+          where: {
+            institutionId,
+            resultPublicationId: latest.id,
+            studentId: student.id,
+            subjectId,
+          },
+          select: { id: true },
+        });
+        if (!snapshot) return deny("no published result", 404);
+
+        let created;
+        try {
+          created = await tx.reevalRequest.create({
+            data: {
+              institutionId,
+              examId,
+              candidateId: candidate.id,
+              studentId: student.id,
+              subjectId,
+              sourcePublicationId: latest.id,
+              status: "REQUESTED",
+              studentReason: reason,
+              requestedByUserId: userId,
+            },
+          });
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            return deny("a re-evaluation request is already open", 409);
+          }
+          throw err;
+        }
+        await recordAuditEvent(
+          {
+            action: "exams.reeval.requested",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "ReevalRequest",
+            resourceId: created.id,
+            metadata: { examId, subjectId },
+          },
+          tx,
+        );
+        return { request: created };
+      });
+
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.status(201).send(serializeReeval(outcome.request));
+    },
+  );
+
+  app.get(
+    "/me/reeval",
+    { preHandler: [requirePermission("exams.reeval.request_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const data = await withTenant(institutionId, async (tx) => {
+        const student = await tx.studentProfile.findFirst({
+          where: { userId, institutionId },
+          select: { id: true },
+        });
+        if (!student) return { requests: [] as unknown[] };
+        const rows = await tx.reevalRequest.findMany({
+          where: { institutionId, studentId: student.id },
+          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        });
+        return { requests: rows.map(serializeReeval) };
+      });
+      return reply.send(data);
+    },
+  );
+
+  // ─── Slice 8.2: Re-evaluation — staff processing (§8.2) ─────────────────────
+
+  app.get(
+    "/reeval",
+    { preHandler: [requirePermission("exams.reeval.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = listReevalQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { status, examId } = parsed.data;
+      const rows = await withTenant(institutionId, (tx) =>
+        tx.reevalRequest.findMany({
+          where: {
+            institutionId,
+            ...(status !== undefined ? { status } : {}),
+            ...(examId !== undefined ? { examId } : {}),
+          },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        }),
+      );
+      return reply.send({ requests: rows.map(serializeReeval) });
+    },
+  );
+
+  app.post(
+    "/reeval/:id/transition",
+    { preHandler: [requirePermission("exams.reeval.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const { id } = request.params as { id: string };
+      const parsed = transitionReevalSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { to, note, outcomePublicationId } = parsed.data;
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const current = await tx.reevalRequest.findFirst({
+          where: { id, institutionId },
+          select: { status: true, examId: true },
+        });
+        if (!current) return deny("re-evaluation request not found", 404);
+
+        // Legality decided in the service BEFORE any write (finding 6); the
+        // trigger remains the hard DB backstop.
+        if (!reevalTransitionLegal(current.status, to)) {
+          return deny("illegal re-evaluation transition", 409);
+        }
+
+        // outcomePublicationId (only valid for REMARKED — Zod-enforced) must name a
+        // same-tenant publication for THIS exam.
+        if (outcomePublicationId !== undefined) {
+          const pub = await tx.resultPublication.findFirst({
+            where: { id: outcomePublicationId, institutionId, examId: current.examId },
+            select: { id: true },
+          });
+          if (!pub) return deny("outcome publication not found", 404);
+        }
+
+        let res;
+        try {
+          res = await tx.reevalRequest.updateMany({
+            where: { id, institutionId, status: current.status },
+            data: {
+              status: to,
+              processedByUserId: userId,
+              ...(note !== undefined ? { staffNote: note } : {}),
+              ...(outcomePublicationId !== undefined ? { outcomePublicationId } : {}),
+            },
+          });
+        } catch (err) {
+          if (isRestrictViolation(err)) return deny("illegal re-evaluation transition", 409);
+          throw err;
+        }
+        if (res.count === 0) return deny("re-evaluation request changed concurrently", 409);
+
+        await recordAuditEvent(
+          {
+            action: "exams.reeval.transitioned",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "ReevalRequest",
+            resourceId: id,
+            metadata: { from: current.status, to },
+          },
+          tx,
+        );
+        return { from: current.status, to };
+      });
+
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.send({ id, status: outcome.to });
+    },
+  );
+
+  // Re-mark on a PUBLISHED exam (§8.2a) — the ONE place a re-eval is permitted to
+  // mutate a mark, only while UNDER_REVIEW and within its own (examId, candidateId)
+  // scope. marks_records_guard permits a `marks` UPDATE (freezes only identity),
+  // so no trigger change is needed; the exam's status is NEVER touched.
+  app.post(
+    "/reeval/:id/remark",
+    { preHandler: [requirePermission("exams.reeval.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const { id } = request.params as { id: string };
+      const parsed = remarkReevalSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { marksRecordId, marks: newMarks, reason } = parsed.data;
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const req = await tx.reevalRequest.findFirst({
+          where: { id, institutionId },
+          select: { status: true, examId: true, candidateId: true },
+        });
+        if (!req) return deny("re-evaluation request not found", 404);
+        if (req.status !== "UNDER_REVIEW") return deny("request not under review", 409);
+
+        const rec = await tx.marksRecord.findFirst({
+          where: {
+            id: marksRecordId,
+            institutionId,
+            examId: req.examId,
+            candidateId: req.candidateId,
+          },
+          select: { id: true, marks: true, assessmentId: true },
+        });
+        if (!rec) return deny("marks record not found for this request", 404);
+
+        const assessment = await tx.assessment.findFirst({
+          where: { id: rec.assessmentId, institutionId },
+          select: { maxMarks: true },
+        });
+        if (!assessment) return deny("assessment not found", 404);
+        if (newMarks < 0 || newMarks > assessment.maxMarks) {
+          await recordAuditEvent(
+            {
+              action: "exams.reeval.remarked",
+              result: "DENIED",
+              ...actor(request),
+              institutionId,
+              resourceType: "MarksRecord",
+              resourceId: rec.id,
+              metadata: { reason: "marks out of range" },
+            },
+            tx,
+          );
+          return deny("marks out of range", 400);
+        }
+
+        await tx.marksRecord.update({
+          where: { id: rec.id },
+          data: { marks: newMarks, enteredByUserId: userId },
+        });
+        await tx.marksRecordHistory.create({
+          data: {
+            institutionId,
+            marksRecordId: rec.id,
+            changeType: "CORRECTED",
+            previousMarks: rec.marks,
+            newMarks,
+            actorUserId: userId,
+            actorMembershipId: request.auth?.membershipId ?? null,
+            reason,
+          },
+        });
+        await recordAuditEvent(
+          {
+            action: "exams.reeval.remarked",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "MarksRecord",
+            resourceId: rec.id,
+            metadata: { marksRecordId: rec.id, previousMarks: rec.marks, newMarks },
+          },
+          tx,
+        );
+        return { marksRecordId: rec.id, previousMarks: rec.marks, newMarks };
+      });
+
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.send(outcome);
+    },
+  );
+
+  // ─── Slice 8.2: Supplementary candidate registration (§8.4) ─────────────────
+
+  app.post(
+    "/:id/candidates/supplementary",
+    { preHandler: [requirePermission("exams.candidates.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { id: examId } = request.params as { id: string };
+      const parsed = registerSupplementaryCandidatesSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { subjectIds, studentIds } = parsed.data;
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const exam = await tx.examination.findFirst({
+          where: { id: examId, institutionId },
+          select: { id: true, type: true, parentExaminationId: true },
+        });
+        if (!exam) return deny("examination not found", 404);
+        if (exam.type !== "SUPPLEMENTARY" || !exam.parentExaminationId) {
+          return deny("not a supplementary examination", 409);
+        }
+
+        const parentLatest = await latestPublishedPublication(
+          tx,
+          institutionId,
+          exam.parentExaminationId,
+        );
+        if (!parentLatest) return deny("parent results not published", 409);
+
+        const parentSnaps = await tx.resultSnapshot.findMany({
+          where: {
+            institutionId,
+            resultPublicationId: parentLatest.id,
+            subjectId: { in: subjectIds },
+            passed: false,
+          },
+          select: { studentId: true, passed: true },
+        });
+        const eligible = computeSupplementaryEligible(parentSnaps);
+
+        let target: string[];
+        if (studentIds !== undefined) {
+          // Atomic allowlist: every named id must be eligible, else reject the
+          // WHOLE request (never partially register).
+          const ineligible = studentIds.filter((s) => !eligible.has(s));
+          if (ineligible.length > 0) {
+            await recordAuditEvent(
+              {
+                action: "exams.candidate.registered",
+                result: "DENIED",
+                ...actor(request),
+                institutionId,
+                resourceType: "Examination",
+                resourceId: examId,
+                metadata: {
+                  reason: "one or more students are not eligible",
+                  supplementaryOf: exam.parentExaminationId,
+                  ineligibleCount: ineligible.length,
+                },
+              },
+              tx,
+            );
+            return deny("one or more students are not eligible", 409);
+          }
+          target = [...new Set(studentIds)];
+        } else {
+          target = [...eligible];
+        }
+
+        const created: string[] = [];
+        for (const studentId of target) {
+          try {
+            const c = await tx.candidate.create({
+              data: { institutionId, examId, studentId },
+            });
+            created.push(c.id);
+          } catch (err) {
+            if (isUniqueViolation(err)) continue; // already a candidate ⇒ idempotent skip
+            throw err;
+          }
+        }
+        await recordAuditEvent(
+          {
+            action: "exams.candidate.registered",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "Examination",
+            resourceId: examId,
+            metadata: {
+              supplementaryOf: exam.parentExaminationId,
+              eligibleCount: eligible.size,
+              registeredCount: created.length,
+            },
+          },
+          tx,
+        );
+        return { eligibleCount: eligible.size, registered: created.length, candidateIds: created };
+      });
+
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.status(201).send(outcome);
+    },
+  );
+
+  // ─── Slice 8.2: Student result history (§8.5) ───────────────────────────────
+
+  app.get(
+    "/me/results/history",
+    { preHandler: [requirePermission("exams.results.view_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const data = await withTenant(institutionId, async (tx) => {
+        const student = await tx.studentProfile.findFirst({
+          where: { userId, institutionId },
+          select: { id: true },
+        });
+        if (!student) return { history: [] as unknown[] };
+
+        const candidateRows = await tx.candidate.findMany({
+          where: { institutionId, studentId: student.id },
+          select: { examId: true },
+        });
+        const examIds = [...new Set(candidateRows.map((c) => c.examId))];
+
+        const history: Array<Record<string, unknown>> = [];
+        for (const examId of examIds) {
+          const latest = await latestPublishedPublication(tx, institutionId, examId);
+          if (!latest) continue; // unpublished/superseded ⇒ invisible
+          const snapshots = await tx.resultSnapshot.findMany({
+            where: {
+              institutionId,
+              resultPublicationId: latest.id,
+              studentId: student.id,
+            },
+            orderBy: { subjectId: "asc" },
+          });
+          if (snapshots.length === 0) continue;
+          const exam = await tx.examination.findFirst({
+            where: { id: examId, institutionId },
+            select: {
+              name: true,
+              type: true,
+              academicSessionId: true,
+              academicTermId: true,
+              parentExaminationId: true,
+            },
+          });
+          history.push({
+            examId,
+            examName: exam?.name ?? null,
+            examType: exam?.type ?? null,
+            academicSessionId: exam?.academicSessionId ?? null,
+            academicTermId: exam?.academicTermId ?? null,
+            parentExaminationId: exam?.parentExaminationId ?? null,
+            version: latest.version,
+            publishedAt: latest.publishedAt.toISOString(),
+            subjects: snapshots.map((s) => ({
+              subjectId: s.subjectId,
+              percentBps: s.percentBps,
+              gradeLabel: s.gradeLabel,
+              gradePoints: s.gradePoints,
+              passed: s.passed,
+            })),
+          });
+        }
+        history.sort((a, b) => {
+          const pa = String(a.publishedAt);
+          const pb = String(b.publishedAt);
+          if (pa !== pb) return pa < pb ? 1 : -1; // publishedAt desc
+          return String(a.examId) < String(b.examId) ? -1 : 1; // examId asc
+        });
+        return { history };
+      });
+      return reply.send(data);
+    },
+  );
+
+  // Staff full history (incl. superseded), deterministically ordered.
+  async function staffHistory(
+    tx: Prisma.TransactionClient,
+    institutionId: string,
+    studentId: string,
+  ) {
+    const publications = await tx.resultPublication.findMany({
+      where: { institutionId, snapshots: { some: { studentId } } },
+      orderBy: [{ examId: "asc" }, { version: "desc" }],
+    });
+    const rows: Array<Record<string, unknown>> = [];
+    for (const pub of publications) {
+      const snapshots = await tx.resultSnapshot.findMany({
+        where: { institutionId, resultPublicationId: pub.id, studentId },
+        orderBy: { subjectId: "asc" },
+      });
+      if (snapshots.length === 0) continue;
+      const exam = await tx.examination.findFirst({
+        where: { id: pub.examId, institutionId },
+        select: {
+          name: true,
+          type: true,
+          academicSessionId: true,
+          academicTermId: true,
+          parentExaminationId: true,
+        },
+      });
+      rows.push({
+        examId: pub.examId,
+        examName: exam?.name ?? null,
+        examType: exam?.type ?? null,
+        academicSessionId: exam?.academicSessionId ?? null,
+        academicTermId: exam?.academicTermId ?? null,
+        parentExaminationId: exam?.parentExaminationId ?? null,
+        version: pub.version,
+        status: pub.status,
+        publishedAt: pub.publishedAt.toISOString(),
+        subjects: snapshots.map((s) => ({
+          subjectId: s.subjectId,
+          percentBps: s.percentBps,
+          gradeLabel: s.gradeLabel,
+          gradePoints: s.gradePoints,
+          passed: s.passed,
+        })),
+      });
+    }
+    return rows;
+  }
+
+  app.get(
+    "/students/:studentId/results/history",
+    { preHandler: [requirePermission("exams.results.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { studentId } = request.params as { studentId: string };
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const student = await tx.studentProfile.findFirst({
+          where: { id: studentId, institutionId },
+          select: { id: true },
+        });
+        if (!student) return deny("student not found", 404);
+        const history = await staffHistory(tx, institutionId, studentId);
+        return { history };
+      });
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.send(outcome);
+    },
+  );
+
+  app.get(
+    "/students/:studentId/results/history.xlsx",
+    { preHandler: [requirePermission("exams.results.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { studentId } = request.params as { studentId: string };
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const student = await tx.studentProfile.findFirst({
+          where: { id: studentId, institutionId },
+          select: { id: true },
+        });
+        if (!student) return deny("student not found", 404);
+        const history = await staffHistory(tx, institutionId, studentId);
+        return { history };
+      });
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Transcript");
+      sheet.columns = [
+        { header: "Exam", key: "exam", width: 28 },
+        { header: "Type", key: "type", width: 16 },
+        { header: "Session", key: "session", width: 28 },
+        { header: "Term", key: "term", width: 28 },
+        { header: "Subject", key: "subject", width: 28 },
+        { header: "Percent", key: "percent", width: 12 },
+        { header: "Grade", key: "gradeLabel", width: 10 },
+        { header: "Grade Points", key: "gradePoints", width: 14 },
+        { header: "Passed", key: "passed", width: 10 },
+        { header: "Version", key: "version", width: 10 },
+        { header: "Status", key: "status", width: 14 },
+      ];
+      for (const row of outcome.history as Array<Record<string, unknown>>) {
+        const subjects = row.subjects as Array<Record<string, unknown>>;
+        for (const s of subjects) {
+          sheet.addRow({
+            exam: row.examName ?? row.examId,
+            type: row.examType,
+            session: row.academicSessionId,
+            term: row.academicTermId,
+            subject: s.subjectId,
+            percent: (Number(s.percentBps) / 100).toFixed(2),
+            gradeLabel: s.gradeLabel,
+            gradePoints: (Number(s.gradePoints) / 100).toFixed(2),
+            passed: s.passed ? "YES" : "NO",
+            version: row.version,
+            status: row.status,
+          });
+        }
+      }
+
+      await withTenant(institutionId, (tx) =>
+        recordAuditEvent(
+          {
+            action: "exams.results.exported",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "StudentProfile",
+            resourceId: studentId,
+            metadata: { report: "results-history" },
+          },
+          tx,
+        ),
+      );
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      reply.header("Content-Disposition", `attachment; filename="student-${studentId}-results-history.xlsx"`);
+      return reply.send(Buffer.from(buffer));
+    },
+  );
+}
+
+// Serialize a reeval_requests row to a stable JSON shape.
+function serializeReeval(r: {
+  id: string;
+  examId: string;
+  candidateId: string;
+  studentId: string;
+  subjectId: string;
+  sourcePublicationId: string;
+  status: string;
+  studentReason: string;
+  requestedByUserId: string;
+  processedByUserId: string | null;
+  staffNote: string | null;
+  outcomePublicationId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: r.id,
+    examId: r.examId,
+    candidateId: r.candidateId,
+    studentId: r.studentId,
+    subjectId: r.subjectId,
+    sourcePublicationId: r.sourcePublicationId,
+    status: r.status,
+    studentReason: r.studentReason,
+    requestedByUserId: r.requestedByUserId,
+    processedByUserId: r.processedByUserId,
+    staffNote: r.staffNote,
+    outcomePublicationId: r.outcomePublicationId,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+  };
 }
 
 // ─── Grading-scheme band validation (contiguity + monotonic isPassing, §11) ───

@@ -198,6 +198,16 @@ export interface SeededTenant {
   assessmentId: string;
   candidateId: string;
   marksRecordId: string;
+  // Phase-8 slice 8.2 (design §7/§17). reeval_requests is a column-guard-class
+  // table (forward-only status + frozen identity), seeded here with its parent
+  // result_publications row (result_publications is INSERT-only in 8.1 but in 8.2
+  // carries a column guard that permits PUBLISHED->SUPERSEDED; it is seeded via
+  // adminClient either way). The reeval row's teardown uses a scoped
+  // DISABLE TRIGGER "reeval_requests_guard" dance (the examinations/marks_records
+  // precedent). result_publications is also deleted in teardown within a scoped
+  // trigger-disable because its column guard forbids DELETE unconditionally.
+  resultPublicationId: string;
+  reevalRequestId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -299,6 +309,9 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const assessmentId = id(`assess_${key}`);
   const candidateId = id(`cand_${key}`);
   const marksRecordId = id(`mark_${key}`);
+  // Phase-8 slice 8.2 IDs (deterministic so cleanup is exact).
+  const resultPublicationId = id(`rpub_${key}`);
+  const reevalRequestId = id(`reeval_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -999,6 +1012,39 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-8 slice 8.2: a result_publications header (the frozen provenance a
+  // reeval_request contests) + the reeval_request itself (column-guard class).
+  // result_publications is seeded via adminClient (it is INSERT-only for
+  // campass_app; in 8.2 its column guard additionally permits PUBLISHED->
+  // SUPERSEDED). The reeval row is REQUESTED, referencing the seeded candidate +
+  // the publication for sourcePublicationId.
+  await adminClient.resultPublication.create({
+    data: {
+      id: resultPublicationId,
+      institutionId,
+      examId: examinationId,
+      version: 1,
+      status: "PUBLISHED",
+      gradingSchemeId: examGradingSchemeId,
+      publishedByUserId: userId,
+    },
+  });
+
+  await adminClient.reevalRequest.create({
+    data: {
+      id: reevalRequestId,
+      institutionId,
+      examId: examinationId,
+      candidateId,
+      studentId: studentProfileId,
+      subjectId,
+      sourcePublicationId: resultPublicationId,
+      status: "REQUESTED",
+      studentReason: `${PREFIX}reeval reason ${key}`,
+      requestedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1052,6 +1098,8 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     assessmentId,
     candidateId,
     marksRecordId,
+    resultPublicationId,
+    reevalRequestId,
   };
 }
 
@@ -1075,27 +1123,63 @@ export async function cleanup(): Promise<void> {
   // so delete them with those triggers disabled (the audit_events dance). Order:
   // marks_records -> candidates -> assessments -> exam_schedules -> grade_bands
   // -> grading_schemes -> examinations.
-  await withRetry(() =>
-    adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" DISABLE TRIGGER "marks_records_guard"`),
-  );
-  await withRetry(() =>
-    adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" DISABLE TRIGGER "examinations_guard"`),
-  );
+  // Slice 8.2: reeval_requests + result_publications carry column-guard triggers
+  // that forbid DELETE unconditionally, so delete them (child-first) within the
+  // same scoped trigger-disable dance. Order: reeval_requests ->
+  // (marks_records/candidates/... below) and result_publications BEFORE
+  // examinations/grading_schemes. The two INSERT-only snapshot/history tables are
+  // never seeded here, so nothing to delete for them.
+  // The three INSERT-only exam tables are never seeded by the generic loop, but a
+  // self-contained append-only case (3p7) seeds + normally self-cleans rows under
+  // the prefix; if that case errored mid-way it can leave residue that blocks the
+  // marks_records / result_publications deletes below. Defensively delete them
+  // here within their own trigger-disable (no-op when empty).
+  const examInsertOnlyTables = [
+    { table: "result_snapshots", trigger: "result_snapshots_no_update_delete" },
+    { table: "marks_record_history", trigger: "marks_record_history_no_update_delete" },
+  ];
+  for (const { table, trigger } of examInsertOnlyTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
   try {
+    await withRetry(() => adminClient.resultSnapshot.deleteMany({ where }));
+    await withRetry(() => adminClient.marksRecordHistory.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of examInsertOnlyTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  const examGuardedTables = [
+    { table: "marks_records", trigger: "marks_records_guard" },
+    { table: "examinations", trigger: "examinations_guard" },
+    { table: "reeval_requests", trigger: "reeval_requests_guard" },
+    { table: "result_publications", trigger: "result_publications_guard" },
+  ];
+  for (const { table, trigger } of examGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.reevalRequest.deleteMany({ where }));
     await withRetry(() => adminClient.marksRecord.deleteMany({ where }));
     await withRetry(() => adminClient.candidate.deleteMany({ where }));
     await withRetry(() => adminClient.assessment.deleteMany({ where }));
     await withRetry(() => adminClient.examSchedule.deleteMany({ where }));
+    await withRetry(() => adminClient.resultPublication.deleteMany({ where }));
     await withRetry(() => adminClient.gradeBand.deleteMany({ where }));
     await withRetry(() => adminClient.gradingScheme.deleteMany({ where }));
     await withRetry(() => adminClient.examination.deleteMany({ where }));
   } finally {
-    await withRetry(() =>
-      adminClient.$executeRawUnsafe(`ALTER TABLE "marks_records" ENABLE TRIGGER "marks_records_guard"`),
-    );
-    await withRetry(() =>
-      adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" ENABLE TRIGGER "examinations_guard"`),
-    );
+    for (const { table, trigger } of examGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
   }
   // Phase-7 fees slice 7.1 tables FIRST (child -> parent), BEFORE the slice-1
   // fees teardown below (refund_reversals/concession_credits -> refunds/
@@ -1279,9 +1363,13 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
-    // Phase-8 exams MUTABLE/GUARDED tables (the three INSERT-only tables are
-    // never seeded by the generic loop, so they are not counted — the
-    // payment_allocations precedent). Counted SEQUENTIALLY (session-pooler cap).
+    // Phase-8 exams MUTABLE/GUARDED tables (the two INSERT-only snapshot/history
+    // tables are never seeded by the generic loop, so they are not counted — the
+    // payment_allocations precedent). reeval_requests + the seeded
+    // result_publications header ARE seeded in 8.2, so they are counted. Counted
+    // SEQUENTIALLY (session-pooler cap).
+    () => adminClient.reevalRequest.count({ where }),
+    () => adminClient.resultPublication.count({ where }),
     () => adminClient.marksRecord.count({ where }),
     () => adminClient.candidate.count({ where }),
     () => adminClient.assessment.count({ where }),
@@ -1471,6 +1559,11 @@ export const RLS_TABLES = [
   "marks_record_history",
   "result_publications",
   "result_snapshots",
+  // Phase-8 slice 8.2: reeval_requests (column-guard class) uses the default
+  // modify pair (ABSENT from EXPECTED_POLICIES). result_publications moves from
+  // the append-only pair to the default modify pair in 8.2 (its immutability is
+  // now a column guard), so its EXPECTED_POLICIES entry is REMOVED below.
+  "reeval_requests",
 ] as const;
 
 /**
@@ -1548,18 +1641,18 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
     "refund_reversals_tenant_insert",
   ],
   adjustments: ["tenant_isolation_select", "adjustments_tenant_insert"],
-  // Phase-8 exams: the three INSERT-only tables are append-only (design §7.4) —
-  // the SELECT + INSERT pair, NO modify policy. The seven mutable/column-guard
-  // exam tables are deliberately ABSENT here so they fall through to
-  // DEFAULT_POLICIES (examinations/marks_records row immutability is a column
-  // guard, not an append-only RLS policy — the payment_transactions precedent).
+  // Phase-8 exams: marks_record_history + result_snapshots stay strictly
+  // append-only (design §7.4) — the SELECT + INSERT pair, NO modify policy. The
+  // seven mutable/column-guard exam tables + reeval_requests are deliberately
+  // ABSENT here so they fall through to DEFAULT_POLICIES (examinations /
+  // marks_records / reeval_requests row immutability is a column guard, not an
+  // append-only RLS policy — the payment_transactions precedent). Slice 8.2
+  // additionally moves result_publications from the append-only pair to the
+  // default modify pair (its immutability is now the result_publications_guard
+  // column guard), so it too is ABSENT here and falls through to DEFAULT_POLICIES.
   marks_record_history: [
     "tenant_isolation_select",
     "marks_record_history_tenant_insert",
-  ],
-  result_publications: [
-    "tenant_isolation_select",
-    "result_publications_tenant_insert",
   ],
   result_snapshots: [
     "tenant_isolation_select",

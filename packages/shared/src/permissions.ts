@@ -485,6 +485,19 @@ export const PERMISSIONS = [
     module: "examinations",
     description: "Student read of OWN latest PUBLISHED result only",
   },
+  // exams.* slice 8.2: re-evaluation. The STUDENT-only self-service request key
+  // and the staff processing/re-mark key. Separation of duties: STUDENT never
+  // gets exams.reeval.manage; staff never gets exams.reeval.request_own.
+  {
+    key: "exams.reeval.request_own",
+    module: "examinations",
+    description: "Student self-service re-evaluation request against OWN published result",
+  },
+  {
+    key: "exams.reeval.manage",
+    module: "examinations",
+    description: "Staff re-evaluation processing (transition + re-mark on a PUBLISHED exam)",
+  },
 
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
@@ -544,6 +557,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "library.view_own",
     "fees.view_own",
     "exams.results.view_own",
+    "exams.reeval.request_own",
   ],
   FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own", "exams.marks.enter"],
   // ACCOUNTANT — additive platform template role (FACULTY/LIBRARIAN/
@@ -612,6 +626,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.moderate",
     "exams.results.publish",
     "exams.results.view",
+    "exams.reeval.manage",
   ],
   ADMIN: [
     "admin.users.view",
@@ -676,6 +691,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.moderate",
     "exams.results.publish",
     "exams.results.view",
+    "exams.reeval.manage",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

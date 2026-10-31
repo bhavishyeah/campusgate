@@ -313,6 +313,7 @@ model Institution {
   marksRecordHistory           MarksRecordHistory[]
   resultPublications           ResultPublication[]
   resultSnapshots              ResultSnapshot[]
+  reevalRequests               ReevalRequest[]
 
   @@map("institutions")
 }
@@ -511,6 +512,7 @@ model StudentProfile {
   candidates           Candidate[]
   marksRecords         MarksRecord[]
   resultSnapshots      ResultSnapshot[]
+  reevalRequests       ReevalRequest[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -1307,6 +1309,7 @@ model Subject {
   examSchedules      ExamSchedule[]
   assessments        Assessment[]
   resultSnapshots    ResultSnapshot[]
+  reevalRequests     ReevalRequest[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -2534,7 +2537,19 @@ enum MarksRecordHistoryChangeType {
 
 enum ResultPublicationStatus {
   PUBLISHED // 8.1 writes this ONLY
-  SUPERSEDED // reserved for 8.2 — MUST NOT be written by any 8.1 path; "superseded" is derived as version < max(version)
+  SUPERSEDED // written in 8.2 on the controlled re-publication supersede flip (PUBLISHED -> SUPERSEDED, column-guard enforced)
+}
+
+// Slice 8.2: a re-evaluation REQUEST is its own tracked, audited, forward-only
+// record. Lifecycle REQUESTED -> UNDER_REVIEW -> REMARKED -> CLOSED (+ the side
+// exit REQUESTED|UNDER_REVIEW -> REJECTED), enforced by the reeval_requests_guard
+// column-guard trigger (raw SQL, migration §h).
+enum ReevalRequestStatus {
+  REQUESTED
+  UNDER_REVIEW
+  REMARKED
+  CLOSED
+  REJECTED
 }
 
 model Examination {
@@ -2551,25 +2566,36 @@ model Examination {
   type              ExaminationType
   status            ExaminationStatus @default(DRAFT)
   createdByUserId   String // recorded actor id (no FK)
+  // Slice 8.2: nullable self-FK linking a SUPPLEMENTARY exam to its parent. The
+  // single-column Prisma relation below is cosmetic; the real guarantee is the
+  // composite same-tenant self-FK (institutionId, parentExaminationId)->
+  // examinations(institutionId, id) in raw SQL (migration §k). Set at create and
+  // then frozen by the re-authored examinations_guard (migration §l).
+  parentExaminationId String?
+  parentExamination   Examination?  @relation("SupplementaryParent", fields: [parentExaminationId], references: [id])
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
-  schedules          ExamSchedule[]
-  candidates         Candidate[]
-  assessments        Assessment[]
-  marksRecords       MarksRecord[]
-  resultPublications ResultPublication[]
-  resultSnapshots    ResultSnapshot[]
+  schedules            ExamSchedule[]
+  candidates           Candidate[]
+  assessments          Assessment[]
+  marksRecords         MarksRecord[]
+  resultPublications   ResultPublication[]
+  resultSnapshots      ResultSnapshot[]
+  reevalRequests       ReevalRequest[]
+  supplementaryChildren Examination[] @relation("SupplementaryParent")
 
   // Forward-only lifecycle via the examinations_guard column-guard trigger (raw
   // SQL, migration §h). Composite same-tenant FKs (academicSessionId->
-  // academic_sessions, academicTermId->academic_terms, programId->programs) +
-  // CHECK char_length(name) >= 1 + RLS are raw SQL in the migration.
+  // academic_sessions, academicTermId->academic_terms, programId->programs,
+  // and in 8.2 (institutionId, parentExaminationId)->examinations) + CHECK
+  // char_length(name) >= 1 + RLS are raw SQL in the migration.
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
   @@index([institutionId])
   @@index([institutionId, academicTermId])
   @@index([institutionId, programId])
   @@index([institutionId, status])
+  @@index([institutionId, parentExaminationId])
   @@map("examinations")
 }
 
@@ -2664,6 +2690,7 @@ model Candidate {
 
   marksRecords    MarksRecord[]
   resultSnapshots ResultSnapshot[]
+  reevalRequests  ReevalRequest[]
 
   // Composite same-tenant FKs (institutionId, examId)->examinations,
   // (institutionId, studentId)->student_profiles, (institutionId,
@@ -2781,10 +2808,14 @@ model ResultPublication {
   publishedAt       DateTime                @default(now())
   createdAt         DateTime                @default(now())
 
-  snapshots ResultSnapshot[]
+  snapshots      ResultSnapshot[]
+  reevalRequests ReevalRequest[] @relation("ReevalSourcePublication")
 
-  // INSERT-only append-only publication header (NO updatedAt): append-only RLS +
-  // REVOKE UPDATE,DELETE + trigger hand-authored in the migration. Composite
+  // Slice 8.2: immutability moves from an unconditional append-only trigger to a
+  // COLUMN-GUARD (result_publications_guard) that permits EXACTLY PUBLISHED->
+  // SUPERSEDED and forbids every other mutation + all DELETEs (raw SQL, migration
+  // §m). The RLS pair becomes the default {tenant_isolation_select,
+  // tenant_isolation_modify} and campass_app gains GRANT UPDATE. Composite
   // same-tenant FKs ((institutionId, examId)->examinations, (institutionId,
   // gradingSchemeId)->grading_schemes), the (institutionId, examId, version)
   // unique, and CHECK version >= 1 are raw SQL in the migration.
@@ -2830,4 +2861,49 @@ model ResultSnapshot {
   @@index([institutionId, studentId])
   @@index([institutionId, examId, subjectId])
   @@map("result_snapshots")
+}
+
+model ReevalRequest {
+  id                  String              @id @default(cuid())
+  institutionId       String
+  institution         Institution         @relation(fields: [institutionId], references: [id])
+  examId              String
+  exam                Examination         @relation(fields: [examId], references: [id])
+  candidateId         String
+  candidate           Candidate           @relation(fields: [candidateId], references: [id])
+  studentId           String
+  student             StudentProfile      @relation(fields: [studentId], references: [id])
+  subjectId           String
+  subject             Subject             @relation(fields: [subjectId], references: [id])
+  // the published result the student is contesting (frozen provenance)
+  sourcePublicationId String
+  sourcePublication   ResultPublication   @relation("ReevalSourcePublication", fields: [sourcePublicationId], references: [id])
+  status              ReevalRequestStatus @default(REQUESTED)
+  studentReason       String
+  requestedByUserId   String // recorded actor id (no FK) — the student user
+  processedByUserId   String? // recorded actor id (no FK) — staff
+  staffNote           String?
+  outcomePublicationId String? // set when a REMARKED change is re-published (no FK; frozen provenance, cycle-avoidance)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  // Forward-only lifecycle via the reeval_requests_guard column-guard trigger
+  // (raw SQL, migration §h). Composite same-tenant FKs ((institutionId, examId)->
+  // examinations, (institutionId, candidateId)->candidates, (institutionId,
+  // studentId)->student_profiles, (institutionId, subjectId)->subjects,
+  // (institutionId, sourcePublicationId)->result_publications), the partial
+  // unique reeval_requests_open_unique on (institutionId, candidateId, subjectId)
+  // WHERE status IN (REQUESTED, UNDER_REVIEW, REMARKED), CHECK
+  // char_length(studentReason) >= 1, and RLS are raw SQL in the migration.
+  // requestedByUserId / processedByUserId / outcomePublicationId carry NO FK
+  // (actor-id / cycle-avoidance precedent). FROZEN set (guard): institutionId,
+  // examId, candidateId, studentId, subjectId, sourcePublicationId, studentReason,
+  // requestedByUserId, createdAt (finding 8).
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, examId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, candidateId])
+  @@index([institutionId, status])
+  @@map("reeval_requests")
 }

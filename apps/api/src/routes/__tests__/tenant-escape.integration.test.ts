@@ -2344,15 +2344,18 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     expect(await adminClient.marksRecord.findUnique({ where: { id: A.marksRecordId } })).toBeTruthy();
   }, 60_000);
 
-  it("3p7. exams append-only tables (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+  it("3p7. exams append-only + column-guard tables (self-contained, one tenant): insert OK, cross-tenant SELECT empty, mutation rules enforced", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
 
     // Self-contained (mirrors the 3g2 fees append-only case): INSERT one row into
-    // each of the three INSERT-only exam tables under A, assert read under A,
-    // empty under B, then UPDATE + DELETE denied (REVOKE + trigger). Rows removed
-    // here within THIS test's trigger-disable scope so the shared teardown is not
-    // blocked. This is the ONLY place the escape suite touches these three tables.
+    // each of the three exam header/history tables under A, assert read under A,
+    // empty under B, then enforce each table's mutation rule. In 8.2
+    // marks_record_history + result_snapshots stay STRICTLY append-only
+    // (UPDATE+DELETE denied); result_publications carries a COLUMN GUARD that
+    // permits EXACTLY PUBLISHED->SUPERSEDED and forbids every other mutation + all
+    // DELETEs. Rows removed here within THIS test's trigger-disable scope so the
+    // shared teardown is not blocked.
     const histId = `${PREFIX}MHIST_A`;
     const pubId = `${PREFIX}PUB_A`;
     const snapId = `${PREFIX}SNAP_A`;
@@ -2376,7 +2379,11 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
           id: pubId,
           institutionId: A.institutionId,
           examId: A.examinationId,
-          version: 1,
+          // version 2 — the harness already seeds a version-1 publication for this
+          // exam (reeval_requests.sourcePublicationId provenance), so this
+          // self-contained row uses the next version to avoid the
+          // (institutionId, examId, version) unique collision.
+          version: 2,
           status: "PUBLISHED",
           gradingSchemeId: A.gradingSchemeId,
           publishedByUserId: A.userId,
@@ -2411,15 +2418,25 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     expect(await withTenant(B.institutionId, (tx) => tx.resultPublication.findUnique({ where: { id: pubId } }))).toBeNull();
     expect(await withTenant(B.institutionId, (tx) => tx.resultSnapshot.findUnique({ where: { id: snapId } }))).toBeNull();
 
-    // UPDATE + DELETE denied on all three.
+    // marks_record_history + result_snapshots are STRICTLY append-only: UPDATE +
+    // DELETE both denied (REVOKE + append-only trigger).
     await expect(withTenant(A.institutionId, (tx) => tx.marksRecordHistory.update({ where: { id: histId }, data: { reason: "x" } }))).rejects.toBeTruthy();
     await expect(withTenant(A.institutionId, (tx) => tx.marksRecordHistory.delete({ where: { id: histId } }))).rejects.toBeTruthy();
     await expect(withTenant(A.institutionId, (tx) => tx.resultSnapshot.update({ where: { id: snapId }, data: { gradeLabel: "F" } }))).rejects.toBeTruthy();
     await expect(withTenant(A.institutionId, (tx) => tx.resultSnapshot.delete({ where: { id: snapId } }))).rejects.toBeTruthy();
-    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.update({ where: { id: pubId }, data: { status: "SUPERSEDED" } }))).rejects.toBeTruthy();
-    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.delete({ where: { id: pubId } }))).rejects.toBeTruthy();
 
-    // Survived every attempt.
+    // result_publications COLUMN GUARD (slice 8.2): a non-status column mutation
+    // is denied; DELETE is denied; the one legal PUBLISHED->SUPERSEDED flip
+    // succeeds; and a subsequent SUPERSEDED->PUBLISHED reversal is denied.
+    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.update({ where: { id: pubId }, data: { reason: "tamper" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.delete({ where: { id: pubId } }))).rejects.toBeTruthy();
+    // The legal flip is allowed.
+    await withTenant(A.institutionId, (tx) => tx.resultPublication.update({ where: { id: pubId }, data: { status: "SUPERSEDED" } }));
+    expect((await adminClient.resultPublication.findUnique({ where: { id: pubId } }))!.status).toBe("SUPERSEDED");
+    // Reversing it is rejected by the column guard.
+    await expect(withTenant(A.institutionId, (tx) => tx.resultPublication.update({ where: { id: pubId }, data: { status: "PUBLISHED" } }))).rejects.toBeTruthy();
+
+    // Survived every attempt (the publication is still present, now SUPERSEDED).
     expect(await adminClient.marksRecordHistory.findUnique({ where: { id: histId } })).toBeTruthy();
     expect(await adminClient.resultSnapshot.findUnique({ where: { id: snapId } })).toBeTruthy();
 
@@ -2428,20 +2445,163 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     // marks_record_history.
     const tables = [
       { table: "result_snapshots", trigger: "result_snapshots_no_update_delete" },
-      { table: "result_publications", trigger: "result_publications_no_update_delete" },
+      // Slice 8.2: result_publications now carries result_publications_guard (the
+      // append-only trigger was swapped for a column guard).
+      { table: "result_publications", trigger: "result_publications_guard" },
       { table: "marks_record_history", trigger: "marks_record_history_no_update_delete" },
     ] as const;
     for (const { table, trigger } of tables) {
       await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
     }
     try {
-      await adminClient.resultSnapshot.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
-      await adminClient.resultPublication.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
-      await adminClient.marksRecordHistory.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      // Delete ONLY this case's self-contained rows by id — a blanket
+      // startsWith(PREFIX) delete would also match the harness-seeded
+      // result_publications header, which the seeded reeval_requests still
+      // references (reeval_requests_publication_same_tenant_fkey RESTRICT).
+      await adminClient.resultSnapshot.deleteMany({ where: { id: snapId } });
+      await adminClient.resultPublication.deleteMany({ where: { id: pubId } });
+      await adminClient.marksRecordHistory.deleteMany({ where: { id: histId } });
     } finally {
       for (const { table, trigger } of tables) {
         await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
       }
+    }
+  }, 60_000);
+
+  it("3p8. reeval_requests isolation + column guard (slice 8.2): cross-tenant read/spoof denied, frozen column UPDATE rejected", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Cross-tenant read denied.
+    expect(await withTenant(A.institutionId, (tx) => tx.reevalRequest.findUnique({ where: { id: B.reevalRequestId } }))).toBeNull();
+
+    // Unscoped list under A returns only A's rows, never B's.
+    const own = await withTenant(A.institutionId, (tx) => tx.reevalRequest.findMany({}));
+    expect(own.length).toBeGreaterThan(0);
+    for (const r of own) {
+      expect(r.institutionId).toBe(A.institutionId);
+      expect(r.id).not.toBe(B.reevalRequestId);
+    }
+
+    // Spoofed insert: A cannot stamp a reeval_request institutionId = B.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.reevalRequest.create({
+          data: {
+            id: `${PREFIX}SPOOF_REEVAL`,
+            institutionId: B.institutionId, // spoof
+            examId: B.examinationId,
+            candidateId: B.candidateId,
+            studentId: B.studentProfileId,
+            subjectId: B.subjectId,
+            sourcePublicationId: B.resultPublicationId,
+            studentReason: `${PREFIX}spoof`,
+            requestedByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // Foreign-parent: A cannot create a reeval_request referencing B's candidate.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.reevalRequest.create({
+          data: {
+            id: `${PREFIX}FOREIGN_REEVAL`,
+            institutionId: A.institutionId,
+            examId: A.examinationId,
+            candidateId: B.candidateId, // B's candidate under A
+            studentId: A.studentProfileId,
+            subjectId: A.subjectId,
+            sourcePublicationId: A.resultPublicationId,
+            studentReason: `${PREFIX}foreign`,
+            requestedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // Column guard (finding 8): an UPDATE of the FROZEN studentReason column is
+    // rejected by reeval_requests_guard; a DELETE is rejected; the row survives.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.reevalRequest.update({ where: { id: A.reevalRequestId }, data: { studentReason: "tampered" } }),
+      ),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.reevalRequest.delete({ where: { id: A.reevalRequestId } })),
+    ).rejects.toBeTruthy();
+    // An illegal status jump (REQUESTED -> REMARKED) is rejected; the legal
+    // forward step (REQUESTED -> UNDER_REVIEW) is permitted.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.reevalRequest.update({ where: { id: A.reevalRequestId }, data: { status: "REMARKED" } }),
+      ),
+    ).rejects.toBeTruthy();
+    await withTenant(A.institutionId, (tx) =>
+      tx.reevalRequest.update({ where: { id: A.reevalRequestId }, data: { status: "UNDER_REVIEW" } }),
+    );
+    const survived = await adminClient.reevalRequest.findUnique({ where: { id: A.reevalRequestId } });
+    expect(survived!.studentReason).toBe(`${PREFIX}reeval reason A`);
+    expect(survived!.status).toBe("UNDER_REVIEW");
+  }, 60_000);
+
+  it("3p9. examinations.parentExaminationId self-FK is same-tenant (slice 8.2): A cannot link to B's parent exam", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant self-FK (institutionId, parentExaminationId)->
+    // examinations makes it physically impossible for A's supplementary exam to
+    // reference B's exam as its parent.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.examination.create({
+          data: {
+            id: `${PREFIX}SUPP_FOREIGN_PARENT`,
+            institutionId: A.institutionId,
+            academicSessionId: A.academicSessionId,
+            academicTermId: A.academicTermId,
+            programId: A.programId,
+            name: `${PREFIX}Supp foreign parent`,
+            type: "SUPPLEMENTARY",
+            createdByUserId: A.userId,
+            parentExaminationId: B.examinationId, // B's exam as A's parent
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // A SUPPLEMENTARY exam linking to A's OWN parent exam is accepted.
+    const child = await withTenant(A.institutionId, (tx) =>
+      tx.examination.create({
+        data: {
+          id: `${PREFIX}SUPP_OWN_PARENT`,
+          institutionId: A.institutionId,
+          academicSessionId: A.academicSessionId,
+          academicTermId: A.academicTermId,
+          programId: A.programId,
+          name: `${PREFIX}Supp own parent`,
+          type: "SUPPLEMENTARY",
+          createdByUserId: A.userId,
+          parentExaminationId: A.examinationId,
+        },
+      }),
+    );
+    expect(child.parentExaminationId).toBe(A.examinationId);
+
+    // The parent link is frozen after create by the re-authored examinations_guard.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.examination.update({ where: { id: child.id }, data: { parentExaminationId: null } }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // Clean up this extra exam within the examinations_guard trigger-disable.
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" DISABLE TRIGGER "examinations_guard"`);
+    try {
+      await adminClient.examination.deleteMany({ where: { id: { startsWith: `${PREFIX}SUPP_` } } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "examinations" ENABLE TRIGGER "examinations_guard"`);
     }
   }, 60_000);
 
@@ -2553,13 +2713,14 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "concession_credits",
       "refund_reversals",
       "adjustments",
-      // Phase-8 exams: the three INSERT-only tables join the append-only set
-      // (design §7.4) — INSERT-only policy + REVOKE + trigger, NO modify policy.
-      // The seven mutable/column-guard exam tables are NOT here — they carry the
-      // standard modify pair (examinations/marks_records immutability is a column
-      // guard, not an RLS policy — the payment_transactions precedent).
+      // Phase-8 exams: marks_record_history + result_snapshots stay strictly
+      // append-only (design §7.4) — INSERT-only policy + REVOKE + trigger, NO
+      // modify policy. The seven mutable/column-guard exam tables + reeval_requests
+      // are NOT here — they carry the standard modify pair. Slice 8.2 moves
+      // result_publications to the standard modify pair too (its immutability is
+      // now the result_publications_guard column guard, not an RLS policy — the
+      // payment_transactions precedent), so it is NOT here.
       "marks_record_history",
-      "result_publications",
       "result_snapshots",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
