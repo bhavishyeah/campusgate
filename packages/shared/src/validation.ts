@@ -1140,3 +1140,119 @@ export type CollectionReportQueryInput = z.infer<typeof collectionReportQuerySch
 export type OutstandingReportQueryInput = z.infer<typeof outstandingReportQuerySchema>;
 export type ReconciliationReportQueryInput = z.infer<typeof reconciliationReportQuerySchema>;
 export type RollupReportQueryInput = z.infer<typeof rollupReportQuerySchema>;
+
+// ─── Phase 8 Examinations & Results (slice 8.1) ──────────────────────────────
+// institutionId / userId are NEVER accepted from the body — always from the
+// verified token. seatNo is NEVER a client input (server-assigned under the
+// allocation advisory lock). Money-free but string-safe + well-typed.
+
+const cuidLikeString = z.string().min(1).max(64);
+
+export const examinationTypeEnum = z.enum(["MIDTERM", "FINAL", "INTERNAL", "SUPPLEMENTARY"]);
+
+export const createExaminationSchema = z.object({
+  academicSessionId: cuidLikeString,
+  academicTermId: cuidLikeString,
+  programId: cuidLikeString,
+  name: z.string().min(1).max(200),
+  type: examinationTypeEnum,
+});
+
+export const patchExaminationSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+  })
+  .refine((v) => v.name !== undefined, { message: "no updatable fields provided" });
+
+export const advanceExamStatusSchema = z.object({
+  to: z.enum(["SCHEDULED", "MARKS_OPEN", "MARKS_LOCKED", "MODERATION", "APPROVED"]),
+});
+
+export const createExamScheduleSchema = z.object({
+  subjectId: cuidLikeString,
+  room: z.string().min(1).max(100),
+  roomCapacity: z.number().int().positive(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+});
+
+export const allocateCandidatesSchema = z.object({
+  candidateIds: z.array(cuidLikeString).min(1).max(1000),
+});
+
+export const registerCandidatesSchema = z.object({
+  studentIds: z.array(cuidLikeString).min(1).max(5000),
+});
+
+export const createAssessmentSchema = z.object({
+  subjectId: cuidLikeString,
+  name: z.string().min(1).max(100),
+  maxMarks: z.number().int().positive(),
+  weight: z.number().int().min(1).max(100),
+});
+
+export const patchAssessmentSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    maxMarks: z.number().int().positive().optional(),
+    weight: z.number().int().min(1).max(100).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.maxMarks !== undefined || v.weight !== undefined, {
+    message: "no updatable fields provided",
+  });
+
+export const putMarksSchema = z.object({
+  marks: z
+    .array(
+      z.object({
+        assessmentId: cuidLikeString,
+        candidateId: cuidLikeString,
+        marks: z.number().int().min(0),
+      }),
+    )
+    .min(1)
+    .max(5000),
+});
+
+export const correctMarkSchema = z.object({
+  marks: z.number().int().min(0),
+  reason: z.string().min(1).max(500),
+});
+
+const gradeBandInputSchema = z.object({
+  minPercentBps: z.number().int().min(0).max(10000),
+  maxPercentBps: z.number().int().min(0).max(10000),
+  gradeLabel: z.string().min(1).max(20),
+  gradePoints: z.number().int().min(0),
+  isPassing: z.boolean(),
+});
+
+export const createGradingSchemeSchema = z.object({
+  name: z.string().min(1).max(200),
+  isActive: z.boolean().optional(),
+  bands: z.array(gradeBandInputSchema).min(1).max(50),
+});
+
+export const patchGradingSchemeSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    isActive: z.boolean().optional(),
+    bands: z.array(gradeBandInputSchema).min(1).max(50).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.isActive !== undefined || v.bands !== undefined, {
+    message: "no updatable fields provided",
+  });
+
+export type ExaminationTypeValue = z.infer<typeof examinationTypeEnum>;
+export type CreateExaminationInput = z.infer<typeof createExaminationSchema>;
+export type PatchExaminationInput = z.infer<typeof patchExaminationSchema>;
+export type AdvanceExamStatusInput = z.infer<typeof advanceExamStatusSchema>;
+export type CreateExamScheduleInput = z.infer<typeof createExamScheduleSchema>;
+export type AllocateCandidatesInput = z.infer<typeof allocateCandidatesSchema>;
+export type RegisterCandidatesInput = z.infer<typeof registerCandidatesSchema>;
+export type CreateAssessmentInput = z.infer<typeof createAssessmentSchema>;
+export type PatchAssessmentInput = z.infer<typeof patchAssessmentSchema>;
+export type PutMarksInput = z.infer<typeof putMarksSchema>;
+export type CorrectMarkInput = z.infer<typeof correctMarkSchema>;
+export type CreateGradingSchemeInput = z.infer<typeof createGradingSchemeSchema>;
+export type PatchGradingSchemeInput = z.infer<typeof patchGradingSchemeSchema>;

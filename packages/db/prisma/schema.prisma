@@ -303,6 +303,16 @@ model Institution {
   refunds                      Refund[]
   refundReversals              RefundReversal[]
   adjustments                  Adjustment[]
+  examinations                 Examination[]
+  gradingSchemes               GradingScheme[]
+  gradeBands                   GradeBand[]
+  examSchedules                ExamSchedule[]
+  candidates                   Candidate[]
+  assessments                  Assessment[]
+  marksRecords                 MarksRecord[]
+  marksRecordHistory           MarksRecordHistory[]
+  resultPublications           ResultPublication[]
+  resultSnapshots              ResultSnapshot[]
 
   @@map("institutions")
 }
@@ -498,6 +508,9 @@ model StudentProfile {
   studentConcessions   StudentConcession[]
   refunds              Refund[]
   adjustments          Adjustment[]
+  candidates           Candidate[]
+  marksRecords         MarksRecord[]
+  resultSnapshots      ResultSnapshot[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -893,6 +906,7 @@ model AcademicSession {
   enrollments          Enrollment[]
   feeStructures        FeeStructure[]
   concessionDefinitions ConcessionDefinition[]
+  examinations         Examination[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -924,6 +938,7 @@ model AcademicTerm {
   timetables           Timetable[]
   scheduledClasses     ScheduledClass[]
   attendanceSessions   AttendanceSession[]
+  examinations         Examination[]
 
   @@unique([academicSessionId, ordinal])
   @@unique([id, institutionId])
@@ -959,6 +974,7 @@ model Program {
   admissionOffers           AdmissionOffer[]           @relation("OfferOfferedProgram")
   feeStructures             FeeStructure[]
   concessionDefinitions     ConcessionDefinition[]
+  examinations              Examination[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -1288,6 +1304,9 @@ model Subject {
 
   facultyAssignments FacultyAssignment[]
   scheduledClasses   ScheduledClass[]
+  examSchedules      ExamSchedule[]
+  assessments        Assessment[]
+  resultSnapshots    ResultSnapshot[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -2475,4 +2494,340 @@ model Adjustment {
   @@index([institutionId])
   @@index([institutionId, studentChargeId])
   @@map("adjustments")
+}
+
+// ─── EXAMINATIONS & RESULTS (Phase 8 slice 8.1): exam lifecycle, schedules, ──
+// capacity-aware room allocation, candidates, weighted assessments, scoped
+// marks entry with audited corrections, a deterministic grading engine, and
+// controlled append-only versioned result publication (step-up-gated).
+//
+// Nine new tenant-owned tables. Prisma relations reference the single PK only;
+// the composite same-tenant FKs (incl. institutionId), the partial unique index
+// candidates_schedule_seat_unique, the (institutionId, examId, version) unique,
+// CHECK constraints, ENABLE+FORCE RLS, the examinations_guard / marks_records_guard
+// column-guard triggers, the three *_append_only triggers, the campass_app GRANT
+// refresh, and the permission/role_permissions catalogue seed are all raw SQL in
+// the hand-authored migration 20261206000000_phase8_exams_slice1 (the fees/library
+// precedent). The composite-vs-single-FK cosmetic migrate-diff is expected.
+
+enum ExaminationType {
+  MIDTERM
+  FINAL
+  INTERNAL
+  SUPPLEMENTARY // reserved for slice 8.2 (no 8.1 route builds it)
+}
+
+enum ExaminationStatus {
+  DRAFT
+  SCHEDULED
+  MARKS_OPEN
+  MARKS_LOCKED
+  MODERATION
+  APPROVED
+  PUBLISHED
+}
+
+enum MarksRecordHistoryChangeType {
+  MARKED // initial entry of a mark (first write while MARKS_OPEN)
+  CORRECTED // every later edit (MARKS_OPEN edit or a MODERATION correction)
+}
+
+enum ResultPublicationStatus {
+  PUBLISHED // 8.1 writes this ONLY
+  SUPERSEDED // reserved for 8.2 — MUST NOT be written by any 8.1 path; "superseded" is derived as version < max(version)
+}
+
+model Examination {
+  id                String            @id @default(cuid())
+  institutionId     String
+  institution       Institution       @relation(fields: [institutionId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession   @relation(fields: [academicSessionId], references: [id])
+  academicTermId    String
+  academicTerm      AcademicTerm      @relation(fields: [academicTermId], references: [id])
+  programId         String
+  program           Program           @relation(fields: [programId], references: [id])
+  name              String
+  type              ExaminationType
+  status            ExaminationStatus @default(DRAFT)
+  createdByUserId   String // recorded actor id (no FK)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  schedules          ExamSchedule[]
+  candidates         Candidate[]
+  assessments        Assessment[]
+  marksRecords       MarksRecord[]
+  resultPublications ResultPublication[]
+  resultSnapshots    ResultSnapshot[]
+
+  // Forward-only lifecycle via the examinations_guard column-guard trigger (raw
+  // SQL, migration §h). Composite same-tenant FKs (academicSessionId->
+  // academic_sessions, academicTermId->academic_terms, programId->programs) +
+  // CHECK char_length(name) >= 1 + RLS are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, academicTermId])
+  @@index([institutionId, programId])
+  @@index([institutionId, status])
+  @@map("examinations")
+}
+
+model GradingScheme {
+  id              String      @id @default(cuid())
+  institutionId   String
+  institution     Institution @relation(fields: [institutionId], references: [id])
+  name            String
+  isActive        Boolean     @default(false)
+  createdByUserId String // recorded actor id (no FK)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  bands              GradeBand[]
+  resultPublications ResultPublication[]
+
+  // Standard RLS pair. (institutionId, name) unique + char_length(name) >= 1 are
+  // raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, name])
+  @@index([institutionId])
+  @@map("grading_schemes")
+}
+
+model GradeBand {
+  id              String        @id @default(cuid())
+  institutionId   String
+  institution     Institution   @relation(fields: [institutionId], references: [id])
+  gradingSchemeId String
+  gradingScheme   GradingScheme @relation(fields: [gradingSchemeId], references: [id])
+  minPercentBps   Int // 0..10000 (pct*100)
+  maxPercentBps   Int // 0..10000, minPercentBps <= maxPercentBps; contiguous (service)
+  gradeLabel      String
+  gradePoints     Int // GRADE_POINTS_SCALE=100: points*100 (e.g. 1000 = 10.00)
+  isPassing       Boolean // authoritative pass/fail flag; passed := band.isPassing
+  ordinal         Int
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Composite same-tenant FK (institutionId, gradingSchemeId)->grading_schemes,
+  // the (institutionId, gradingSchemeId, ordinal) unique, and CHECKs
+  // (minPercentBps >= 0, maxPercentBps <= 10000, minPercentBps <= maxPercentBps,
+  // gradePoints >= 0, char_length(gradeLabel) >= 1) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, gradingSchemeId, ordinal])
+  @@index([institutionId])
+  @@index([institutionId, gradingSchemeId])
+  @@map("grade_bands")
+}
+
+model ExamSchedule {
+  id            String      @id @default(cuid())
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  examId        String
+  exam          Examination @relation(fields: [examId], references: [id])
+  subjectId     String
+  subject       Subject     @relation(fields: [subjectId], references: [id])
+  room          String
+  roomCapacity  Int
+  startsAt      DateTime
+  endsAt        DateTime
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  candidates Candidate[]
+
+  // Composite same-tenant FKs (institutionId, examId)->examinations,
+  // (institutionId, subjectId)->subjects, the (institutionId, examId, subjectId)
+  // unique, and CHECKs (roomCapacity > 0, endsAt > startsAt,
+  // char_length(room) >= 1) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, examId, subjectId])
+  @@index([institutionId])
+  @@index([institutionId, examId])
+  @@map("exam_schedules")
+}
+
+model Candidate {
+  id             String         @id @default(cuid())
+  institutionId  String
+  institution    Institution    @relation(fields: [institutionId], references: [id])
+  examId         String
+  exam           Examination    @relation(fields: [examId], references: [id])
+  studentId      String
+  student        StudentProfile @relation(fields: [studentId], references: [id])
+  examScheduleId String? // room allocation target (set once by the allocation op)
+  examSchedule   ExamSchedule?  @relation(fields: [examScheduleId], references: [id])
+  seatNo         String? // server-assigned integer ordinal, stored as decimal string
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  marksRecords    MarksRecord[]
+  resultSnapshots ResultSnapshot[]
+
+  // Composite same-tenant FKs (institutionId, examId)->examinations,
+  // (institutionId, studentId)->student_profiles, (institutionId,
+  // examScheduleId)->exam_schedules (nullable), the (examId, studentId) unique,
+  // and the partial unique candidates_schedule_seat_unique on (institutionId,
+  // examScheduleId, seatNo) WHERE examScheduleId IS NOT NULL AND seatNo IS NOT
+  // NULL (seat double-booking backstop) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([examId, studentId]) // one candidate row per (exam, student)
+  @@index([institutionId])
+  @@index([institutionId, examId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, examScheduleId])
+  @@map("candidates")
+}
+
+model Assessment {
+  id            String        @id @default(cuid())
+  institutionId String
+  institution   Institution   @relation(fields: [institutionId], references: [id])
+  examId        String
+  exam          Examination   @relation(fields: [examId], references: [id])
+  subjectId     String
+  subject       Subject       @relation(fields: [subjectId], references: [id])
+  name          String
+  maxMarks      Int
+  weight        Int // percent points; ACTIVE set per (exam,subject) sums to 100 (service)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  marksRecords MarksRecord[]
+
+  // Composite same-tenant FKs (institutionId, examId)->examinations,
+  // (institutionId, subjectId)->subjects, the (institutionId, examId, subjectId,
+  // name) unique, and CHECKs (maxMarks > 0, weight BETWEEN 1 AND 100,
+  // char_length(name) >= 1) are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, examId, subjectId, name])
+  @@index([institutionId])
+  @@index([institutionId, examId, subjectId])
+  @@map("assessments")
+}
+
+model MarksRecord {
+  id              String         @id @default(cuid())
+  institutionId   String
+  institution     Institution    @relation(fields: [institutionId], references: [id])
+  examId          String
+  exam            Examination    @relation(fields: [examId], references: [id])
+  assessmentId    String
+  assessment      Assessment     @relation(fields: [assessmentId], references: [id])
+  candidateId     String
+  candidate       Candidate      @relation(fields: [candidateId], references: [id])
+  studentId       String
+  student         StudentProfile @relation(fields: [studentId], references: [id])
+  marks           Int // 0 <= marks <= assessment.maxMarks (lower bound CHECK; upper service+trigger)
+  enteredByUserId String // recorded actor id (no FK)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  history MarksRecordHistory[]
+
+  // Forward-only identity-frozen column guard marks_records_guard (raw SQL,
+  // migration §h); DELETE forbidden. Composite same-tenant FKs ((institutionId,
+  // examId)->examinations, (institutionId, assessmentId)->assessments,
+  // (institutionId, candidateId)->candidates, (institutionId, studentId)->
+  // student_profiles), the (assessmentId, candidateId) unique, and CHECK
+  // marks >= 0 are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([assessmentId, candidateId]) // one mark per candidate per assessment
+  @@index([institutionId])
+  @@index([institutionId, examId])
+  @@index([institutionId, assessmentId])
+  @@index([institutionId, candidateId])
+  @@map("marks_records")
+}
+
+model MarksRecordHistory {
+  id                String                       @id @default(cuid())
+  institutionId     String
+  institution       Institution                  @relation(fields: [institutionId], references: [id])
+  marksRecordId     String
+  marksRecord       MarksRecord                  @relation(fields: [marksRecordId], references: [id])
+  changeType        MarksRecordHistoryChangeType
+  previousMarks     Int? // null for the initial MARKED row
+  newMarks          Int
+  actorUserId       String
+  actorMembershipId String?
+  reason            String?
+  metadata          Json?
+  createdAt         DateTime                     @default(now())
+
+  // INSERT-only append-only audit (NO updatedAt): append-only RLS (SELECT +
+  // INSERT) + REVOKE UPDATE,DELETE + a BEFORE UPDATE OR DELETE trigger are
+  // hand-authored in the migration (mirrors attendance_record_history). Composite
+  // same-tenant FK (institutionId, marksRecordId)->marks_records is raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, marksRecordId])
+  @@map("marks_record_history")
+}
+
+model ResultPublication {
+  id                String                  @id @default(cuid())
+  institutionId     String
+  institution       Institution             @relation(fields: [institutionId], references: [id])
+  examId            String
+  exam              Examination             @relation(fields: [examId], references: [id])
+  version           Int // 1,2,3... per (institutionId, examId)
+  status            ResultPublicationStatus @default(PUBLISHED)
+  gradingSchemeId   String
+  gradingScheme     GradingScheme           @relation(fields: [gradingSchemeId], references: [id])
+  publishedByUserId String // recorded actor id (no FK)
+  reason            String? // required on version > 1 (service-enforced)
+  publishedAt       DateTime                @default(now())
+  createdAt         DateTime                @default(now())
+
+  snapshots ResultSnapshot[]
+
+  // INSERT-only append-only publication header (NO updatedAt): append-only RLS +
+  // REVOKE UPDATE,DELETE + trigger hand-authored in the migration. Composite
+  // same-tenant FKs ((institutionId, examId)->examinations, (institutionId,
+  // gradingSchemeId)->grading_schemes), the (institutionId, examId, version)
+  // unique, and CHECK version >= 1 are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, examId, version]) // hard monotonic version key
+  @@index([institutionId])
+  @@index([institutionId, examId])
+  @@map("result_publications")
+}
+
+model ResultSnapshot {
+  id                  String            @id @default(cuid())
+  institutionId       String
+  institution         Institution       @relation(fields: [institutionId], references: [id])
+  resultPublicationId String
+  resultPublication   ResultPublication @relation(fields: [resultPublicationId], references: [id])
+  examId              String
+  exam                Examination       @relation(fields: [examId], references: [id])
+  candidateId         String
+  candidate           Candidate         @relation(fields: [candidateId], references: [id])
+  studentId           String
+  student             StudentProfile    @relation(fields: [studentId], references: [id])
+  subjectId           String
+  subject             Subject           @relation(fields: [subjectId], references: [id])
+  percentBps          Int // computed pct in basis points (0..10000)
+  gradeLabel          String // copied from the matched band at publish time (immutable)
+  gradePoints         Int // copied from the band; GRADE_POINTS_SCALE=100
+  passed              Boolean // copied from the matched band's isPassing
+  createdAt           DateTime          @default(now())
+
+  // INSERT-only immutable computed result (NO updatedAt): append-only RLS +
+  // REVOKE UPDATE,DELETE + trigger hand-authored in the migration. Composite
+  // same-tenant FKs ((institutionId, resultPublicationId)->result_publications,
+  // (institutionId, examId)->examinations, (institutionId, candidateId)->
+  // candidates, (institutionId, studentId)->student_profiles, (institutionId,
+  // subjectId)->subjects), the (resultPublicationId, candidateId, subjectId)
+  // unique, and CHECKs (percentBps BETWEEN 0 AND 10000, gradePoints >= 0) are raw
+  // SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([resultPublicationId, candidateId, subjectId])
+  @@index([institutionId])
+  @@index([institutionId, resultPublicationId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, examId, subjectId])
+  @@map("result_snapshots")
 }

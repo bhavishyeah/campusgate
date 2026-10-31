@@ -176,6 +176,29 @@ export const AUDIT_ACTIONS = [
   { key: "fees.refund.processed", module: "fees", description: "Refund settled PROCESSED (reversing credits inserted, status recomputed)" },
   { key: "fees.refund.failed", module: "fees", description: "Refund settled FAILED (no reversals; reservation released)" },
   { key: "fees.adjustment.posted", module: "fees", description: "Adjustment posted (waiver/write-off/correction credit or debit)" },
+  // exams.* (15) — Phase 8 Examinations & Results slice 8.1 mutations
+  // (past-tense). No migration mirror (validated only in recordAuditEvent). Every
+  // examination status transition (incl. MARKS_OPEN->MARKS_LOCKED,
+  // MARKS_LOCKED->MODERATION, MODERATION->APPROVED) is audited under the single
+  // exams.examination.status_changed key with {from,to} metadata — there is NO
+  // per-transition key (no exams.marks.locked / exams.moderation.opened /
+  // exams.exam.approved). exams.marks.entered is also the key used for the DENIED
+  // out-of-scope marks audit (result DENIED).
+  { key: "exams.examination.created", module: "examinations", description: "Examination created" },
+  { key: "exams.examination.updated", module: "examinations", description: "Examination fields updated" },
+  { key: "exams.examination.status_changed", module: "examinations", description: "Examination status advanced via the forward-only lifecycle" },
+  { key: "exams.schedule.created", module: "examinations", description: "Exam schedule created (per exam+subject sitting + room)" },
+  { key: "exams.schedule.updated", module: "examinations", description: "Exam schedule updated" },
+  { key: "exams.candidate.registered", module: "examinations", description: "Candidate registered for an examination" },
+  { key: "exams.candidate.allocated", module: "examinations", description: "Candidate(s) allocated to a schedule's room (capacity-aware)" },
+  { key: "exams.assessment.created", module: "examinations", description: "Weighted assessment component created" },
+  { key: "exams.assessment.updated", module: "examinations", description: "Weighted assessment component updated" },
+  { key: "exams.marks.entered", module: "examinations", description: "Marks entered (first write) or an out-of-scope write DENIED" },
+  { key: "exams.marks.corrected", module: "examinations", description: "Marks corrected (MARKS_OPEN later edit or a MODERATION correction)" },
+  { key: "exams.grading_scheme.created", module: "examinations", description: "Grading scheme (+ bands) created" },
+  { key: "exams.grading_scheme.updated", module: "examinations", description: "Grading scheme (+ bands) updated" },
+  { key: "exams.results.published", module: "examinations", description: "Results published (new append-only version + immutable snapshots)" },
+  { key: "exams.results.exported", module: "examinations", description: "Results exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

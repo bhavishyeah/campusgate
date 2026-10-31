@@ -436,6 +436,56 @@ export const PERMISSIONS = [
     description: "Create concession definitions + post concessions/scholarships",
   },
 
+  // exams.* — Phase 8 Examinations & Results (slice 8.1): exam lifecycle,
+  // schedules + capacity-aware room allocation, candidates, weighted assessment
+  // components, faculty-scoped marks entry with audited corrections, moderation/
+  // approval, a deterministic grading engine, and controlled append-only
+  // versioned result publication (step-up-gated). Gated module
+  // (requireModuleActive("examinations")) in addition to permission. The module
+  // registry key is `examinations`; the permission/audit KEY prefix is `exams.*`.
+  // Separation of duties (design §12): ADMIN never gets exams.marks.enter;
+  // ADMIN never gets the STUDENT-only exams.results.view_own.
+  {
+    key: "exams.manage",
+    module: "examinations",
+    description: "Create/update examinations, schedules, assessments; status advance to APPROVED",
+  },
+  {
+    key: "exams.grading.manage",
+    module: "examinations",
+    description: "Create/update grading schemes + bands",
+  },
+  {
+    key: "exams.candidates.manage",
+    module: "examinations",
+    description: "Register candidates; allocate rooms",
+  },
+  {
+    key: "exams.marks.enter",
+    module: "examinations",
+    description: "Enter/edit own in-scope marks (scope enforced in service)",
+  },
+  {
+    key: "exams.moderate",
+    module: "examinations",
+    description: "Lock marks, run moderation corrections, approve",
+  },
+  {
+    key: "exams.results.publish",
+    module: "examinations",
+    description: "Publish results (step-up-gated)",
+  },
+  {
+    key: "exams.results.view",
+    module: "examinations",
+    description: "Staff read of unpublished + published results/reports",
+  },
+  {
+    key: "exams.results.view_own",
+    module: "examinations",
+    description: "Student read of OWN latest PUBLISHED result only",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -493,8 +543,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "attendance.view_own",
     "library.view_own",
     "fees.view_own",
+    "exams.results.view_own",
   ],
-  FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own"],
+  FACULTY: ["classes.view_own", "attendance.mark", "attendance.view_own", "exams.marks.enter"],
   // ACCOUNTANT — additive platform template role (FACULTY/LIBRARIAN/
   // ADMISSION_OFFICER precedent); fees-scoped ONLY (grants no exams/library/etc).
   ACCOUNTANT: [
@@ -555,6 +606,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "attendance.view",
     "attendance.correct",
     "attendance.export",
+    "exams.manage",
+    "exams.grading.manage",
+    "exams.candidates.manage",
+    "exams.moderate",
+    "exams.results.publish",
+    "exams.results.view",
   ],
   ADMIN: [
     "admin.users.view",
@@ -613,6 +670,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "fees.concession.manage",
     "fees.refund",
     "fees.adjust",
+    "exams.manage",
+    "exams.grading.manage",
+    "exams.candidates.manage",
+    "exams.moderate",
+    "exams.results.publish",
+    "exams.results.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",
