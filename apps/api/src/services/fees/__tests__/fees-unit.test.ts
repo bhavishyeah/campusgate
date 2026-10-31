@@ -311,9 +311,16 @@ describe("money crosses JSON as a decimal string of paise (§D.1)", () => {
   });
 });
 
-// ─── Charge-status transition logic (forward-only) ────────────────────────────
+// ─── Charge-status transition logic (slice-1 historical / superseded by 7.1) ──
+// This exercises a PURE in-test mirror of the ORIGINAL slice-1 forward-only
+// student_charges_guard rule. Slice 7.1 (design §E.1) RELAXED that guard: status
+// is now a pure projection of the append-only ledger (a refund legitimately
+// moves a charge PAID→PARTIALLY_PAID/PENDING), so the DB no longer enforces
+// forward-only. The mirror is KEPT, re-documented, as a record of why slice 1
+// chose forward-only and why 7.1 supersedes it. It does NOT hit the DB and is
+// not the live rule — see ledger.computeChargeStatus for the current authority.
 
-/** Mirror of the DB student_charges_guard forward-only rule (design §D.3). */
+/** Mirror of the HISTORICAL slice-1 forward-only rule (superseded by §E.1). */
 function isLegalChargeTransition(oldS: string, newS: string): boolean {
   if (oldS === newS) return true;
   if (oldS === "PENDING") return newS === "PARTIALLY_PAID" || newS === "PAID";
@@ -321,7 +328,7 @@ function isLegalChargeTransition(oldS: string, newS: string): boolean {
   return false;
 }
 
-describe("charge-status transition logic (forward-only)", () => {
+describe("charge-status transition logic (slice-1 historical / superseded by 7.1 ledger projection)", () => {
   it("allows PENDING→PARTIALLY_PAID→PAID and self-transitions", () => {
     expect(isLegalChargeTransition("PENDING", "PARTIALLY_PAID")).toBe(true);
     expect(isLegalChargeTransition("PENDING", "PAID")).toBe(true);

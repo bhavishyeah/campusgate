@@ -896,6 +896,123 @@ export const runReconciliationSchema = z
   })
   .strict();
 
+// ─── FEES & PAYMENTS (Phase 7 slice 7.1) ─────────────────────────────────────
+// Scholarships/concessions, refunds, adjustments, reports. Every money field
+// reuses PaiseAmount (integer-paise STRING). Enums mirror the pg enums added by
+// the phase7_fees_slice2 migration.
+
+export const concessionTypeEnum = z.enum(["FIXED", "PERCENT"]);
+export const concessionScopeEnum = z.enum(["PER_STUDENT", "PER_STRUCTURE"]);
+export const refundStatusEnum = z.enum(["REQUESTED", "PROCESSED", "FAILED"]);
+export const adjustmentTypeEnum = z.enum(["WAIVER", "WRITE_OFF", "CORRECTION"]);
+export const adjustmentDirectionEnum = z.enum(["CREDIT", "DEBIT"]);
+
+// A concession definition: FIXED paise amount XOR a PERCENT in basis points;
+// scoped per-student or per-structure, optionally linked to a program/session.
+export const createConcessionDefinitionSchema = z
+  .object({
+    name: z.string().min(1, "Name is required").max(200),
+    type: concessionTypeEnum,
+    amountPaise: PaiseAmount.optional(),
+    percentBps: z.number().int().min(1).max(10000).optional(),
+    scope: concessionScopeEnum,
+    programId: z.string().min(1).optional(),
+    academicSessionId: z.string().min(1).optional(),
+    note: z.string().max(2000).optional(),
+    status: feeStructureStatusEnum.optional(),
+  })
+  .strict()
+  .refine(
+    (d) =>
+      d.type === "FIXED"
+        ? d.amountPaise !== undefined && d.percentBps === undefined
+        : d.percentBps !== undefined && d.amountPaise === undefined,
+    { message: "FIXED requires amountPaise (and no percentBps); PERCENT requires percentBps (and no amountPaise)" },
+  );
+
+export const patchConcessionDefinitionSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    note: z.string().max(2000).nullish(),
+    status: feeStructureStatusEnum.optional(),
+    programId: z.string().min(1).nullish(),
+    academicSessionId: z.string().min(1).nullish(),
+  })
+  .strict();
+
+// Post a concession to a student against one or more of their charges. When an
+// allocation omits amountPaise the server resolves it from the definition
+// (FIXED amount or PERCENT of the charge), clamped to outstanding.
+export const postConcessionSchema = z
+  .object({
+    concessionDefinitionId: z.string().min(1, "Concession definition is required"),
+    note: z.string().max(2000).optional(),
+    allocations: z
+      .array(
+        z
+          .object({
+            chargeId: z.string().min(1, "Charge id is required"),
+            amountPaise: PaiseAmount.optional(),
+          })
+          .strict(),
+      )
+      .min(1, "At least one allocation is required")
+      .max(500),
+  })
+  .strict();
+
+// Refund request body. amountPaise is validated against net-refundable in the
+// service (under an advisory lock); idempotencyKey is server-minted, never here.
+export const createRefundSchema = z
+  .object({
+    amountPaise: PaiseAmount,
+    reason: z.string().min(1, "Reason is required").max(500),
+    notes: z.record(z.union([z.string(), z.number()])).optional(),
+  })
+  .strict();
+
+// Manual adjustment (waiver/write-off/correction). WAIVER/WRITE_OFF are always
+// CREDIT; only a CORRECTION may be a DEBIT.
+export const createAdjustmentSchema = z
+  .object({
+    chargeId: z.string().min(1, "Charge id is required"),
+    type: adjustmentTypeEnum,
+    direction: adjustmentDirectionEnum.optional(),
+    amountPaise: PaiseAmount,
+    reason: z.string().min(1, "Reason is required").max(500),
+  })
+  .strict()
+  .refine((d) => d.direction !== "DEBIT" || d.type === "CORRECTION", {
+    message: "only a CORRECTION may be a DEBIT",
+  });
+
+// ── Report query schemas (coerced + bounded; read-only, fees.view-gated) ──
+export const collectionReportQuerySchema = z
+  .object({
+    from: z.string().datetime("Invalid from date").optional(),
+    to: z.string().datetime("Invalid to date").optional(),
+    groupBy: z.enum(["day", "program", "session"]).default("day"),
+  })
+  .strict();
+
+export const outstandingReportQuerySchema = z
+  .object({
+    asOf: z.string().datetime("Invalid asOf date").optional(),
+  })
+  .strict();
+
+export const reconciliationReportQuerySchema = z
+  .object({
+    thresholdMinutes: z.coerce.number().int().min(1).max(10080).default(30),
+  })
+  .strict();
+
+export const rollupReportQuerySchema = z
+  .object({
+    dimension: z.enum(["program", "session"]).default("program"),
+  })
+  .strict();
+
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -1009,3 +1126,17 @@ export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 export type VerifyPaymentInput = z.infer<typeof verifyPaymentSchema>;
 export type ReconciliationQueryInput = z.infer<typeof reconciliationQuerySchema>;
 export type RunReconciliationInput = z.infer<typeof runReconciliationSchema>;
+export type ConcessionTypeValue = z.infer<typeof concessionTypeEnum>;
+export type ConcessionScopeValue = z.infer<typeof concessionScopeEnum>;
+export type RefundStatusValue = z.infer<typeof refundStatusEnum>;
+export type AdjustmentTypeValue = z.infer<typeof adjustmentTypeEnum>;
+export type AdjustmentDirectionValue = z.infer<typeof adjustmentDirectionEnum>;
+export type CreateConcessionDefinitionInput = z.infer<typeof createConcessionDefinitionSchema>;
+export type PatchConcessionDefinitionInput = z.infer<typeof patchConcessionDefinitionSchema>;
+export type PostConcessionInput = z.infer<typeof postConcessionSchema>;
+export type CreateRefundInput = z.infer<typeof createRefundSchema>;
+export type CreateAdjustmentInput = z.infer<typeof createAdjustmentSchema>;
+export type CollectionReportQueryInput = z.infer<typeof collectionReportQuerySchema>;
+export type OutstandingReportQueryInput = z.infer<typeof outstandingReportQuerySchema>;
+export type ReconciliationReportQueryInput = z.infer<typeof reconciliationReportQuerySchema>;
+export type RollupReportQueryInput = z.infer<typeof rollupReportQuerySchema>;

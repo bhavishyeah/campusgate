@@ -168,6 +168,14 @@ export const AUDIT_ACTIONS = [
   { key: "fees.webhook.duplicate_ignored", module: "fees", description: "Duplicate webhook event id ignored (idempotent no-op)" },
   { key: "fees.webhook.signature_rejected", module: "fees", description: "Razorpay webhook HMAC rejected (nothing written)" },
   { key: "fees.webhook.skipped_module_inactive", module: "fees", description: "Webhook skipped: fees module not ACTIVE for the resolved tenant" },
+  // fees.* (5) — Phase 7 Fees & Payments slice 7.1 money-OUT + corrections
+  // mutations (past-tense). No migration mirror (validated in recordAuditEvent).
+  // refund.created webhook acknowledgements reuse fees.webhook.received (NIT-2).
+  { key: "fees.concession.posted", module: "fees", description: "Concession/scholarship posted as credit allocations against charges" },
+  { key: "fees.refund.requested", module: "fees", description: "Refund requested (Refund row REQUESTED) under step-up" },
+  { key: "fees.refund.processed", module: "fees", description: "Refund settled PROCESSED (reversing credits inserted, status recomputed)" },
+  { key: "fees.refund.failed", module: "fees", description: "Refund settled FAILED (no reversals; reservation released)" },
+  { key: "fees.adjustment.posted", module: "fees", description: "Adjustment posted (waiver/write-off/correction credit or debit)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

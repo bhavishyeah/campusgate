@@ -297,6 +297,12 @@ model Institution {
   paymentAllocations           PaymentAllocation[]
   receipts                     Receipt[]
   processedWebhookEvents       ProcessedWebhookEvent[]
+  concessionDefinitions        ConcessionDefinition[]
+  studentConcessions           StudentConcession[]
+  concessionCredits            ConcessionCredit[]
+  refunds                      Refund[]
+  refundReversals              RefundReversal[]
+  adjustments                  Adjustment[]
 
   @@map("institutions")
 }
@@ -489,6 +495,9 @@ model StudentProfile {
   enrollments          Enrollment[]
   studentCharges       StudentCharge[]
   paymentTransactions  PaymentTransaction[]
+  studentConcessions   StudentConcession[]
+  refunds              Refund[]
+  adjustments          Adjustment[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -883,6 +892,7 @@ model AcademicSession {
   admissionCampaigns   AdmissionCampaign[]
   enrollments          Enrollment[]
   feeStructures        FeeStructure[]
+  concessionDefinitions ConcessionDefinition[]
 
   @@unique([institutionId, name])
   @@unique([id, institutionId])
@@ -948,6 +958,7 @@ model Program {
   applications              Application[]
   admissionOffers           AdmissionOffer[]           @relation("OfferOfferedProgram")
   feeStructures             FeeStructure[]
+  concessionDefinitions     ConcessionDefinition[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -2121,9 +2132,13 @@ model StudentCharge {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
-  allocations PaymentAllocation[]
+  allocations       PaymentAllocation[]
+  concessionCredits ConcessionCredit[]
+  refundReversals   RefundReversal[]
+  adjustments       Adjustment[]
 
-  // Posted = IMMUTABLE SNAPSHOT: only `status` (forward-only) and `updatedAt`
+  // Posted = IMMUTABLE SNAPSHOT: only `status` (forward-only — relaxed in slice
+  // 7.1 to any valid state, see migration §E.1) and `updatedAt`
   // may change. The column-guard trigger `student_charges_guard` (raw SQL,
   // migration §h, copied verbatim from design §D.3) freezes every snapshot
   // column and enforces the forward-only status transition. Composite
@@ -2159,6 +2174,7 @@ model PaymentTransaction {
   allocations          PaymentAllocation[]
   receipts             Receipt[]
   processedWebhookEvents ProcessedWebhookEvent[]
+  refunds              Refund[]
 
   // APPEND-ONLY fact: identity/amount columns immutable, status forward-only,
   // terminal (CAPTURED/FAILED) frozen — enforced by the column-guard trigger
@@ -2250,4 +2266,213 @@ model ProcessedWebhookEvent {
   @@index([institutionId])
   @@index([institutionId, paymentTransactionId])
   @@map("processed_webhook_events")
+}
+
+// ─── FEES & PAYMENTS (Phase 7 slice 7.1): concessions, refunds, adjustments ──
+// Money-OUT + corrections half of the ledger. Strictly additive; never mutates
+// a captured fact. Six new tables: concession_definitions + refunds are mutable
+// (standard RLS pair; refunds carries a column-guard like payment_transactions);
+// student_concessions, concession_credits, refund_reversals, adjustments are
+// INSERT-only append-only ledger rows. All composite same-tenant FKs, CHECKs,
+// RLS, triggers, and the partial unique on refunds.razorpayRefundId are raw SQL
+// in the 20261129000000_phase7_fees_slice2 migration.
+
+enum ConcessionType {
+  FIXED
+  PERCENT
+}
+
+enum ConcessionScope {
+  PER_STUDENT
+  PER_STRUCTURE
+}
+
+enum RefundStatus {
+  REQUESTED
+  PROCESSED
+  FAILED
+}
+
+enum AdjustmentType {
+  WAIVER
+  WRITE_OFF
+  CORRECTION
+}
+
+// Carried for documentation parity with the pg enum; not referenced by a column
+// (the ledger kind is implied by the table). Kept so the pg type exists.
+enum LedgerEntryKind {
+  CONCESSION
+  ADJUSTMENT
+  REFUND_REVERSAL
+}
+
+model ConcessionDefinition {
+  id                String             @id @default(cuid())
+  institutionId     String
+  institution       Institution        @relation(fields: [institutionId], references: [id])
+  name              String
+  type              ConcessionType
+  amountPaise       BigInt? // required when type=FIXED (CHECK in migration)
+  percentBps        Int? // required when type=PERCENT; 1..10000 (CHECK in migration)
+  scope             ConcessionScope
+  programId         String?
+  program           Program?           @relation(fields: [programId], references: [id])
+  academicSessionId String?
+  academicSession   AcademicSession?   @relation(fields: [academicSessionId], references: [id])
+  note              String?
+  status            FeeStructureStatus @default(DRAFT)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  studentConcessions StudentConcession[]
+
+  // Composite same-tenant FKs (institutionId, programId)->programs and
+  // (institutionId, academicSessionId)->academic_sessions, the FIXED/PERCENT
+  // exclusivity CHECK, char_length(name) >= 1, percentBps BETWEEN 1 AND 10000,
+  // and RLS are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([institutionId, name])
+  @@index([institutionId])
+  @@map("concession_definitions")
+}
+
+model StudentConcession {
+  id                     String               @id @default(cuid())
+  institutionId          String
+  institution            Institution          @relation(fields: [institutionId], references: [id])
+  concessionDefinitionId String
+  concessionDefinition   ConcessionDefinition @relation(fields: [concessionDefinitionId], references: [id])
+  studentId              String
+  student                StudentProfile       @relation(fields: [studentId], references: [id])
+  totalPaise             BigInt
+  approvedByUserId       String // recorded actor id (no FK)
+  note                   String?
+  postedAt               DateTime             @default(now())
+  createdAt              DateTime             @default(now())
+
+  credits ConcessionCredit[]
+
+  // INSERT-only append-only ledger header (NO updatedAt): append-only RLS +
+  // REVOKE UPDATE,DELETE + trigger are hand-authored in the migration. Composite
+  // same-tenant FKs (concessionDefinitionId->concession_definitions,
+  // studentId->student_profiles) + CHECK totalPaise > 0 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@map("student_concessions")
+}
+
+model ConcessionCredit {
+  id                  String            @id @default(cuid())
+  institutionId       String
+  institution         Institution       @relation(fields: [institutionId], references: [id])
+  studentConcessionId String
+  studentConcession   StudentConcession @relation(fields: [studentConcessionId], references: [id])
+  studentChargeId     String
+  studentCharge       StudentCharge     @relation(fields: [studentChargeId], references: [id])
+  amountPaise         BigInt
+  currency            String            @default("INR")
+  createdAt           DateTime          @default(now())
+
+  // INSERT-only (NO updatedAt): append-only RLS + REVOKE UPDATE,DELETE +
+  // trigger hand-authored in the migration. Composite same-tenant FKs
+  // (studentConcessionId->student_concessions, studentChargeId->student_charges)
+  // + CHECKs (amountPaise > 0, currency = 'INR') are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentChargeId])
+  @@map("concession_credits")
+}
+
+model Refund {
+  id                   String             @id @default(cuid())
+  institutionId        String
+  institution          Institution        @relation(fields: [institutionId], references: [id])
+  paymentTransactionId String
+  paymentTransaction   PaymentTransaction @relation(fields: [paymentTransactionId], references: [id])
+  studentId            String
+  student              StudentProfile     @relation(fields: [studentId], references: [id])
+  amountPaise          BigInt
+  currency             String             @default("INR")
+  status               RefundStatus       @default(REQUESTED)
+  reason               String
+  razorpayRefundId     String?
+  idempotencyKey       String
+  approvedByUserId     String // recorded actor id (no FK)
+  requestedAt          DateTime           @default(now())
+  settledAt            DateTime?
+  unreversiblePaise    BigInt             @default(0)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  reversals RefundReversal[]
+
+  // Mutable FACT with a column-guard (like payment_transactions): money/identity
+  // columns freeze, status is forward-only REQUESTED->{PROCESSED,FAILED}, DELETE
+  // raises. The @@unique([razorpayRefundId]) here is the FULL unique; the
+  // migration DROPs it and recreates it as a PARTIAL unique WHERE
+  // razorpayRefundId IS NOT NULL (the known cosmetic migrate-diff). The
+  // idempotencyKey global unique, composite same-tenant FKs
+  // (paymentTransactionId->payment_transactions, studentId->student_profiles),
+  // CHECKs (amountPaise > 0, currency = 'INR', char_length(reason) >= 1,
+  // unreversiblePaise >= 0), RLS, and refunds_guard are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@unique([razorpayRefundId]) // migration replaces with a partial unique
+  @@unique([idempotencyKey]) // request-time correlation key (HIGH-2)
+  @@index([institutionId])
+  @@index([institutionId, paymentTransactionId])
+  @@index([institutionId, status])
+  @@map("refunds")
+}
+
+model RefundReversal {
+  id              String        @id @default(cuid())
+  institutionId   String
+  institution     Institution   @relation(fields: [institutionId], references: [id])
+  refundId        String
+  refund          Refund        @relation(fields: [refundId], references: [id])
+  studentChargeId String
+  studentCharge   StudentCharge @relation(fields: [studentChargeId], references: [id])
+  amountPaise     BigInt
+  currency        String        @default("INR")
+  createdAt       DateTime      @default(now())
+
+  // INSERT-only (NO updatedAt): append-only RLS + REVOKE UPDATE,DELETE +
+  // trigger hand-authored in the migration. Composite same-tenant FKs
+  // (refundId->refunds, studentChargeId->student_charges) + CHECKs
+  // (amountPaise > 0, currency = 'INR') are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentChargeId])
+  @@map("refund_reversals")
+}
+
+model Adjustment {
+  id               String         @id @default(cuid())
+  institutionId    String
+  institution      Institution    @relation(fields: [institutionId], references: [id])
+  studentId        String
+  student          StudentProfile @relation(fields: [studentId], references: [id])
+  studentChargeId  String
+  studentCharge    StudentCharge  @relation(fields: [studentChargeId], references: [id])
+  type             AdjustmentType
+  direction        String // 'CREDIT' | 'DEBIT' (CHECK in migration)
+  amountPaise      BigInt
+  currency         String         @default("INR")
+  reason           String
+  approvedByUserId String // recorded actor id (no FK)
+  postedAt         DateTime       @default(now())
+  createdAt        DateTime       @default(now())
+
+  // INSERT-only append-only ledger entry (NO updatedAt): append-only RLS +
+  // REVOKE UPDATE,DELETE + trigger hand-authored in the migration. Composite
+  // same-tenant FKs (studentId->student_profiles, studentChargeId->
+  // student_charges) + CHECKs (amountPaise > 0, currency = 'INR',
+  // char_length(reason) >= 1, direction IN ('CREDIT','DEBIT') AND
+  // (type='CORRECTION' OR direction='CREDIT')) are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentChargeId])
+  @@map("adjustments")
 }

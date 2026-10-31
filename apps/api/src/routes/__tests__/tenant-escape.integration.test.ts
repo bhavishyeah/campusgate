@@ -1938,6 +1938,257 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-7 fees slice 7.1 tables (design §E.1/§E.2) ──────────────────────
+  // concession_definitions / refunds (the two mutable/guarded tables): cross-
+  // tenant read denied, spoofed/cross-tenant write denied, foreign-parent
+  // composite-FK violation, buggy-query backstop, three-GUC-state fail-closed.
+  // The four INSERT-only tables (student_concessions, concession_credits,
+  // refund_reversals, adjustments) are covered by a self-contained case (3g2) +
+  // the policy meta-test — they are NOT seeded in the shared setup (their
+  // triggers block the shared teardown).
+
+  it("3g1a. slice-7.1 read escape: A cannot see B's concession definition or refund", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const def = await withTenant(A.institutionId, (tx) =>
+      tx.concessionDefinition.findUnique({ where: { id: B.concessionDefinitionId } }),
+    );
+    expect(def).toBeNull();
+
+    const refund = await withTenant(A.institutionId, (tx) =>
+      tx.refund.findUnique({ where: { id: B.refundId } }),
+    );
+    expect(refund).toBeNull();
+
+    const ownDefs = await withTenant(A.institutionId, (tx) => tx.concessionDefinition.findMany({}));
+    expect(ownDefs.length).toBeGreaterThan(0);
+    for (const row of ownDefs) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.concessionDefinitionId);
+    }
+  }, 60_000);
+
+  it("3g1b. slice-7.1 spoofed insert: A cannot stamp a concession definition institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.concessionDefinition.create({
+          data: {
+            id: `${PREFIX}SPOOF_CONCDEF`,
+            institutionId: B.institutionId, // spoof
+            name: `${PREFIX}SPOOF Concession`,
+            type: "FIXED",
+            amountPaise: 100000n,
+            scope: "PER_STUDENT",
+            status: "ACTIVE",
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3g1c. slice-7.1 foreign-parent: A cannot create a refund referencing B's transaction", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, paymentTransactionId) makes
+    // referencing B's transaction under A's tenant physically impossible.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.refund.create({
+          data: {
+            id: `${PREFIX}FOREIGN_REFUND`,
+            institutionId: A.institutionId,
+            paymentTransactionId: B.paymentTransactionId, // B's txn under A
+            studentId: A.studentProfileId,
+            amountPaise: 100000n,
+            currency: "INR",
+            status: "REQUESTED",
+            reason: `${PREFIX}foreign-parent refund`,
+            idempotencyKey: `${PREFIX}idem_foreign`,
+            approvedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3g1d. slice-7.1 spoofed update: A cannot flip B's concession definition to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.concessionDefinition.updateMany({
+        where: { id: B.concessionDefinitionId },
+        data: { status: "ARCHIVED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.concessionDefinition.findUnique({
+      where: { id: B.concessionDefinitionId },
+    });
+    expect(bRow!.status).toBe("ACTIVE");
+  }, 60_000);
+
+  it("3g1e. slice-7.1 buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const defs = await withTenant(A.institutionId, (tx) => tx.concessionDefinition.findMany({}));
+    for (const r of defs) expect(r.institutionId).toBe(A.institutionId);
+    expect(defs.some((r: { id: string }) => r.id === B.concessionDefinitionId)).toBe(false);
+
+    const refunds = await withTenant(A.institutionId, (tx) => tx.refund.findMany({}));
+    for (const r of refunds) expect(r.institutionId).toBe(A.institutionId);
+    expect(refunds.some((r: { id: string }) => r.id === B.refundId)).toBe(false);
+  }, 60_000);
+
+  it("3g1f. slice-7.1 fail-closed: unset / empty-string GUC yield zero rows for concession_definitions + refunds", async () => {
+    // (i) GUC unset => NULL => no rows.
+    const unsetDefs = await appClient.concessionDefinition.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetDefs.length).toBe(0);
+    const unsetRefunds = await appClient.refund.findMany({
+      where: { institutionId: { startsWith: PREFIX } },
+    });
+    expect(unsetRefunds.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows.
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const d = await tx.concessionDefinition.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.refund.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return d.length + r.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC.
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.refund.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.refundId)).toBe(true);
+  }, 60_000);
+
+  it("3g2. slice-7.1 append-only ledger tables (self-contained, one tenant): insert OK, cross-tenant SELECT empty, UPDATE/DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the 3fj fees append-only case): INSERT one row into
+    // each of the four INSERT-only slice-7.1 tables under A, assert read under A,
+    // empty under B, then UPDATE + DELETE denied (REVOKE + trigger). Rows removed
+    // here within THIS test's trigger-disable scope so the shared teardown is not
+    // blocked. This is the ONLY place the escape suite touches these four tables.
+    const concId = `${PREFIX}STUDCONC_A`;
+    const creditId = `${PREFIX}CONCCREDIT_A`;
+    const reversalId = `${PREFIX}REVERSAL_A`;
+    const adjId = `${PREFIX}ADJ_A`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.studentConcession.create({
+        data: {
+          id: concId,
+          institutionId: A.institutionId,
+          concessionDefinitionId: A.concessionDefinitionId,
+          studentId: A.studentProfileId,
+          totalPaise: 100000n,
+          approvedByUserId: A.userId,
+        },
+      }),
+    );
+    await withTenant(A.institutionId, (tx) =>
+      tx.concessionCredit.create({
+        data: {
+          id: creditId,
+          institutionId: A.institutionId,
+          studentConcessionId: concId,
+          studentChargeId: A.studentChargeId,
+          amountPaise: 100000n,
+          currency: "INR",
+        },
+      }),
+    );
+    await withTenant(A.institutionId, (tx) =>
+      tx.refundReversal.create({
+        data: {
+          id: reversalId,
+          institutionId: A.institutionId,
+          refundId: A.refundId,
+          studentChargeId: A.studentChargeId,
+          amountPaise: 100000n,
+          currency: "INR",
+        },
+      }),
+    );
+    await withTenant(A.institutionId, (tx) =>
+      tx.adjustment.create({
+        data: {
+          id: adjId,
+          institutionId: A.institutionId,
+          studentId: A.studentProfileId,
+          studentChargeId: A.studentChargeId,
+          type: "WAIVER",
+          direction: "CREDIT",
+          amountPaise: 100000n,
+          currency: "INR",
+          reason: `${PREFIX}waiver A`,
+          approvedByUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable under A.
+    expect(await withTenant(A.institutionId, (tx) => tx.studentConcession.findUnique({ where: { id: concId } }))).toBeTruthy();
+    expect(await withTenant(A.institutionId, (tx) => tx.concessionCredit.findUnique({ where: { id: creditId } }))).toBeTruthy();
+    expect(await withTenant(A.institutionId, (tx) => tx.refundReversal.findUnique({ where: { id: reversalId } }))).toBeTruthy();
+    expect(await withTenant(A.institutionId, (tx) => tx.adjustment.findUnique({ where: { id: adjId } }))).toBeTruthy();
+
+    // Empty under B.
+    expect(await withTenant(B.institutionId, (tx) => tx.studentConcession.findUnique({ where: { id: concId } }))).toBeNull();
+    expect(await withTenant(B.institutionId, (tx) => tx.concessionCredit.findUnique({ where: { id: creditId } }))).toBeNull();
+    expect(await withTenant(B.institutionId, (tx) => tx.refundReversal.findUnique({ where: { id: reversalId } }))).toBeNull();
+    expect(await withTenant(B.institutionId, (tx) => tx.adjustment.findUnique({ where: { id: adjId } }))).toBeNull();
+
+    // UPDATE + DELETE denied on all four.
+    await expect(withTenant(A.institutionId, (tx) => tx.studentConcession.update({ where: { id: concId }, data: { totalPaise: 1n } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.studentConcession.delete({ where: { id: concId } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.concessionCredit.update({ where: { id: creditId }, data: { amountPaise: 1n } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.concessionCredit.delete({ where: { id: creditId } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.refundReversal.update({ where: { id: reversalId }, data: { amountPaise: 1n } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.refundReversal.delete({ where: { id: reversalId } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.adjustment.update({ where: { id: adjId }, data: { amountPaise: 1n } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.adjustment.delete({ where: { id: adjId } }))).rejects.toBeTruthy();
+
+    // Survived every attempt.
+    expect(await adminClient.studentConcession.findUnique({ where: { id: concId } })).toBeTruthy();
+    expect(await adminClient.adjustment.findUnique({ where: { id: adjId } })).toBeTruthy();
+
+    // Clean up within a scoped trigger-disable (child -> parent), so the shared
+    // teardown is not blocked.
+    const tables = [
+      { table: "refund_reversals", trigger: "refund_reversals_no_update_delete" },
+      { table: "concession_credits", trigger: "concession_credits_no_update_delete" },
+      { table: "student_concessions", trigger: "student_concessions_no_update_delete" },
+      { table: "adjustments", trigger: "adjustments_no_update_delete" },
+    ] as const;
+    for (const { table, trigger } of tables) {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+    }
+    try {
+      await adminClient.refundReversal.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.concessionCredit.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.studentConcession.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+      await adminClient.adjustment.deleteMany({ where: { institutionId: { startsWith: PREFIX } } });
+    } finally {
+      for (const { table, trigger } of tables) {
+        await adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+      }
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -2037,6 +2288,15 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "payment_allocations",
       "receipts",
       "processed_webhook_events",
+      // Phase-7 fees slice 7.1: the four INSERT-only ledger tables join the
+      // append-only set (design §E.2.g) — INSERT-only policy + REVOKE + trigger,
+      // NO modify policy. concession_definitions + refunds are NOT here — they
+      // carry the standard modify pair (refunds's immutability is a column guard,
+      // not an RLS policy — the payment_transactions precedent).
+      "student_concessions",
+      "concession_credits",
+      "refund_reversals",
+      "adjustments",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

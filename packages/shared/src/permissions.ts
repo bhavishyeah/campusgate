@@ -423,12 +423,17 @@ export const PERMISSIONS = [
   {
     key: "fees.refund",
     module: "fees",
-    description: "Approve a refund (forward-declared, step-up-gated; unbound + unbuilt in slice 1)",
+    description: "Approve a refund (step-up-gated; bound to ACCOUNTANT + ADMIN in slice 7.1)",
   },
   {
     key: "fees.adjust",
     module: "fees",
-    description: "Approve a fee adjustment (forward-declared, step-up-gated; unbound + unbuilt in slice 1)",
+    description: "Approve a fee adjustment (step-up-gated; bound to ACCOUNTANT + ADMIN in slice 7.1)",
+  },
+  {
+    key: "fees.concession.manage",
+    module: "fees",
+    description: "Create concession definitions + post concessions/scholarships",
   },
 
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
@@ -497,6 +502,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "fees.charges.manage",
     "fees.view",
     "fees.collect",
+    "fees.concession.manage",
+    "fees.refund",
+    "fees.adjust",
   ],
   LIBRARIAN: [
     "library.books.view",
@@ -602,6 +610,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "fees.charges.manage",
     "fees.view",
     "fees.collect",
+    "fees.concession.manage",
+    "fees.refund",
+    "fees.adjust",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

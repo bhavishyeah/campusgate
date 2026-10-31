@@ -6,6 +6,8 @@ import {
   formatReceiptNumber,
   type ChargeForAllocation,
 } from "./allocation.js";
+import { computeChargeStatus } from "./ledger.js";
+import { loadChargeLedger } from "./ledger-query.js";
 
 /**
  * The SINGLE idempotent capture+allocate+receipt+audit+notify routine, shared
@@ -156,9 +158,15 @@ export async function confirmCapture(
         currency: "INR",
       },
     });
+    // Recompute status from the full 7.1 ledger (so a charge that already carried
+    // a concession credit lands on the correct status after capture). This is
+    // behavior-preserving when no credits exist: outstanding = amount − allocs,
+    // so computeChargeStatus matches the slice-1 planAllocation nextStatus. Fall
+    // back to the planned nextStatus only if the ledger can't be loaded.
+    const after = await loadChargeLedger(tx, institutionId, alloc.studentChargeId);
     await tx.studentCharge.update({
       where: { id: alloc.studentChargeId },
-      data: { status: alloc.nextStatus },
+      data: { status: after ? computeChargeStatus(after) : alloc.nextStatus },
     });
   }
 

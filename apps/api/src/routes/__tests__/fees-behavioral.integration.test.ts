@@ -112,8 +112,29 @@ const orderStore = new Map<string, RazorpayOrderResult>();
 const paymentsStore = new Map<string, RazorpayPaymentResult[]>();
 let orderSeq = 0;
 
+// Programmable refund stub: the next refund result (status + id). Defaults to a
+// synchronously-processed refund echoing the receipt we sent (idempotencyKey).
+let refundSeq = 0;
+let nextRefundStatus: "pending" | "processed" | "failed" = "processed";
+let refundShouldThrow = false;
+const refundCalls: Array<{ paymentId: string; params: import("../../services/fees/razorpay.js").RazorpayRefundParams }> = [];
+
 function makeSdkStub(): RazorpaySdkLike {
   return {
+    payments: {
+      refund: async (paymentId, params) => {
+        refundCalls.push({ paymentId, params });
+        if (refundShouldThrow) throw new Error("razorpay refund failed (stub)");
+        refundSeq += 1;
+        return {
+          id: `${PFX}rfnd_${refundSeq}`,
+          payment_id: paymentId,
+          amount: params.amount,
+          status: nextRefundStatus,
+          receipt: params.receipt ?? null,
+        };
+      },
+    },
     orders: {
       create: async (params) => {
         orderSeq += 1;
@@ -169,6 +190,13 @@ const authHeader = (t: string) => ({ authorization: `Bearer ${t}` });
 const acctToken = () => tokenFor(accountantUser, "GUARD", instA);
 const studentToken = () => tokenFor(studentUser, "STUDENT", instA);
 
+// Mint an action-bound step-up token for a user using the SAME @fastify/jwt
+// signer the route's requireStepUp verifies against (mirrors mfa.ts mint path).
+function stepUpToken(userId: string, action: string): string {
+  return app.jwt.sign({ userId, jti: `${PFX}jti_${Date.now()}_${Math.random()}`, stepUp: true, action });
+}
+const stepUpHeader = (userId: string, action: string) => ({ "x-step-up": stepUpToken(userId, action) });
+
 async function templateRoleId(key: string): Promise<string> {
   const role = await adminClient.role.findFirst({ where: { key, institutionId: null }, select: { id: true } });
   if (!role) throw new Error(`template role ${key} not found — run the seed/migrations first`);
@@ -210,6 +238,32 @@ function paymentCapturedBody(orderId: string, paymentId: string, amountPaise: nu
   );
 }
 
+// A real Razorpay refund webhook body: payload at payload.refund.entity, NO
+// order_id (proving the HIGH-1 payment-id tenant resolution). `receipt` echoes
+// the idempotencyKey we sent at request time (HIGH-2).
+function refundEventBody(
+  event: "refund.processed" | "refund.failed" | "refund.created",
+  args: { refundId: string; paymentId: string; receipt?: string | null; amountPaise: number; status?: string },
+): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      event,
+      payload: {
+        refund: {
+          entity: {
+            id: args.refundId,
+            payment_id: args.paymentId,
+            amount: args.amountPaise,
+            status: args.status ?? "processed",
+            receipt: args.receipt ?? null,
+          },
+        },
+      },
+    }),
+    "utf8",
+  );
+}
+
 async function deliverWebhook(rawBody: Buffer, eventId: string, signatureOverride?: string) {
   const signature =
     signatureOverride ?? crypto.createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
@@ -228,6 +282,35 @@ async function deliverWebhook(rawBody: Buffer, eventId: string, signatureOverrid
 // ─── fees-row teardown (child-first) between tests ─────────────────────────────
 async function clearFees(): Promise<void> {
   const where = { institutionId: { startsWith: PFX } };
+  // Slice-7.1 ledger tables FIRST (child -> parent). The four INSERT-only tables
+  // + refunds carry triggers that block UPDATE/DELETE even for adminClient, so
+  // delete within a scoped trigger-disable.
+  const slice2 = [
+    { table: "refund_reversals", trigger: "refund_reversals_no_update_delete" },
+    { table: "refunds", trigger: "refunds_guard" },
+    { table: "concession_credits", trigger: "concession_credits_no_update_delete" },
+    { table: "student_concessions", trigger: "student_concessions_no_update_delete" },
+    { table: "adjustments", trigger: "adjustments_no_update_delete" },
+  ] as const;
+  for (const { table, trigger } of slice2) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.refundReversal.deleteMany({ where }));
+    await withRetry(() => adminClient.refund.deleteMany({ where }));
+    await withRetry(() => adminClient.concessionCredit.deleteMany({ where }));
+    await withRetry(() => adminClient.studentConcession.deleteMany({ where }));
+    await withRetry(() => adminClient.adjustment.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of slice2) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.concessionDefinition.deleteMany({ where }));
   // The three fully append-only tables are blocked by their trigger even for
   // adminClient, so delete within a scoped trigger-disable (the audit_events dance).
   for (const t of ["payment_allocations", "receipts", "processed_webhook_events"] as const) {
@@ -269,6 +352,9 @@ async function clearFees(): Promise<void> {
   await withRetry(() => adminClient.notification.deleteMany({ where }));
   orderStore.clear();
   paymentsStore.clear();
+  refundCalls.length = 0;
+  nextRefundStatus = "processed";
+  refundShouldThrow = false;
 }
 
 async function deleteAuditEvents(): Promise<void> {
@@ -419,12 +505,44 @@ async function chargeStatus(chargeId: string): Promise<string> {
   return row!.status;
 }
 
+// Drive a charge all the way to CAPTURED through the real order + webhook path.
+// Returns the payment-transaction id + the captured razorpay payment id so a
+// refund test has a real CAPTURED row to refund against.
+async function captureCharge(
+  chargeId: string,
+  amountPaise: number,
+  tag: string,
+): Promise<{ paymentTransactionId: string; razorpayPaymentId: string; orderId: string }> {
+  const order = await createOrder([chargeId]);
+  expect(order.statusCode).toBe(201);
+  const orderId = order.json().razorpayOrderId as string;
+  const paymentId = `${PFX}pay_${tag}`;
+  const res = await deliverWebhook(paymentCapturedBody(orderId, paymentId, amountPaise), `${PFX}evt_cap_${tag}`);
+  expect(res.statusCode).toBe(200);
+  const tx = (await adminClient.paymentTransaction.findFirst({ where: { razorpayOrderId: orderId } }))!;
+  expect(tx.status).toBe("CAPTURED");
+  return { paymentTransactionId: tx.id, razorpayPaymentId: paymentId, orderId };
+}
+
+// Create a concession definition through the staff route; returns its id.
+async function createConcessionDefinition(amountPaise: string): Promise<string> {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/fees/concession-definitions",
+    headers: authHeader(acctToken()),
+    payload: { name: `Scholarship ${Date.now()}_${Math.random()}`, type: "FIXED", amountPaise, scope: "PER_STUDENT", status: "ACTIVE" },
+  });
+  expect(res.statusCode).toBe(201);
+  return res.json().id as string;
+}
+
 beforeAll(async () => {
   await teardown();
   await seed();
 
   const { feesRoutes } = await import("../fees.js");
   const { razorpayWebhookRoutes } = await import("../razorpay-webhook.js");
+  const { mfaRoutes } = await import("../mfa.js");
   const { setRazorpayGateway } = await import("../../services/fees/razorpay.js");
   // The operational routes read the process-wide gateway; pin it to the stub.
   setRazorpayGateway(gateway);
@@ -432,6 +550,8 @@ beforeAll(async () => {
   app = Fastify();
   await app.register(jwt, { secret: "fees-behavioral-test-secret" });
   await app.register(feesRoutes, { prefix: "/api/fees" });
+  // MFA plugin (for the MEDIUM-4 enrolment-precondition case).
+  await app.register(mfaRoutes, { prefix: "/api/auth/mfa" });
   // Inject adminClient (BYPASSRLS owner) as the webhook lookup client + the stub
   // gateway (known secrets) so both verifications + the fail-closed probe run.
   await app.register(razorpayWebhookRoutes, {
@@ -732,10 +852,17 @@ describe("Phase-7 fees behavioral (real DB, real routes, real RLS)", () => {
     await expect(
       adminClient.studentCharge.update({ where: { id: chargeId }, data: { amountPaise: 1n } }),
     ).rejects.toBeTruthy();
-    // Column guard: a PAID charge cannot move backwards to PENDING.
-    await expect(
-      adminClient.studentCharge.update({ where: { id: chargeId }, data: { status: "PENDING" } }),
-    ).rejects.toBeTruthy();
+    // MEDIUM-2 (§E.1): the forward-only status clause was RELAXED in slice 7.1 —
+    // status is now a pure projection of the append-only ledger, so a bare status
+    // move among the three valid states is ALLOWED (a refund legitimately moves a
+    // charge PAID->PARTIALLY_PAID/PENDING). Prove a direct PAID->PENDING write now
+    // SUCCEEDS (the app is the authority that writes the recomputed status). The
+    // snapshot-immutability (above) + DELETE-denied (below) assertions are the
+    // real guards and stay unchanged.
+    await adminClient.studentCharge.update({ where: { id: chargeId }, data: { status: "PENDING" } });
+    expect(await chargeStatus(chargeId)).toBe("PENDING");
+    // Restore for cleanliness (any valid state is accepted now).
+    await adminClient.studentCharge.update({ where: { id: chargeId }, data: { status: "PAID" } });
     // Column guard: a DELETE of a student_charge is always denied.
     await expect(adminClient.studentCharge.delete({ where: { id: chargeId } })).rejects.toBeTruthy();
   }, 120_000);
@@ -863,4 +990,409 @@ describe("Phase-7 fees behavioral (real DB, real routes, real RLS)", () => {
       );
     }
   }, 120_000);
+
+  // ─── Slice 7.1: concessions ────────────────────────────────────────────────
+
+  it("7.1-CONCESSION: posting a concession credit reduces outstanding, recomputes status, leaves the charge snapshot byte-unchanged", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    const before = await adminClient.studentCharge.findUnique({ where: { id: chargeId } });
+    const defId = await createConcessionDefinition("2000000"); // ₹20,000 off
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/concessions`,
+      headers: authHeader(acctToken()),
+      payload: { concessionDefinitionId: defId, allocations: [{ chargeId }] },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().totalPaise).toBe("2000000");
+
+    // Outstanding dropped by exactly the resolved paise; status PENDING->PARTIALLY_PAID.
+    expect(await chargeStatus(chargeId)).toBe("PARTIALLY_PAID");
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/fees/me/outstanding",
+      headers: authHeader(studentToken()),
+    });
+    expect(me.json().outstandingPaise).toBe("3000000");
+
+    // The original charge snapshot columns are byte-for-byte unchanged (the
+    // column guard; only `status`/`updatedAt` may move).
+    const after = await adminClient.studentCharge.findUnique({ where: { id: chargeId } });
+    expect(after!.amountPaise).toBe(before!.amountPaise);
+    expect(after!.description).toBe(before!.description);
+    expect(after!.postedAt.getTime()).toBe(before!.postedAt.getTime());
+
+    // A credit exceeding outstanding is rejected (409).
+    const over = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/concessions`,
+      headers: authHeader(acctToken()),
+      payload: { concessionDefinitionId: defId, allocations: [{ chargeId, amountPaise: "9000000" }] },
+    });
+    expect(over.statusCode).toBe(409);
+  }, 120_000);
+
+  // ─── Slice 7.1: refunds (request + webhook settle) ─────────────────────────
+
+  it("7.1-REFUND: partial refund -> REQUESTED, refund.processed webhook (no order_id) settles -> PAID->PARTIALLY_PAID; duplicate event id => no second reversal", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    nextRefundStatus = "pending"; // leave the request route at REQUESTED; webhook finalizes
+    const cap = await captureCharge(chargeId, 5000000, "refund1");
+    expect(await chargeStatus(chargeId)).toBe("PAID");
+
+    // Request a ₹20,000 partial refund (step-up + permission via ACCOUNTANT).
+    const reqRes = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "2000000", reason: "overpayment" },
+    });
+    expect(reqRes.statusCode).toBe(201);
+    expect(reqRes.json().status).toBe("REQUESTED");
+    const refundRow = (await adminClient.refund.findFirst({ where: { paymentTransactionId: cap.paymentTransactionId } }))!;
+    expect(refundRow.idempotencyKey).toBeTruthy();
+    // The SDK was called with receipt = idempotencyKey (HIGH-2).
+    expect(refundCalls.at(-1)!.params.receipt).toBe(refundRow.idempotencyKey);
+    const rzpRefundId = refundRow.razorpayRefundId!; // persisted after SDK success
+
+    // Deliver the real refund.processed webhook (payload.refund.entity, NO order_id).
+    const body = refundEventBody("refund.processed", {
+      refundId: rzpRefundId,
+      paymentId: cap.razorpayPaymentId,
+      receipt: refundRow.idempotencyKey,
+      amountPaise: 2000000,
+    });
+    const hook1 = await deliverWebhook(body, `${PFX}evt_rfnd_1`);
+    expect(hook1.statusCode).toBe(200);
+    expect(hook1.json().status).toBe("ok");
+
+    // Reversal inserted; PAID -> PARTIALLY_PAID; net-refundable dropped.
+    expect(await chargeStatus(chargeId)).toBe("PARTIALLY_PAID");
+    const settled = (await adminClient.refund.findUnique({ where: { id: refundRow.id } }))!;
+    expect(settled.status).toBe("PROCESSED");
+    expect(await adminClient.refundReversal.count({ where: { refundId: refundRow.id } })).toBe(1);
+
+    // Duplicate event id => 200 duplicate, NO second reversal.
+    const hook2 = await deliverWebhook(body, `${PFX}evt_rfnd_1`);
+    expect(hook2.statusCode).toBe(200);
+    expect(hook2.json().status).toBe("duplicate");
+    expect(await adminClient.refundReversal.count({ where: { refundId: refundRow.id } })).toBe(1);
+  }, 180_000);
+
+  it("7.1-REFUND net-refundable: a refund exceeding net-refundable is 409 before any gateway call; two sequential partials that together exceed the capture -> second 409", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    nextRefundStatus = "processed";
+    const cap = await captureCharge(chargeId, 5000000, "refund2");
+
+    const callsBefore = refundCalls.length;
+    const tooBig = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "6000000", reason: "too big" },
+    });
+    expect(tooBig.statusCode).toBe(409);
+    expect(refundCalls.length).toBe(callsBefore); // no gateway call
+
+    // First ₹30,000 partial succeeds (reserves against net-refundable).
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "3000000", reason: "partial 1" },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // Second ₹30,000 would exceed the ₹50,000 capture (3,000,000 reserved) -> 409.
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "3000000", reason: "partial 2" },
+    });
+    expect(second.statusCode).toBe(409);
+
+    // Σ refunds (REQUESTED|PROCESSED) <= capture.
+    const sum = (await adminClient.refund.findMany({
+      where: { paymentTransactionId: cap.paymentTransactionId, status: { in: ["REQUESTED", "PROCESSED"] } },
+      select: { amountPaise: true },
+    })).reduce((a, r) => a + r.amountPaise, 0n);
+    expect(sum).toBeLessThanOrEqual(5000000n);
+  }, 180_000);
+
+  it("7.1-REFUND HIGH-2: refund.processed arriving before razorpayRefundId is persisted correlates by receipt=idempotencyKey and settles once", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    const cap = await captureCharge(chargeId, 5000000, "refund3");
+
+    // Simulate the request route having inserted REQUESTED (with idempotencyKey)
+    // but NOT yet persisted razorpayRefundId — insert the Refund directly.
+    const idem = `${PFX}idem_high2`;
+    const refund = await adminClient.refund.create({
+      data: {
+        institutionId: instA,
+        paymentTransactionId: cap.paymentTransactionId,
+        studentId: studentProfileA,
+        amountPaise: 2000000n,
+        currency: "INR",
+        status: "REQUESTED",
+        reason: "high2",
+        idempotencyKey: idem,
+        approvedByUserId: accountantUser,
+      },
+    });
+    expect(refund.razorpayRefundId).toBeNull();
+
+    // Webhook correlates by receipt=idempotencyKey, links razorpayRefundId, settles.
+    const body = refundEventBody("refund.processed", {
+      refundId: `${PFX}rzp_high2`,
+      paymentId: cap.razorpayPaymentId,
+      receipt: idem,
+      amountPaise: 2000000,
+    });
+    const hook = await deliverWebhook(body, `${PFX}evt_high2`);
+    expect(hook.statusCode).toBe(200);
+    const settled = (await adminClient.refund.findUnique({ where: { id: refund.id } }))!;
+    expect(settled.status).toBe("PROCESSED");
+    expect(settled.razorpayRefundId).toBe(`${PFX}rzp_high2`);
+    expect(await adminClient.refundReversal.count({ where: { refundId: refund.id } })).toBe(1);
+  }, 180_000);
+
+  it("7.1-REFUND: an unmatched refund.processed webhook is a retryable 500 then settles on retry", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    const cap = await captureCharge(chargeId, 5000000, "refund4");
+
+    const idem = `${PFX}idem_retry`;
+    const rzpId = `${PFX}rzp_retry`;
+    // (a) No local refund exists yet → retryable 500.
+    const miss = await deliverWebhook(
+      refundEventBody("refund.processed", { refundId: rzpId, paymentId: cap.razorpayPaymentId, receipt: idem, amountPaise: 1000000 }),
+      `${PFX}evt_retry`,
+    );
+    expect(miss.statusCode).toBe(500);
+
+    // (b) Now the REQUESTED row exists → the retry (same event id) settles once.
+    await adminClient.refund.create({
+      data: {
+        institutionId: instA,
+        paymentTransactionId: cap.paymentTransactionId,
+        studentId: studentProfileA,
+        amountPaise: 1000000n,
+        currency: "INR",
+        status: "REQUESTED",
+        reason: "retry",
+        idempotencyKey: idem,
+        approvedByUserId: accountantUser,
+      },
+    });
+    const retry = await deliverWebhook(
+      refundEventBody("refund.processed", { refundId: rzpId, paymentId: cap.razorpayPaymentId, receipt: idem, amountPaise: 1000000 }),
+      `${PFX}evt_retry`,
+    );
+    expect(retry.statusCode).toBe(200);
+    const settled = (await adminClient.refund.findFirst({ where: { idempotencyKey: idem } }))!;
+    expect(settled.status).toBe("PROCESSED");
+  }, 180_000);
+
+  it("7.1-REFUND failed webhook: refund.failed -> FAILED, no reversal, charge status unchanged, net-refundable restored", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    nextRefundStatus = "pending";
+    const cap = await captureCharge(chargeId, 5000000, "refund5");
+
+    const reqRes = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "2000000", reason: "will fail" },
+    });
+    expect(reqRes.statusCode).toBe(201);
+    const refundRow = (await adminClient.refund.findFirst({ where: { paymentTransactionId: cap.paymentTransactionId } }))!;
+
+    const body = refundEventBody("refund.failed", {
+      refundId: refundRow.razorpayRefundId!,
+      paymentId: cap.razorpayPaymentId,
+      receipt: refundRow.idempotencyKey,
+      amountPaise: 2000000,
+      status: "failed",
+    });
+    const hook = await deliverWebhook(body, `${PFX}evt_rfnd_fail`);
+    expect(hook.statusCode).toBe(200);
+
+    const failed = (await adminClient.refund.findUnique({ where: { id: refundRow.id } }))!;
+    expect(failed.status).toBe("FAILED");
+    expect(await adminClient.refundReversal.count({ where: { refundId: refundRow.id } })).toBe(0);
+    // Charge is still fully PAID (no reversal written).
+    expect(await chargeStatus(chargeId)).toBe("PAID");
+    // net-refundable restored: a new refund of the full capture now succeeds.
+    nextRefundStatus = "pending";
+    const again = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "5000000", reason: "retry full" },
+    });
+    expect(again.statusCode).toBe(201);
+  }, 180_000);
+
+  it("7.1-REFUND step-up + permission matrix: 401 without x-step-up, 403 without fees.refund, 201 with a minted action-bound token", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    nextRefundStatus = "pending";
+    const cap = await captureCharge(chargeId, 5000000, "refund6");
+
+    // 401 without a step-up token (permission present via ACCOUNTANT).
+    const noStepUp = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: authHeader(acctToken()),
+      payload: { amountPaise: "1000000", reason: "x" },
+    });
+    expect(noStepUp.statusCode).toBe(401);
+
+    // 403 without fees.refund permission (the STUDENT) — requirePermission runs
+    // first, so this is a 403 even without a step-up token.
+    const noPerm = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(studentToken()), ...stepUpHeader(studentUser, "fees.refund") },
+      payload: { amountPaise: "1000000", reason: "x" },
+    });
+    expect(noPerm.statusCode).toBe(403);
+
+    // A step-up token for the WRONG action class is rejected 401.
+    const wrongAction = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.adjust") },
+      payload: { amountPaise: "1000000", reason: "x" },
+    });
+    expect(wrongAction.statusCode).toBe(401);
+
+    // 201 with the correct permission + a correctly action-bound step-up token.
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/fees/payments/${cap.paymentTransactionId}/refunds`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.refund") },
+      payload: { amountPaise: "1000000", reason: "ok" },
+    });
+    expect(ok.statusCode).toBe(201);
+  }, 180_000);
+
+  it("7.1-MFA MEDIUM-4: an un-enrolled approver gets 400 at /mfa/verify and consequently cannot mint a token", async () => {
+    // The ACCOUNTANT has not enrolled MFA, so /api/auth/mfa/verify returns 400
+    // "MFA not enrolled" — they cannot obtain a real step-up token for fees.refund.
+    const verify = await app.inject({
+      method: "POST",
+      url: "/api/auth/mfa/verify",
+      headers: authHeader(acctToken()),
+      payload: { code: "000000", action: "fees.refund" },
+    });
+    expect(verify.statusCode).toBe(400);
+    expect(verify.json().error).toBe("MFA not enrolled");
+  }, 120_000);
+
+  // ─── Slice 7.1: adjustments ────────────────────────────────────────────────
+
+  it("7.1-ADJUSTMENT: a WAIVER reduces outstanding + recomputes status; missing step-up is 401; missing permission is 403", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+
+    // 401 without step-up.
+    const noStepUp = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/adjustments`,
+      headers: authHeader(acctToken()),
+      payload: { chargeId, type: "WAIVER", amountPaise: "2000000", reason: "hardship" },
+    });
+    expect(noStepUp.statusCode).toBe(401);
+
+    // 403 without fees.adjust (STUDENT).
+    const noPerm = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/adjustments`,
+      headers: { ...authHeader(studentToken()), ...stepUpHeader(studentUser, "fees.adjust") },
+      payload: { chargeId, type: "WAIVER", amountPaise: "2000000", reason: "hardship" },
+    });
+    expect(noPerm.statusCode).toBe(403);
+
+    // 201 with permission + step-up; outstanding drops, status recomputed.
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/adjustments`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.adjust") },
+      payload: { chargeId, type: "WAIVER", amountPaise: "2000000", reason: "hardship" },
+    });
+    expect(ok.statusCode).toBe(201);
+    expect(await chargeStatus(chargeId)).toBe("PARTIALLY_PAID");
+
+    // A missing reason is a 400 (schema).
+    const noReason = await app.inject({
+      method: "POST",
+      url: `/api/fees/students/${studentProfileA}/adjustments`,
+      headers: { ...authHeader(acctToken()), ...stepUpHeader(accountantUser, "fees.adjust") },
+      payload: { chargeId, type: "WAIVER", amountPaise: "1000000" },
+    });
+    expect(noReason.statusCode).toBe(400);
+  }, 180_000);
+
+  // ─── Slice 7.1: reports ─────────────────────────────────────────────────────
+
+  it("7.1-REPORTS: collection/outstanding/reconciliation JSON are fees.view-gated with STRING money; a non-view role is 403; exports stream a workbook", async () => {
+    await createStructure();
+    const chargeId = await postCharge(studentProfileA, "5000000");
+    await captureCharge(chargeId, 5000000, "report1");
+
+    const collection = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/collection?groupBy=day",
+      headers: authHeader(acctToken()),
+    });
+    expect(collection.statusCode).toBe(200);
+    expect(typeof collection.json().totals.capturedPaise).toBe("string");
+
+    const outstanding = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/outstanding",
+      headers: authHeader(acctToken()),
+    });
+    expect(outstanding.statusCode).toBe(200);
+    expect(typeof outstanding.json().totals.outstandingPaise).toBe("string");
+
+    const recon = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/reconciliation?thresholdMinutes=30",
+      headers: authHeader(acctToken()),
+    });
+    expect(recon.statusCode).toBe(200);
+
+    // A non-view role (STUDENT) is 403.
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/collection",
+      headers: authHeader(studentToken()),
+    });
+    expect(denied.statusCode).toBe(403);
+
+    // Excel exports stream a valid workbook with the right content-type.
+    const xlsx = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/collection/export.xlsx",
+      headers: authHeader(acctToken()),
+    });
+    expect(xlsx.statusCode).toBe(200);
+    expect(xlsx.headers["content-type"]).toContain("spreadsheetml");
+    expect(xlsx.headers["content-disposition"]).toContain("attachment");
+    const outXlsx = await app.inject({
+      method: "GET",
+      url: "/api/fees/reports/outstanding/export.xlsx",
+      headers: authHeader(acctToken()),
+    });
+    expect(outXlsx.statusCode).toBe(200);
+  }, 180_000);
 });

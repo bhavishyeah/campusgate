@@ -48,6 +48,41 @@ export interface RazorpayPaymentResult {
 }
 
 /**
+ * Refund request body — a structural subset of the SDK's
+ * `Refunds.RazorpayRefundCreateRequestBody` (all fields optional there;
+ * `receipt` is `string | null`). We send `idempotencyKey` as `receipt` (HIGH-2).
+ */
+export interface RazorpayRefundParams {
+  amount?: number; // smallest unit (paise)
+  speed?: "normal" | "optimum";
+  notes?: Record<string, string | number>;
+  receipt?: string | null;
+}
+
+/**
+ * Refund response — the fields we consume off `Refunds.RazorpayRefund`. NOTE
+ * (NIT-4): the real type has NO `[k]: unknown` index signature and its `amount`
+ * is `number | undefined`, so the mapping MUST handle an undefined amount (fall
+ * back to the requested amount). No `[k]: unknown` is declared here.
+ */
+export interface RazorpayRefundResult {
+  id: string;
+  payment_id: string;
+  amount?: number;
+  status: "pending" | "processed" | "failed";
+  receipt?: string | null;
+}
+
+/** The result `refundPayment` returns (amount is always resolved to a number). */
+export interface RefundPaymentResult {
+  id: string;
+  payment_id: string;
+  amount: number;
+  status: "pending" | "processed" | "failed";
+  receipt?: string | null;
+}
+
+/**
  * The minimal SDK surface the gateway needs. Declared as an interface so the
  * fast suites can inject a stub without instantiating the real SDK/network.
  */
@@ -65,6 +100,10 @@ export interface RazorpaySdkLike {
       count: number;
       items: RazorpayPaymentResult[];
     }>;
+  };
+  payments: {
+    refund(paymentId: string, params: RazorpayRefundParams): Promise<RazorpayRefundResult>;
+    fetchRefund?(paymentId: string, refundId: string): Promise<RazorpayRefundResult>;
   };
 }
 
@@ -160,6 +199,40 @@ export class RazorpayGateway {
       .update(rawBody)
       .digest("hex");
     return timingSafeEqualHex(expected, signature);
+  }
+
+  /**
+   * Issue a refund against a CAPTURED payment (§E.7). The amount arrives as
+   * integer paise (BigInt); the ONLY BigInt→Number coercion for refunds happens
+   * here and is guarded immediately before the call exactly like `createOrder`
+   * (reject out-of-range so the `Number()` is provably lossless). `opts.receipt`
+   * carries the server-minted idempotencyKey (HIGH-2). A missing `amount` on the
+   * SDK result falls back to the requested amount (NIT-4).
+   */
+  async refundPayment(
+    paymentId: string,
+    amountPaise: bigint,
+    opts: { receipt: string; notes?: Record<string, string | number> },
+  ): Promise<RefundPaymentResult> {
+    if (amountPaise <= 0n || amountPaise > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        "refundPayment: amountPaise out of range (must be > 0 and <= Number.MAX_SAFE_INTEGER)",
+      );
+    }
+    const amount = Number(amountPaise); // provably lossless after the guard
+    const result = await this.sdk.payments.refund(paymentId, {
+      amount,
+      speed: "normal",
+      receipt: opts.receipt,
+      ...(opts.notes !== undefined ? { notes: opts.notes } : {}),
+    });
+    return {
+      id: result.id,
+      payment_id: result.payment_id,
+      amount: result.amount ?? amount,
+      status: result.status,
+      receipt: result.receipt,
+    };
   }
 
   /** Reconciliation read: fetch the order entity. */

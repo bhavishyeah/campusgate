@@ -168,6 +168,16 @@ export interface SeededTenant {
   feeComponentId: string;
   studentChargeId: string;
   paymentTransactionId: string;
+  // Phase-7 fees slice 7.1 (design §E.1/§E.2). The two mutable/guarded tables are
+  // seeded: a ConcessionDefinition (standard pair) and a Refund (REQUESTED,
+  // razorpayRefundId NULL, unique idempotencyKey per tenant; the refunds_guard
+  // forbids DELETE, so teardown disables it within a scoped trigger-disable). The
+  // four INSERT-only tables (student_concessions, concession_credits,
+  // refund_reversals, adjustments) are DELIBERATELY NOT seeded here — their BEFORE
+  // UPDATE OR DELETE trigger blocks even adminClient in the shared teardown; their
+  // append-only behaviour is proven by the self-contained cases.
+  concessionDefinitionId: string;
+  refundId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -258,6 +268,9 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const feeComponentId = id(`feecomp_${key}`);
   const studentChargeId = id(`charge_${key}`);
   const paymentTransactionId = id(`paytxn_${key}`);
+  // Phase-7 fees slice 7.1 IDs (deterministic so cleanup is exact).
+  const concessionDefinitionId = id(`concdef_${key}`);
+  const refundId = id(`refund_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -830,6 +843,40 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-7 fees slice 7.1 MUTABLE/GUARDED tables (design §E.1/§E.2). A
+  // ConcessionDefinition (standard pair) and a Refund (REQUESTED, razorpayRefundId
+  // NULL, unique idempotencyKey per tenant) referencing the seeded CREATED
+  // payment_transactions row (the composite same-tenant FK only requires same
+  // tenant, not a CAPTURED status). The four INSERT-only ledger tables are NOT
+  // seeded here (their triggers block the shared teardown). The refunds_guard
+  // forbids DELETE, so teardown disables it within a scoped trigger-disable.
+  await adminClient.concessionDefinition.create({
+    data: {
+      id: concessionDefinitionId,
+      institutionId,
+      name: `${PREFIX}Concession ${key}`,
+      type: "FIXED",
+      amountPaise: 1000000n, // ₹10,000
+      scope: "PER_STUDENT",
+      status: "ACTIVE",
+    },
+  });
+
+  await adminClient.refund.create({
+    data: {
+      id: refundId,
+      institutionId,
+      paymentTransactionId,
+      studentId: studentProfileId,
+      amountPaise: 1000000n,
+      currency: "INR",
+      status: "REQUESTED",
+      reason: `${PREFIX}seed refund ${key}`,
+      idempotencyKey: id(`idem_${key}`),
+      approvedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -874,6 +921,8 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     feeComponentId,
     studentChargeId,
     paymentTransactionId,
+    concessionDefinitionId,
+    refundId,
   };
 }
 
@@ -887,7 +936,41 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
-  // FEAT-004 Phase-7 fees tables FIRST (child -> parent), BEFORE the
+  // Phase-7 fees slice 7.1 tables FIRST (child -> parent), BEFORE the slice-1
+  // fees teardown below (refund_reversals/concession_credits -> refunds/
+  // student_concessions reference student_charges/payment_transactions with ON
+  // DELETE RESTRICT). The four INSERT-only tables + refunds carry triggers that
+  // forbid UPDATE/DELETE, so delete them with those triggers disabled (the
+  // audit_events dance). Order: refund_reversals -> refunds -> concession_credits
+  // -> student_concessions -> concession_definitions -> adjustments.
+  const slice2GuardedTables = [
+    { table: "refund_reversals", trigger: "refund_reversals_no_update_delete" },
+    { table: "refunds", trigger: "refunds_guard" },
+    { table: "concession_credits", trigger: "concession_credits_no_update_delete" },
+    { table: "student_concessions", trigger: "student_concessions_no_update_delete" },
+    { table: "adjustments", trigger: "adjustments_no_update_delete" },
+  ];
+  for (const { table, trigger } of slice2GuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.refundReversal.deleteMany({ where }));
+    await withRetry(() => adminClient.refund.deleteMany({ where }));
+    await withRetry(() => adminClient.concessionCredit.deleteMany({ where }));
+    await withRetry(() => adminClient.studentConcession.deleteMany({ where }));
+    await withRetry(() => adminClient.adjustment.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of slice2GuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.concessionDefinition.deleteMany({ where }));
+
+  // FEAT-004 Phase-7 fees (slice 1) tables NEXT (child -> parent), BEFORE the
   // student_profiles / programs / academic_sessions deletes below (their
   // composite FKs are ON DELETE RESTRICT). The three fully append-only tables
   // (payment_allocations, receipts, processed_webhook_events) are never seeded by
@@ -1191,6 +1274,16 @@ export const RLS_TABLES = [
   "payment_allocations",
   "receipts",
   "processed_webhook_events",
+  // Phase-7 fees slice 7.1 (design §E.1/§E.2). concession_definitions + refunds
+  // use the default modify pair (refunds carries a column-guard trigger that
+  // enforces immutability at the row level, like payment_transactions). The four
+  // INSERT-only tables are append-only (EXPECTED_POLICIES below).
+  "concession_definitions",
+  "student_concessions",
+  "concession_credits",
+  "refunds",
+  "refund_reversals",
+  "adjustments",
 ] as const;
 
 /**
@@ -1250,6 +1343,24 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
     "tenant_isolation_select",
     "processed_webhook_events_tenant_insert",
   ],
+  // Phase-7 fees slice 7.1: the four INSERT-only ledger tables are append-only
+  // (design §E.2.g) — the SELECT + INSERT pair, NO modify policy.
+  // concession_definitions + refunds are deliberately ABSENT here so they fall
+  // through to DEFAULT_POLICIES (refunds's row immutability is a column guard,
+  // not an append-only RLS policy — the payment_transactions precedent).
+  student_concessions: [
+    "tenant_isolation_select",
+    "student_concessions_tenant_insert",
+  ],
+  concession_credits: [
+    "tenant_isolation_select",
+    "concession_credits_tenant_insert",
+  ],
+  refund_reversals: [
+    "tenant_isolation_select",
+    "refund_reversals_tenant_insert",
+  ],
+  adjustments: ["tenant_isolation_select", "adjustments_tenant_insert"],
 };
 
 /** The default policy pair every non-special table must carry. */

@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { withTenant, privilegedPrisma, Prisma, type DbClient } from "@campusgate/db";
 import { recordAuditEvent } from "../services/audit.js";
 import { confirmCapture } from "../services/fees/confirmation.js";
+import { correlateRefund, settleRefund } from "../services/fees/refunds.js";
 import { getRazorpayGateway, type RazorpayGateway } from "../services/fees/razorpay.js";
 
 /**
@@ -101,29 +102,53 @@ export async function razorpayWebhookRoutes(
       return reply.status(400).send({ error: "invalid JSON" });
     }
     const eventType: string = evt?.event ?? "";
+    const isRefundEvent = eventType.startsWith("refund.");
     const paymentEntity = evt?.payload?.payment?.entity;
     const orderEntity = evt?.payload?.order?.entity;
+    const refundEntity = evt?.payload?.refund?.entity; // refund.* events
     const razorpayOrderId: string | undefined =
       paymentEntity?.order_id ?? orderEntity?.id;
-    const razorpayPaymentId: string | null = paymentEntity?.id ?? null;
+    // Refund events carry no order_id; the tenant key is the payment id (HIGH-1).
+    const razorpayPaymentId: string | null =
+      (isRefundEvent ? refundEntity?.payment_id : paymentEntity?.id) ?? paymentEntity?.id ?? null;
 
-    // If the order id is unresolvable, we cannot attribute the event → 200 no-op
-    // (stop Razorpay retrying an event we can't place).
-    if (!razorpayOrderId) {
+    // Unresolvable-attribution guard BRANCHES by event family (HIGH-1): refund
+    // events require a payment_id; capture events keep the order_id guard.
+    if (isRefundEvent) {
+      if (!razorpayPaymentId) {
+        request.log.warn({ eventType }, "razorpay webhook: refund event without payment_id");
+        return reply.status(200).send({ status: "ignored", reason: "no payment id" });
+      }
+    } else if (!razorpayOrderId) {
       request.log.warn({ eventType }, "razorpay webhook: unresolved order id");
       return reply.status(200).send({ status: "ignored", reason: "no order id" });
     }
+
+    // (b') UNCHANGED from slice 1 — the `!eventId` guard fires for BOTH families,
+    //      immediately after the branched attribution guard and before tenant
+    //      resolution. eventId (x-razorpay-event-id) is the SOLE front-door
+    //      idempotency key (processed_webhook_events.razorpayEventId NOT NULL +
+    //      global unique); no event id ⇒ we cannot de-dupe a redelivery ⇒ ignore.
     if (!eventId) {
-      request.log.warn({ eventType, razorpayOrderId }, "razorpay webhook: missing event id header");
+      request.log.warn({ eventType }, "razorpay webhook: missing event id header");
       return reply.status(200).send({ status: "ignored", reason: "no event id" });
     }
 
     // (c) Resolve the tenant via the owner-role lookup (fail-closed role probe).
+    //     Capture events resolve by razorpayOrderId; refund events by
+    //     razorpayPaymentId (NEW-2: no institutionId filter by design — the
+    //     webhook has no tenant token and Razorpay ids are globally unique, the
+    //     identical slice-1 capture-path rationale).
     await assertLookupRoleBypassesRls(lookupClient);
-    const txRow = await lookupClient.paymentTransaction.findFirst({
-      where: { razorpayOrderId },
-      select: { id: true, institutionId: true, status: true },
-    });
+    const txRow = isRefundEvent
+      ? await lookupClient.paymentTransaction.findFirst({
+          where: { razorpayPaymentId: razorpayPaymentId ?? undefined },
+          select: { id: true, institutionId: true, status: true },
+        })
+      : await lookupClient.paymentTransaction.findFirst({
+          where: { razorpayOrderId },
+          select: { id: true, institutionId: true, status: true },
+        });
     if (!txRow) {
       // Unattributable (no transaction row) → no tenant and no payer, so there is
       // no valid audit actor. Record a structured log, not a DB audit (Option A
@@ -202,6 +227,110 @@ export async function razorpayWebhookRoutes(
             return { duplicate: true as const };
           }
           throw err; // any other insert error rolls the tx back
+        }
+
+        // Refund events (§E.8): correlate the local Refund by razorpayRefundId
+        // then by receipt=idempotencyKey (HIGH-2), then settle/fail/ack.
+        if (isRefundEvent) {
+          const refundActor = {
+            actorUserId: payerUserId ?? "system",
+            actorRoleKey: "STUDENT",
+            actorMembershipId: null,
+            requestRef: request.id,
+          };
+          const razorpayRefundId: string | undefined = refundEntity?.id;
+          const receipt: string | null = refundEntity?.receipt ?? null;
+
+          if (eventType === "refund.created") {
+            // REQUESTED already exists locally; acknowledge as a no-op.
+            if (payerUserId) {
+              await recordAuditEvent(
+                {
+                  action: "fees.webhook.received",
+                  result: "SUCCESS",
+                  actorUserId: payerUserId,
+                  actorRoleKey: "STUDENT",
+                  institutionId: resolvedInstitutionId,
+                  resourceType: "ProcessedWebhookEvent",
+                  resourceId: txRow.id,
+                  metadata: { eventType, razorpayRefundId: razorpayRefundId ?? null },
+                },
+                tx,
+              );
+            }
+            return { noop: true as const };
+          }
+
+          if (eventType === "refund.processed") {
+            if (!razorpayRefundId) throw new Error("refund.processed without refund id");
+            const located = await correlateRefund(tx, resolvedInstitutionId, {
+              razorpayRefundId,
+              receipt,
+            });
+            if (!located) {
+              // No local refund yet (request route may not have persisted) → throw
+              // so the tx rolls back and Razorpay redelivers (retryable 500).
+              throw new Error("refund.processed: no local refund to correlate");
+            }
+            if (located.status === "PROCESSED") return { noop: true as const };
+            await settleRefund(tx, {
+              institutionId: resolvedInstitutionId,
+              refundId: located.id,
+              actor: refundActor,
+            });
+            return { refundSettled: true as const };
+          }
+
+          if (eventType === "refund.failed") {
+            if (!razorpayRefundId) throw new Error("refund.failed without refund id");
+            const located = await correlateRefund(tx, resolvedInstitutionId, {
+              razorpayRefundId,
+              receipt,
+            });
+            if (!located) {
+              throw new Error("refund.failed: no local refund to correlate");
+            }
+            if (located.status === "REQUESTED") {
+              await tx.refund.update({
+                where: { id: located.id },
+                data: { status: "FAILED", settledAt: new Date() },
+              });
+              if (payerUserId) {
+                await recordAuditEvent(
+                  {
+                    action: "fees.refund.failed",
+                    result: "SUCCESS",
+                    actorUserId: payerUserId,
+                    actorRoleKey: "STUDENT",
+                    institutionId: resolvedInstitutionId,
+                    resourceType: "Refund",
+                    resourceId: located.id,
+                    metadata: { razorpayRefundId },
+                  },
+                  tx,
+                );
+              }
+            }
+            return { refundFailed: true as const };
+          }
+
+          // Any other refund.* event: acknowledge no-op.
+          if (payerUserId) {
+            await recordAuditEvent(
+              {
+                action: "fees.webhook.received",
+                result: "SUCCESS",
+                actorUserId: payerUserId,
+                actorRoleKey: "STUDENT",
+                institutionId: resolvedInstitutionId,
+                resourceType: "ProcessedWebhookEvent",
+                resourceId: txRow.id,
+                metadata: { eventType },
+              },
+              tx,
+            );
+          }
+          return { noop: true as const };
         }
 
         if (!isCaptureEvent) {
