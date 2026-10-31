@@ -425,7 +425,14 @@ routes with `requireStepUp` + the permission
 
 ---
 
-## Phase 8 — Examinations & results
+## Phase 8 — Examinations & results — COMPLETE (backend only)
+
+> **Status: COMPLETE (backend only, Option A).** Both slices shipped. Slice 8.1 delivered
+> the exam foundation (setup, lifecycle, scoped marks, moderation, step-up-gated versioned
+> publication, configurable grading engine, student latest-published reads). Slice 8.2
+> delivered the remaining Phase-8 scope on top of 8.1 — **re-evaluation**, **supplementary
+> exams**, and **cross-session result history** — closing the phase. The frontend remains
+> deferred (see the deferred-frontend scope list above).
 
 **Objective.** Exams, schedules, marks, moderation, and controlled result publication.
 
@@ -481,6 +488,39 @@ green (`turbo build` 3/3 successful); `npm test -w @campusgate/api` **484/484** 
 454 before the slice); both new live-DB suites green **in isolation** (`exams-behavioral`
 7/7, extended `tenant-escape` 82/82 with teardown total 0). The frontend remains deferred
 (see the deferred-frontend scope list above).
+
+**Slice 8.2 — SHIPPED (backend only) → PHASE 8 COMPLETE.** The remaining Phase-8 scope
+landed additively on top of 8.1: **re-evaluation**, **supplementary exams**, and
+**cross-session result history**, via the hand-authored migration
+`20261213000000_phase8_exams_slice2` (strictly additive — **no DROP** on existing tables,
+the 15 prior frozen dirs byte-untouched, `prisma migrate status` up to date at 16
+migrations; `prisma migrate diff` shows only the long-standing composite-vs-single-FK
+cosmetic diff). The load-bearing DB change is the `result_publications` trigger swap: the
+append-only INSERT-only trigger is replaced by a **column guard** (`result_publications_guard`)
+that permits **exactly `PUBLISHED → SUPERSEDED`** and forbids every other UPDATE **and all
+DELETEs**, preceded by a one-time idempotent backfill collapsing any 8.1-era multi-`PUBLISHED`
+exam to a single max-version `PUBLISHED` row so the supersede flip can assert `count === 1`
+(`result_snapshots` + `marks_record_history` stay strictly append-only). A re-publication
+that re-marks writes a **NEW** published version and flips the prior row to `SUPERSEDED`
+inside the same transaction + advisory lock, keeping all prior snapshots frozen; the student
+sees **ONLY** the latest published version (`SUPERSEDED` invisible), while staff history shows
+every version tagged with status. Re-publication still requires `exams.results.publish` **AND
+MFA step-up** (unchanged `permission → step-up → module` preHandler order). Supplementary
+eligibility is computed from the parent's latest **PUBLISHED non-passing** snapshots; a
+registration naming a passed student is rejected atomically; supplementary marks/grading/
+publication reuse the 8.1 engine unforked (grading determinism unbroken). The `ReevalRequest`
+lifecycle is forward-only (`REQUESTED → UNDER_REVIEW → REMARKED → CLOSED`, side-exit to
+`REJECTED`), enforced at three aligned layers (pure helper, optimistic `updateMany` guard,
+`reeval_requests_guard` DB backstop). Two new RBAC keys bind exactly — `exams.reeval.request_own`
+to STUDENT only, `exams.reeval.manage` to ADMIN + HOD only (FACULTY excluded) — with the
+catalogue-sync set-equality meta-test green. Multi-tenancy A2 holds on the new `reeval_requests`
+table and the nullable same-tenant `parentExaminationId` self-FK; the extended tenant-escape
+suite covers every new 8.2 table + the column guard + the self-FK. **No fees import** in the
+exams module. Verification run (independent, on commit): clean `npm ci` + workspace build green
+(`turbo build` 3/3 successful); `npm test -w @campusgate/api` **497/497** green (was 484 before
+the slice); both live-DB suites green **in isolation** (`exams-behavioral` 12/12, extended
+`tenant-escape` 84/84); `prisma migrate status` up to date at 16 migrations. The frontend
+remains deferred (see the deferred-frontend scope list above).
 
 ---
 
