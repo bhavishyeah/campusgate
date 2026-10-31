@@ -1,0 +1,12 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "8.1 student read routes not hardened to latestPublishedPublication",
+      "confidence": "likely",
+      "blocking": false,
+      "detail": "GET /me/results and GET /me/results/:examId still resolve via the max-version latestPublication helper rather than the status-filtered latestPublishedPublication the slice added for finding 3 / NFR-4. Since 8.2 makes SUPERSEDED a written state, a stray SUPERSEDED row at max version could in theory leak to a student on these two paths. Non-blocking: these lines are unchanged by the 8.2 diff, the happy path is correct, and the migration backfill plus the flipped.count===1 single-PUBLISHED-max invariant protect against the anomalous state. Recommend switching both routes to latestPublishedPublication for consistency with the slice's own access-control posture."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase8-exams-slice2\\review.md"
+}

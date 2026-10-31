@@ -1,0 +1,34 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "NIT-1",
+      "severity": "NIT",
+      "location": "design.md §14 (files-touched map) vs §8.4 / §6.1",
+      "problem": "The §14 implementation map does not name the required edit to the EXISTING POST / examination create handler. The real handler (apps/api/src/routes/exams.ts) builds examination.create with an explicit field list that omits parentExaminationId and performs no linkage check, yet §8.4/§6.1 require assertSupplementaryLinkage to run and parentExaminationId to be persisted on create.",
+      "fix": "Add an explicit §14 bullet: modify the existing POST / create handler to call assertSupplementaryLinkage(tx, institutionId, { type, parentExaminationId }) after the session/term/program checks (deny 400 + DENIED audit on violation), and add parentExaminationId: data.parentExaminationId ?? null to the examination.create data."
+    },
+    {
+      "id": "NIT-2",
+      "severity": "NIT",
+      "location": "design.md §8.3 (supersede flip audit)",
+      "problem": "The exams.results.superseded audit event specifies metadata {supersededVersion, byVersion} but does not pin resourceType/resourceId. The flip uses updateMany (no returned row), so the implementer must invent the anchor.",
+      "fix": "State that the supersede audit uses resourceType: 'ResultPublication' and a defined resourceId (either the prior PUBLISHED row's id fetched alongside the flip, or the new publication.id with supersededVersion in metadata). Pin one."
+    },
+    {
+      "id": "NIT-3",
+      "severity": "NIT",
+      "location": "design.md §8.2a step 4 (re-mark history create)",
+      "problem": "The marks_record_history create shape is written as { changeType, previousMarks, newMarks, actorUserId, reason, … } with a trailing ellipsis. The 8.1 correct route writes actorMembershipId: request.auth?.membershipId ?? null; the slice claims the history table is 'reused verbatim', so the field should be explicit to avoid it being dropped.",
+      "fix": "List actorMembershipId: request.auth?.membershipId ?? null explicitly in the §8.2a history-create shape, matching the 8.1 correct route verbatim."
+    },
+    {
+      "id": "NIT-4",
+      "severity": "NIT",
+      "location": "design.md AC#2 / §5 / §11 (migration 'a–j house style')",
+      "problem": "AC#2 asserts the 8.2 migration follows the 8.1 a–j section style, but the 8.2 migration is non-additive in ways 8.1's a–j letters do not model: a result_publications trigger/function SWAP, a re-authored examinations_guard, a one-time backfill, and an ALTER on examinations. The letter placement of these sections is unspecified. Presentation-only; the SQL itself is fully specified.",
+      "fix": "State the intended section placement, e.g. a–j mirror 8.1 for the new reeval_requests table/enum/seed, with the examinations ALTER, re-authored examinations_guard, and result_publications backfill+swap appended as explicitly-labelled non-additive sections k/l/m."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase8-exams-slice2\\design-review.md"
+}
