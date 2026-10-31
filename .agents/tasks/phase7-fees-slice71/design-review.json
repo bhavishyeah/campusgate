@@ -1,0 +1,46 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "NIT-5",
+      "severity": "NIT",
+      "title": "Webhook 'unknown' vs 'unknown order' reason-string drift",
+      "where": "design.md \u00a7E.8 webhook snippet (no-row 200 branch)",
+      "problem": "The refund-branch no-row case returns reason:'unknown', while the live capture handler (razorpay-webhook.ts) returns reason:'unknown order'. Cosmetic inconsistency within the single handler; body shape {status:'ignored'} is what tests assert.",
+      "fix": "Keep the capture branch's 'unknown order' string; use a distinct 'unknown payment' for the refund branch rather than a bare 'unknown'."
+    },
+    {
+      "id": "NIT-6",
+      "severity": "NIT",
+      "title": "confirmCapture status-recompute change under-scoped",
+      "where": "design.md \u00a7E.5 (confirmCapture updated to use computeChargeStatus)",
+      "problem": "confirmCapture currently writes each allocated charge's status from planAllocation's alloc.nextStatus (nextChargeStatus => PAID/PARTIALLY_PAID only). A concession-zeroed charge is not an allocation target, so capture does not regress it; the change is defensive, not a correctness fix. The design should pin that the allocation loop is otherwise byte-for-byte preserved.",
+      "fix": "Add one sentence to \u00a7E.5: 'no change to the allocation loop; only the status written for an allocated charge is sourced from computeChargeStatus instead of alloc.nextStatus, and a fast confirmation.test.ts regression asserts identical output for the no-credit case.'"
+    },
+    {
+      "id": "NIT-7",
+      "severity": "NIT",
+      "title": "OQ-1 refund webhook event names/payload path unverifiable in-repo",
+      "where": "design.md \u00a7E.8 / Open Questions OQ-1",
+      "problem": "refund.processed/refund.failed/refund.created and payload.refund.entity come from Razorpay public docs, not the installed SDK (only the payments.refund method and RazorpayRefund entity are verifiable). Accepted pre-go-live confirmation, not a design defect; blast radius isolated to the eventType switch and entity path.",
+      "fix": "Keep OQ-1 open; confirm event names/path against the live Razorpay dashboard webhook event list before enabling refund webhooks. No code change now."
+    }
+  ],
+  "priorFindings": [
+    { "id": "HIGH-1", "status": "Closed" },
+    { "id": "HIGH-2", "status": "Closed" },
+    { "id": "HIGH-3", "status": "Closed" },
+    { "id": "MEDIUM-1", "status": "Closed" },
+    { "id": "MEDIUM-2", "status": "Closed" },
+    { "id": "MEDIUM-3", "status": "Closed" },
+    { "id": "MEDIUM-4", "status": "Closed" },
+    { "id": "NIT-1", "status": "Closed" },
+    { "id": "NIT-2", "status": "Closed" },
+    { "id": "NIT-3", "status": "Closed" },
+    { "id": "NIT-4", "status": "Closed" },
+    { "id": "NEW-1", "status": "Closed" },
+    { "id": "NEW-2", "status": "Closed" },
+    { "id": "NEW-3", "status": "Closed" }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase7-fees-slice71\\design-review.md"
+}

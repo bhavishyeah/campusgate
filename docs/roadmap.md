@@ -398,15 +398,29 @@ operational route; the webhook is signature-gated only). New `fees.*` permission
 additive fees-scoped `ACCOUNTANT` template role; `STUDENT` gets `fees.view_own`. The frontend
 is deferred (see the deferred-frontend scope list above).
 
-**Slice 7.1 — DEFERRED (not built in slice 1).** Scholarships, concessions, waivers, fee
-**adjustments**, **refunds**, and the full financial report set land as **NEW ledger-entry
-tables** (e.g. `FeeAdjustment`, `Refund`) plus **new allocation entries** and **forward
-charge-status transitions** — **never** edits to posted `student_charges`, `CAPTURED`
-`payment_transactions`, `payment_allocations`, or `receipts` (the slice-1 append-only /
-column-guard model guarantees this drop-in works without rewriting posted rows). The
-`fees.refund` and `fees.adjust` permission keys are **forward-declared, unbound** in slice 1
-(defined in the catalogue, consumed by no route, bound to no role); 7.1 wires their
-step-up-gated routes with `requireStepUp` + the permission
+**Slice 7.1 — SHIPPED (backend only).** Scholarships, concessions, waivers, fee
+**adjustments**, **refunds**, and the full financial report set landed as **NEW ledger-entry
+tables** (`concession_definitions`, `student_concessions`, `concession_credits`, `refunds`,
+`refund_reversals`, `adjustments`) plus **new allocation/reversal entries** and **forward +
+backward charge-status transitions driven by a single ledger** — with **no** edits to posted
+`student_charges`, `CAPTURED` `payment_transactions`, `payment_allocations`, or `receipts`
+(the slice-1 append-only / column-guard model held; the four new INSERT-only ledger tables
+are trigger-protected the same way, and `refunds` carries a `refunds_guard` column guard).
+Outstanding/status is a single source of truth (`services/fees/ledger.ts`) composed across
+charges + payments + concessions + refund reversals + adjustments, all money INTEGER PAISE
+(`BIGINT`) internally and strings/typed cells on every boundary. The Razorpay refund spine
+(`refundPayment` + the public `refund.processed`/`refund.failed`/`refund.created` webhook
+branch) settles idempotently under an advisory lock with net-refundable recompute. The
+`fees.refund` and `fees.adjust` permission keys (forward-declared, unbound in slice 1) are now
+**bound** (to `ACCOUNTANT` + `ADMIN`) and consumed by step-up-gated routes (`requireStepUp` +
+the permission) alongside the new `fees.concession.manage` key; the migration
+`20261129000000_phase7_fees_slice2` is additive (no DROP on existing tables) and
+`prisma migrate status` is clean. Verification run: clean `npm ci` + workspace build green;
+`npm test -w @campusgate/api` 454/454 green; both new live-DB suites green in isolation
+(`fees-behavioral` 22/22, extended `tenant-escape` 75/75). The frontend remains deferred
+(see the deferred-frontend scope list above). Historical note — 7.1 was originally scoped as
+DEFERRED in slice 1: the keys were forward-declared, unbound; 7.1 wired their step-up-gated
+routes with `requireStepUp` + the permission
 ([`superadmin-security.md`](./superadmin-security.md) §5.2).
 
 ---

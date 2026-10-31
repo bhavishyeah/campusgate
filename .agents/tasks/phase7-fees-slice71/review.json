@@ -1,0 +1,18 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "label": "HIGH-3 concurrency proven sequentially",
+      "detail": "The two-partial over-capture test runs sequentially (second request 409) rather than truly concurrently. The acquireRefundLock advisory lock and the under-lock net-refundable recompute are present and correct, so the invariant Sum(refunds) <= capture is still proven; a concurrent test would exercise lock contention directly. No code change required."
+    },
+    {
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "label": "No-op ternary in collection net",
+      "detail": "buildCollectionReport computes netPaise as (net > 0n ? net : net).toString(), a harmless leftover where both branches return the same value. net can legitimately be negative and the emitted value is correct. Optionally simplify to net.toString()."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase7-fees-slice71\\review.md"
+}
