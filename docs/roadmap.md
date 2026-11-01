@@ -559,6 +559,45 @@ public by default; downloads verify permission + tenant.
 **Definition of Done (demoable).** Each activated module operates end-to-end for two
 institutions with isolation, permissions, and audit; dependencies enforced at activation.
 
+### Progress
+
+Phase 9 ships one module per increment (sequential — each is a self-contained booster but
+they share `schema.prisma`, the shared catalogues, the migration chain, and the
+tenant-escape suite, so they are built one at a time to keep those chokepoints clean). Order:
+Faculty Management → HR → Hostel → Transport → Inventory & Assets → Service Requests →
+Document Management (last; needs object storage).
+
+**Faculty Management — SHIPPED (backend only).** The first Phase-9 module, a gated booster
+layered additively on the shared foundation via the hand-authored migration
+`20261220000000_phase9_faculty_management` (strictly additive — **no DROP** on existing
+tables, the 16 prior frozen dirs byte-untouched, `prisma migrate status` up to date at 17
+migrations; `prisma migrate diff` shows only the long-standing composite-vs-single-FK
+cosmetic diff). New module key `faculty_management` in the registry with `deps = []`
+(foundational-not-gated: its prerequisites — `faculty_profiles` / `users` / `departments` —
+are foundational non-module data validated at operation time, so a gated edge would
+permanently block activation; routes gated by `requireModuleActive("faculty_management")`).
+Four new tenant-owned tables (`faculty_qualifications`, `faculty_workload_policies`,
+`faculty_workloads`, `faculty_teaching_history`), each institutionId-scoped with composite
+FKs and ENABLE+FORCE RLS fail-closed policies; `faculty_teaching_history` is strictly
+append-only (unconditional-raise trigger — UPDATE and DELETE rejected at the DB even via the
+owner client). The `/api/faculty` surface covers qualifications (editable-with-audit, a
+0-row delete → 404), per-(faculty, term) workload with a per-institution policy cap and
+over-allocation reject/override (422 without override; written with reason + a
+`faculty.workload.overallocated` audit on override), an append-only teaching-history ledger
+written on assignment assign/end lifecycle events, and a consolidated staff-scoped faculty
+directory/profile plus faculty self-service (a faculty member sees only their own
+profile/workload/history; a FACULTY user with no profile → 403). Workload teaching-hours are
+counted per distinct (subject, section) assignment with documented role handling (no
+double-counting). RBAC: ADMIN and HOD each bind the four management keys
+(`faculty.directory.view`, `faculty.qualifications.manage`, `faculty.workload.manage`,
+`faculty.teaching_history.manage`), FACULTY binds `faculty.view_own` only (9 role_permissions
+pairs; catalogue-sync set-equality is the self-enforcing backstop). The Faculty/HR boundary
+is kept clean — employment concerns (contracts, leave, payroll, employee attendance) are
+deliberately reserved for the HR module; no employment fields were added to
+`faculty_profiles`. No cross-module coupling. Verification run: `npm test -w @campusgate/api`
+**527/527** green (was 497); both live-DB suites green **in isolation** (`faculty-behavioral`
+5/5, extended `tenant-escape` 89/89); `campass_app` remains NOSUPERUSER NOBYPASSRLS.
+
 ---
 
 ## Phase 10 — Advanced ERP
