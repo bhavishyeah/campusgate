@@ -628,15 +628,73 @@ self-service **12/12**; and the six hostel-specific `tenant-escape` cases (`3r1`
 five guarded tables + append-only `hostel_check_events`) **6/6**. `campass_app` remains
 NOSUPERUSER NOBYPASSRLS.
 
-> **Deferred by explicit orchestrator decision:** the FULL shared `tenant-escape` green
-> (all 95 cases in one run) is **not** gated on this module loop. On the shared Supabase DB,
-> a parallel worktree running escape suites on the same `ESCAPE_TEST_` fixture namespace
-> clobbers the A/B base seed mid-run and leaves residue that blocks `beforeAll` cleanup,
-> producing a **non-deterministic** set of **non-hostel** failures (zero hostel cases ever
-> fail). The authoritative full-suite pass is an orchestrator-owned CROSS-MODULE check to be
-> run serially against a quiesced DB after both Wave-1 modules merge. Hostel's own
-> `ESCAPE_TEST_` residue was purged via the suite's own `cleanup()` helper, leaving the DB
-> clean for that run.
+> **Deferred by explicit orchestrator decision (now RESOLVED):** during the parallel Wave-1
+> build (HR + Hostel on separate worktrees) the FULL shared `tenant-escape` green was not
+> gated on the hostel loop, because a concurrent worktree running escape suites on the same
+> `ESCAPE_TEST_` fixture namespace clobbered the A/B base seed mid-run. After both Wave-1
+> modules merged, the orchestrator ran the authoritative full suite serially against a
+> quiesced DB: **`tenant-escape` 102/102** (all HR + Hostel tables covered; the meta-test
+> confirms every tenant table has RLS enabled+forced + both policies). Resolved.
+
+**HR Management — SHIPPED (backend only).** The second Phase-9 module, built in parallel with
+Hostel (Wave 1), a gated booster added via the hand-authored migration
+`20261227000000_phase9_hr_management` (strictly additive — **no DROP**, prior frozen dirs
+byte-untouched). New module key `hr_management`, `deps = []` (foundational-not-gated);
+routes gated by `requireModuleActive("hr_management")`. Eight tenant-owned tables (employees,
+contracts, leave policies/applications, shifts, employee attendance + append-only history),
+institutionId-scoped with composite FKs + ENABLE+FORCE RLS; `hr_employee_attendance_history`
+strictly append-only, `hr_contracts` + `hr_leave_applications` column-guarded forward-only.
+The `/api/hr` surface covers employee records (POST /employees also binds the target user to
+the additive `EMPLOYEE` role in-tx, the admissions APPLICANT precedent), versioned contracts,
+leave policies + applications with a pure integer-day leave-balance engine (single source of
+truth; advisory-locked approve rejects over-balance 422 with no flip), shifts, employee
+attendance (mutable current + append-only history), staff JSON/XLSX reports, and employee
+self-service (`hr.view_own`). HR data is access-isolated: STUDENT and FACULTY get **403** on
+every HR route. RBAC: additive `HR_MANAGER` (staff) + `EMPLOYEE` (self-service) template
+roles; ADMIN + HR_MANAGER bind the six management keys, EMPLOYEE binds `hr.view_own`;
+catalogue-sync set-equality is the self-enforcing backstop. No payroll/fees coupling.
+Verification (merged to `main`, serial): fast suite **596/596**; `hr-behavioral` **7/7** and
+`tenant-escape` **102/102** in isolation; `prisma migrate status` up to date.
+
+**Transport — SHIPPED (backend only).** The fourth Phase-9 module, built **sequentially** on
+`main` (Wave-1 parallelism was reverted — worktree merges + shared-DB test contention cost
+more than they saved). Gated booster via the hand-authored migration
+`20270110000000_phase9_transport` (strictly additive — **no DROP**, prior frozen dirs
+byte-untouched; `prisma migrate status` up to date at **20** migrations). New module key
+`transport`, `deps = []` (foundational-not-gated); routes gated by
+`requireModuleActive("transport")`. Eight tenant-owned tables (vehicles, drivers, routes,
+route stops, route assignments, enrollments, route schedules, vehicle maintenance),
+institutionId-scoped with composite FKs + ENABLE+FORCE RLS; three column-guard triggers
+(enrollments, assignments, maintenance — forward-only lifecycles, DELETE rejected), two
+partial-unique indexes (one ACTIVE enrollment per (student, route); one ACTIVE assignment per
+route). The `/api/transport` surface (34 routes mirroring the hostel precedent) covers
+vehicle/driver/route/stop management (with a capacity-reduction-below-active guard under
+per-route advisory locks), vehicle↔route assignment (a vehicle in MAINTENANCE cannot be
+assigned), concurrency-safe enrollment (capacity derived from the ACTIVE assignment's
+vehicle, advisory-lock + conditional-count + partial-unique backstop; a route with no ACTIVE
+assignment fails closed), forward-only maintenance, schedules, staff JSON/XLSX reports, and
+student self-service (`transport.view_own`, list-shaped — a student with no profile gets
+**200 with an empty list**, a deliberate departure from hostel's 404). Transport fee is
+route-level **metadata only** (integer paise, money-as-string on the JSON boundary); no
+auto-posting to the fees module (explicit-integration-only deferral). RBAC: additive
+`TRANSPORT_MANAGER` role + eight `transport.*` permissions; ADMIN + TRANSPORT_MANAGER bind the
+seven management/view keys, STUDENT binds `transport.view_own`; 18 `transport.*` audit keys;
+catalogue-sync set-equality is the self-enforcing backstop. Verification (serial on `main`):
+fast suite **596/596**; `transport-behavioral` **16/16** in isolation (incl. the one-seat
+concurrency test — one 201 + one 409 — and no-cross-module-coupling); live-DB schema
+confirmed (8 tables RLS enabled+forced, 3 column guards, 2 partial-uniques, grants follow the
+guarded-table convention); `prisma migrate status` up to date.
+
+> **Live-DB note (free-tier pooler):** the full `tenant-escape` suite (107 cases incl.
+> transport's `3t1`–`3t5`) was run twice serially; each run landed **106/107** with the lone
+> failure being a **different** case each time (`3fg` fees fail-closed, then `3t5` transport
+> backstop), both failing with Prisma transaction-lifetime errors ("transaction already
+> closed / not found" — the 5 000 ms interactive-transaction budget exceeded under pooler
+> congestion after ~11 min of continuous load), **not** assertion or RLS failures. The
+> structural guarantee — the meta-test asserting every tenant table (all 8 transport tables
+> included) has RLS enabled+forced with both policies — passed on **both** runs, as did
+> `3t1`–`3t4` and the transport behavioral suite. The single transaction-timeout flake is the
+> documented shared free-tier limitation, not a transport defect.
 
 ---
 
