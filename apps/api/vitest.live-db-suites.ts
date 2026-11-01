@@ -31,4 +31,5 @@ export const LIVE_DB_SUITES = [
   'src/**/fees-behavioral.integration.test.ts',
   'src/**/exams-behavioral.integration.test.ts',
   'src/**/faculty-behavioral.integration.test.ts',
+  'src/**/hostel.behavioral.integration.test.ts',
 ];
