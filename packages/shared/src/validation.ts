@@ -1390,3 +1390,131 @@ export type CreateFacultyQualificationInput = z.infer<typeof createFacultyQualif
 export type PatchFacultyQualificationInput = z.infer<typeof patchFacultyQualificationSchema>;
 export type PutWorkloadPolicyInput = z.infer<typeof putWorkloadPolicySchema>;
 export type PatchFacultyWorkloadInput = z.infer<typeof patchFacultyWorkloadSchema>;
+
+// ─── Phase 9.3 Hostel Management ─────────────────────────────────────────────
+// institutionId / userId / studentId (for /me/*) are NEVER accepted from the
+// body — always derived from the verified token / the caller's StudentProfile.
+// Enum members mirror the pg enums added by the 20270103000000_phase9_hostel
+// migration (design §B.2 / §B.10).
+
+export const hostelBuildingTypeEnum = z.enum(["BOYS", "GIRLS", "MIXED", "STAFF"]);
+export const hostelRoomStatusEnum = z.enum(["AVAILABLE", "FULL", "MAINTENANCE", "CLOSED"]);
+export const hostelCheckEventTypeEnum = z.enum(["CHECK_IN", "CHECK_OUT"]);
+// Only the forward reachable states a staff transition may target (never OPEN).
+export const hostelMaintenanceTransitionTargetEnum = z.enum([
+  "IN_PROGRESS",
+  "RESOLVED",
+  "CANCELLED",
+]);
+
+const hostelCuidLike = z.string().min(1).max(64);
+
+// 1. Buildings. isActive optional (DB column defaults true). wardenUserId is a
+// recorded actor id (no FK, assumption A1).
+export const createBuildingSchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  type: hostelBuildingTypeEnum,
+  wardenUserId: hostelCuidLike.optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const patchBuildingSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    type: hostelBuildingTypeEnum.optional(),
+    wardenUserId: hostelCuidLike.nullish(),
+    isActive: z.boolean().optional(),
+  })
+  .strict();
+
+// 2. Rooms. capacity sanity-capped at 64; capacity-below-occupancy is a runtime
+// 409 (§B.5), not a schema error. status is a manual staff flag (§B.2 Table 2).
+export const createRoomSchema = z.object({
+  roomNumber: z.string().min(1, "Room number is required").max(32),
+  capacity: z.coerce.number().int().min(1).max(64),
+  floor: z.coerce.number().int().min(0).max(200).optional(),
+});
+
+export const patchRoomSchema = z
+  .object({
+    roomNumber: z.string().min(1).max(32).optional(),
+    capacity: z.coerce.number().int().min(1).optional(),
+    floor: z.coerce.number().int().min(0).max(200).nullish(),
+    status: hostelRoomStatusEnum.optional(),
+  })
+  .strict();
+
+// 3. Allocation / transfer / check / vacate.
+export const allocateSchema = z.object({
+  roomId: hostelCuidLike,
+  studentId: hostelCuidLike,
+});
+
+export const transferSchema = z.object({
+  toRoomId: hostelCuidLike,
+});
+
+export const checkEventSchema = z.object({
+  eventType: hostelCheckEventTypeEnum,
+  occurredAt: z.coerce.date().optional(), // defaults to now() in the handler
+});
+
+// 4. Leave. toDate >= fromDate (refine). applyLeaveSchema is used by the student
+// self-service POST /me/leave. Vacate + /me/leave/:id/cancel take NO body
+// (design-review NIT 5), so they have no schema here.
+export const applyLeaveSchema = z
+  .object({
+    fromDate: z.coerce.date(),
+    toDate: z.coerce.date(),
+    reason: z.string().min(1, "Reason is required").max(500),
+  })
+  .refine((v) => v.toDate >= v.fromDate, {
+    message: "toDate must be on or after fromDate",
+    path: ["toDate"],
+  });
+
+export const leaveDecisionSchema = z
+  .object({
+    decisionNote: z.string().max(500).optional(),
+  })
+  .strict();
+
+// 5. Maintenance.
+export const createMaintenanceSchema = z.object({
+  roomId: hostelCuidLike,
+  issue: z.string().min(1, "Issue is required").max(500),
+  assigneeUserId: hostelCuidLike.optional(),
+});
+
+export const maintenanceTransitionSchema = z.object({
+  toStatus: hostelMaintenanceTransitionTargetEnum,
+  resolutionNote: z.string().max(500).optional(),
+});
+
+// 6. List / report query schemas (page >= 1 default 1; pageSize 1..100
+// default 20; optional buildingId + status filters).
+export const hostelListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  buildingId: hostelCuidLike.optional(),
+  status: z.string().max(40).optional(),
+});
+
+export type HostelBuildingTypeValue = z.infer<typeof hostelBuildingTypeEnum>;
+export type HostelRoomStatusValue = z.infer<typeof hostelRoomStatusEnum>;
+export type HostelCheckEventTypeValue = z.infer<typeof hostelCheckEventTypeEnum>;
+export type HostelMaintenanceTransitionTargetValue = z.infer<
+  typeof hostelMaintenanceTransitionTargetEnum
+>;
+export type CreateBuildingInput = z.infer<typeof createBuildingSchema>;
+export type PatchBuildingInput = z.infer<typeof patchBuildingSchema>;
+export type CreateRoomInput = z.infer<typeof createRoomSchema>;
+export type PatchRoomInput = z.infer<typeof patchRoomSchema>;
+export type AllocateInput = z.infer<typeof allocateSchema>;
+export type TransferInput = z.infer<typeof transferSchema>;
+export type CheckEventInput = z.infer<typeof checkEventSchema>;
+export type ApplyLeaveInput = z.infer<typeof applyLeaveSchema>;
+export type LeaveDecisionInput = z.infer<typeof leaveDecisionSchema>;
+export type CreateMaintenanceInput = z.infer<typeof createMaintenanceSchema>;
+export type MaintenanceTransitionInput = z.infer<typeof maintenanceTransitionSchema>;
+export type HostelListQueryInput = z.infer<typeof hostelListQuerySchema>;
