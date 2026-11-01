@@ -614,6 +614,53 @@ export const PERMISSIONS = [
     description: "Student self-service: own allocation + room occupancy + apply/list/cancel own leave",
   },
 
+  // transport.* — Phase 9.4 Transport Management: vehicles, drivers, routes +
+  // stops, route assignments, capacity-safe student enrollment, vehicle
+  // maintenance, and schedules. Gated module (requireModuleActive("transport"))
+  // in addition to permission. The module registry key and the permission/audit
+  // KEY prefix are both `transport`. Separation of duties (design §D.1): STUDENT
+  // never gets a staff key; no staff role gets the SELF-scope transport.view_own.
+  {
+    key: "transport.vehicles.manage",
+    module: "transport",
+    description: "Create/update vehicles (staff)",
+  },
+  {
+    key: "transport.drivers.manage",
+    module: "transport",
+    description: "Create/update drivers (staff)",
+  },
+  {
+    key: "transport.routes.manage",
+    module: "transport",
+    description: "Create/update routes + stops (staff)",
+  },
+  {
+    key: "transport.assignments.manage",
+    module: "transport",
+    description: "Assign/end vehicle+driver to a route (staff)",
+  },
+  {
+    key: "transport.enrollments.manage",
+    module: "transport",
+    description: "Enroll/suspend/end a student on a route (staff)",
+  },
+  {
+    key: "transport.maintenance.manage",
+    module: "transport",
+    description: "Create/advance/resolve vehicle maintenance requests (staff)",
+  },
+  {
+    key: "transport.view",
+    module: "transport",
+    description: "Staff read of vehicles/drivers/routes/stops/assignments/enrollments/maintenance/schedules + reports/export",
+  },
+  {
+    key: "transport.view_own",
+    module: "transport",
+    description: "Student self-service read of OWN transport enrollment + route/stop/schedule",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -674,6 +721,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.results.view_own",
     "exams.reeval.request_own",
     "hostel.view_own",
+    "transport.view_own",
   ],
   FACULTY: [
     "classes.view_own",
@@ -737,6 +785,21 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
   // role bound to a user when their hr_employees row is created. Holds ONLY the
   // self-scope hr.view_own; never a staff .manage/.directory.view/.reports key.
   EMPLOYEE: ["hr.view_own"],
+  // TRANSPORT_MANAGER — additive platform template role (WARDEN/HR_MANAGER
+  // precedent); transport-scoped ONLY. A transport manager runs transport end to
+  // end within tenant (vehicles/drivers/routes, assignments, enrollment,
+  // maintenance, read) without inheriting institution-wide admin rights.
+  // Separation of duties: TRANSPORT_MANAGER never gets the STUDENT-only
+  // transport.view_own.
+  TRANSPORT_MANAGER: [
+    "transport.vehicles.manage",
+    "transport.drivers.manage",
+    "transport.routes.manage",
+    "transport.assignments.manage",
+    "transport.enrollments.manage",
+    "transport.maintenance.manage",
+    "transport.view",
+  ],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -860,6 +923,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "hostel.leave.manage",
     "hostel.maintenance.manage",
     "hostel.view",
+    "transport.vehicles.manage",
+    "transport.drivers.manage",
+    "transport.routes.manage",
+    "transport.assignments.manage",
+    "transport.enrollments.manage",
+    "transport.maintenance.manage",
+    "transport.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

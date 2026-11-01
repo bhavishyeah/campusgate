@@ -257,6 +257,29 @@ export const AUDIT_ACTIONS = [
   { key: "hostel.maintenance.created", module: "hostel", description: "Maintenance request created (OPEN)" },
   { key: "hostel.maintenance.transitioned", module: "hostel", description: "Maintenance request advanced ({from,to}) incl. CANCELLED/RESOLVED" },
   { key: "hostel.allocation.exported", module: "hostel", description: "Allocation list exported (XLSX)" },
+  // transport.* (18) — Phase 9.4 Transport Management mutations (past-tense). No
+  // migration mirror (validated only in recordAuditEvent). The permission/audit
+  // KEY prefix and the module registry key are both `transport`. DENIED decisions
+  // (capacity full / already-enrolled / no active assignment) reuse the
+  // corresponding mutation key with result DENIED.
+  { key: "transport.vehicle.created", module: "transport", description: "Transport vehicle created" },
+  { key: "transport.vehicle.updated", module: "transport", description: "Transport vehicle updated" },
+  { key: "transport.driver.created", module: "transport", description: "Transport driver created" },
+  { key: "transport.driver.updated", module: "transport", description: "Transport driver updated" },
+  { key: "transport.route.created", module: "transport", description: "Transport route created" },
+  { key: "transport.route.updated", module: "transport", description: "Transport route updated" },
+  { key: "transport.stop.created", module: "transport", description: "Transport route stop created" },
+  { key: "transport.stop.updated", module: "transport", description: "Transport route stop updated" },
+  { key: "transport.assignment.created", module: "transport", description: "Route assignment created (vehicle+driver -> route)" },
+  { key: "transport.assignment.ended", module: "transport", description: "Route assignment ended (ACTIVE -> ENDED)" },
+  { key: "transport.enrollment.created", module: "transport", description: "Student enrolled on a route (DENIED on capacity full / already enrolled / no active assignment)" },
+  { key: "transport.enrollment.suspended", module: "transport", description: "Transport enrollment suspended (ACTIVE -> SUSPENDED)" },
+  { key: "transport.enrollment.ended", module: "transport", description: "Transport enrollment ended (ACTIVE/SUSPENDED -> ENDED)" },
+  { key: "transport.schedule.created", module: "transport", description: "Route schedule created" },
+  { key: "transport.schedule.updated", module: "transport", description: "Route schedule updated" },
+  { key: "transport.maintenance.created", module: "transport", description: "Vehicle maintenance request created (OPEN)" },
+  { key: "transport.maintenance.transitioned", module: "transport", description: "Vehicle maintenance request advanced ({from,to}) incl. CANCELLED/RESOLVED" },
+  { key: "transport.roster.exported", module: "transport", description: "Transport roster exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

@@ -1729,3 +1729,201 @@ export type LeaveDecisionInput = z.infer<typeof leaveDecisionSchema>;
 export type CreateMaintenanceInput = z.infer<typeof createMaintenanceSchema>;
 export type MaintenanceTransitionInput = z.infer<typeof maintenanceTransitionSchema>;
 export type HostelListQueryInput = z.infer<typeof hostelListQuerySchema>;
+
+// ─── Phase 9.4 Transport Management ──────────────────────────────────────────
+// institutionId / userId / studentId (for /me/*) are NEVER accepted from the
+// body — always derived from the verified token / the caller's StudentProfile.
+// Enum members mirror the pg enums added by the 20270110000000_phase9_transport
+// migration (design §B.2). feeAmount / cost are int paise in the DB but cross
+// the JSON boundary as a decimal-digit STRING (money-as-string, design §D.1).
+
+export const transportVehicleTypeEnum = z.enum(["BUS", "VAN", "CAR", "OTHER"]);
+export const transportVehicleStatusEnum = z.enum(["ACTIVE", "INACTIVE", "MAINTENANCE"]);
+export const transportDriverStatusEnum = z.enum(["ACTIVE", "INACTIVE"]);
+export const transportRouteStatusEnum = z.enum(["ACTIVE", "INACTIVE"]);
+export const transportDayOfWeekEnum = z.enum(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]);
+// Only the forward reachable states a staff transition may target (never OPEN).
+export const transportMaintenanceTransitionTargetEnum = z.enum([
+  "IN_PROGRESS",
+  "RESOLVED",
+  "CANCELLED",
+]);
+
+const transportCuidLike = z.string().min(1).max(64);
+
+// feeAmount / cost money-as-string boundary: a non-empty decimal-digit string
+// that parses to int paise >= 0 (the DB stores Int).
+const transportMoneyString = z
+  .string()
+  .regex(/^\d+$/, "must be a non-negative integer number of paise");
+
+// 1. Vehicles. seatCapacity coerced int >= 1 (CHECK seatCapacity >= 1). status
+// optional (DB column defaults ACTIVE).
+export const createVehicleSchema = z.object({
+  registrationNo: z.string().min(1, "Registration number is required").max(32),
+  type: transportVehicleTypeEnum,
+  seatCapacity: z.coerce.number().int().min(1),
+  status: transportVehicleStatusEnum.optional(),
+});
+
+export const patchVehicleSchema = z
+  .object({
+    registrationNo: z.string().min(1).max(32).optional(),
+    type: transportVehicleTypeEnum.optional(),
+    seatCapacity: z.coerce.number().int().min(1).optional(),
+    status: transportVehicleStatusEnum.optional(),
+  })
+  .strict();
+
+// 2. Drivers. phone / userId optional (recorded actor id, no FK). status
+// optional (DB column defaults ACTIVE).
+export const createDriverSchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  licenseNo: z.string().min(1, "License number is required").max(64),
+  phone: z.string().min(1).max(32).optional(),
+  userId: transportCuidLike.optional(),
+  status: transportDriverStatusEnum.optional(),
+});
+
+export const patchDriverSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    licenseNo: z.string().min(1).max(64).optional(),
+    phone: z.string().min(1).max(32).nullish(),
+    userId: transportCuidLike.nullish(),
+    status: transportDriverStatusEnum.optional(),
+  })
+  .strict();
+
+// 3. Routes. feeAmount is the money-as-string boundary (optional/nullish on
+// patch). status optional (DB column defaults ACTIVE).
+export const createRouteSchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  code: z.string().min(1, "Code is required").max(32),
+  feeAmount: transportMoneyString.optional(),
+  status: transportRouteStatusEnum.optional(),
+});
+
+export const patchRouteSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    code: z.string().min(1).max(32).optional(),
+    feeAmount: transportMoneyString.nullish(),
+    status: transportRouteStatusEnum.optional(),
+  })
+  .strict();
+
+// 4. Route stops. sequence int >= 1 (CHECK sequence >= 1); pickupOffsetMinutes
+// optional int >= 0 (CHECK pickupOffsetMinutes >= 0). latitude / longitude are
+// optional floats.
+export const createStopSchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  sequence: z.coerce.number().int().min(1),
+  landmark: z.string().min(1).max(200).optional(),
+  latitude: z.coerce.number().optional(),
+  longitude: z.coerce.number().optional(),
+  pickupOffsetMinutes: z.coerce.number().int().min(0).optional(),
+});
+
+export const patchStopSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    sequence: z.coerce.number().int().min(1).optional(),
+    landmark: z.string().min(1).max(200).nullish(),
+    latitude: z.coerce.number().nullish(),
+    longitude: z.coerce.number().nullish(),
+    pickupOffsetMinutes: z.coerce.number().int().min(0).nullish(),
+  })
+  .strict();
+
+// 5. Route assignment (vehicle + driver -> route). effectiveTo optional; the
+// effectiveTo >= effectiveFrom CHECK is enforced in the DB.
+export const createAssignmentSchema = z.object({
+  vehicleId: transportCuidLike,
+  driverId: transportCuidLike,
+  effectiveFrom: z.coerce.date(),
+  effectiveTo: z.coerce.date().optional(),
+});
+
+// 6. Enrollment (capacity-safe, lock-keyed on the route in the handler).
+export const createEnrollmentSchema = z.object({
+  studentId: transportCuidLike,
+  routeId: transportCuidLike,
+  stopId: transportCuidLike,
+});
+
+// 7. Schedule. Exactly one of dayOfWeek / date (DB CHECK). departureTime
+// 0..1439; arrivalTime optional 0..1439. stopId optional.
+export const createScheduleSchema = z
+  .object({
+    stopId: transportCuidLike.optional(),
+    dayOfWeek: transportDayOfWeekEnum.optional(),
+    date: z.coerce.date().optional(),
+    departureTime: z.coerce.number().int().min(0).max(1439),
+    arrivalTime: z.coerce.number().int().min(0).max(1439).optional(),
+  })
+  .refine((v) => (v.dayOfWeek !== undefined) !== (v.date !== undefined), {
+    message: "exactly one of dayOfWeek or date is required",
+    path: ["dayOfWeek"],
+  });
+
+export const patchScheduleSchema = z
+  .object({
+    stopId: transportCuidLike.nullish(),
+    dayOfWeek: transportDayOfWeekEnum.nullish(),
+    date: z.coerce.date().nullish(),
+    departureTime: z.coerce.number().int().min(0).max(1439).optional(),
+    arrivalTime: z.coerce.number().int().min(0).max(1439).nullish(),
+  })
+  .strict();
+
+// 8. Maintenance. cost is the money-as-string boundary (optional). issue
+// non-empty. transition targets forward-only (never OPEN).
+export const createTransportMaintenanceSchema = z.object({
+  vehicleId: transportCuidLike,
+  issue: z.string().min(1, "Issue is required").max(500),
+  assigneeUserId: transportCuidLike.optional(),
+  cost: transportMoneyString.optional(),
+});
+
+export const transportMaintenanceTransitionSchema = z.object({
+  toStatus: transportMaintenanceTransitionTargetEnum,
+  cost: transportMoneyString.optional(),
+  resolutionNote: z.string().max(500).optional(),
+});
+
+// 9. List / report query (page >= 1 default 1; pageSize 1..100 default 20;
+// optional status / routeId / vehicleId filters).
+export const transportListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.string().max(40).optional(),
+  routeId: transportCuidLike.optional(),
+  vehicleId: transportCuidLike.optional(),
+});
+
+export type TransportVehicleTypeValue = z.infer<typeof transportVehicleTypeEnum>;
+export type TransportVehicleStatusValue = z.infer<typeof transportVehicleStatusEnum>;
+export type TransportDriverStatusValue = z.infer<typeof transportDriverStatusEnum>;
+export type TransportRouteStatusValue = z.infer<typeof transportRouteStatusEnum>;
+export type TransportDayOfWeekValue = z.infer<typeof transportDayOfWeekEnum>;
+export type TransportMaintenanceTransitionTargetValue = z.infer<
+  typeof transportMaintenanceTransitionTargetEnum
+>;
+export type CreateVehicleInput = z.infer<typeof createVehicleSchema>;
+export type PatchVehicleInput = z.infer<typeof patchVehicleSchema>;
+export type CreateDriverInput = z.infer<typeof createDriverSchema>;
+export type PatchDriverInput = z.infer<typeof patchDriverSchema>;
+export type CreateRouteInput = z.infer<typeof createRouteSchema>;
+export type PatchRouteInput = z.infer<typeof patchRouteSchema>;
+export type CreateStopInput = z.infer<typeof createStopSchema>;
+export type PatchStopInput = z.infer<typeof patchStopSchema>;
+export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
+export type CreateEnrollmentInput = z.infer<typeof createEnrollmentSchema>;
+export type CreateScheduleInput = z.infer<typeof createScheduleSchema>;
+export type PatchScheduleInput = z.infer<typeof patchScheduleSchema>;
+export type CreateTransportMaintenanceInput = z.infer<typeof createTransportMaintenanceSchema>;
+export type TransportMaintenanceTransitionInput = z.infer<
+  typeof transportMaintenanceTransitionSchema
+>;
+export type TransportListQueryInput = z.infer<typeof transportListQuerySchema>;
