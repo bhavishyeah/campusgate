@@ -1390,3 +1390,214 @@ export type CreateFacultyQualificationInput = z.infer<typeof createFacultyQualif
 export type PatchFacultyQualificationInput = z.infer<typeof patchFacultyQualificationSchema>;
 export type PutWorkloadPolicyInput = z.infer<typeof putWorkloadPolicySchema>;
 export type PatchFacultyWorkloadInput = z.infer<typeof patchFacultyWorkloadSchema>;
+
+// ─── Phase 9.2 HR Management ─────────────────────────────────────────────────
+// institutionId / userId (the actor) are NEVER accepted from the body — always
+// from the verified token. userId (the employee's referenced user), departmentId,
+// employeeId, shiftId, contractId, appId come from the body/path and are
+// existence-validated by composite FK + in-handler lookup, not trusted from
+// input. salaryAmount is a stored BIGINT minor-unit metadata field — NO fees
+// integration. `days` is derived server-side from start/end (inclusive) and is
+// NEVER trusted from the client. Enums mirror the Prisma/pg enums (§4.7).
+
+export const hrEmploymentTypeEnum = z.enum(["PERMANENT", "CONTRACT", "PART_TIME"]);
+export const hrEmployeeStatusEnum = z.enum(["ACTIVE", "INACTIVE", "TERMINATED"]);
+export const hrContractTypeEnum = z.enum(["PERMANENT", "FIXED_TERM", "PROBATION", "CONSULTANT"]);
+export const hrLeaveTypeEnum = z.enum(["CASUAL", "SICK", "EARNED", "UNPAID", "OTHER"]);
+export const hrAccrualRuleEnum = z.enum(["ANNUAL_LUMP_SUM", "MONTHLY_ACCRUAL"]);
+export const hrAttendanceStatusEnum = z.enum(["PRESENT", "ABSENT", "ON_LEAVE", "HALF_DAY"]);
+export const hrAttendanceSourceEnum = z.enum(["MANUAL", "DERIVED"]);
+
+// ISO calendar-date (YYYY-MM-DD). Accepts a full ISO datetime too, but the
+// :date path segment uses the strict YYYY-MM-DD form below.
+const hrIsoDateSchema = z
+  .string()
+  .refine((v) => !Number.isNaN(Date.parse(v)), { message: "invalid ISO date" });
+
+// Strict YYYY-MM-DD path segment (route #19 PATCH .../attendance/:date).
+export const hrDatePathSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+  .refine((v) => !Number.isNaN(Date.parse(v)), { message: "invalid calendar date" });
+
+// Optional metadata JSON object, size-bounded to 16 KB serialized.
+const hrMetadataSchema = z
+  .record(z.unknown())
+  .refine((v) => JSON.stringify(v).length <= 16 * 1024, {
+    message: "metadata exceeds 16KB",
+  });
+
+// salaryAmount: optional integer (BIGINT minor units) >= 0. Bounded to the safe
+// integer range so it round-trips through JSON before BigInt coercion.
+const hrSalaryAmountSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+// ── Employees (routes #1 / #2) ──
+export const createEmployeeSchema = z.object({
+  userId: z.string().min(1, "User is required"),
+  employeeNo: z.string().trim().min(1).max(64),
+  designation: z.string().min(1).max(200).optional(),
+  employmentType: hrEmploymentTypeEnum,
+  departmentId: z.string().min(1).optional(),
+  joiningDate: hrIsoDateSchema,
+  status: hrEmployeeStatusEnum.optional(),
+});
+
+// All fields optional; at least one must be present. userId is immutable (the
+// employee→user binding never changes) so it is NOT patchable.
+export const patchEmployeeSchema = z
+  .object({
+    employeeNo: z.string().trim().min(1).max(64).optional(),
+    designation: z.string().min(1).max(200).optional(),
+    employmentType: hrEmploymentTypeEnum.optional(),
+    departmentId: z.string().min(1).nullable().optional(),
+    joiningDate: hrIsoDateSchema.optional(),
+    status: hrEmployeeStatusEnum.optional(),
+  })
+  .refine(
+    (v) =>
+      v.employeeNo !== undefined ||
+      v.designation !== undefined ||
+      v.employmentType !== undefined ||
+      v.departmentId !== undefined ||
+      v.joiningDate !== undefined ||
+      v.status !== undefined,
+    { message: "no updatable fields provided" },
+  );
+
+// ── Contracts (routes #5 / #6) ──
+export const createContractSchema = z
+  .object({
+    contractType: hrContractTypeEnum,
+    startDate: hrIsoDateSchema,
+    endDate: hrIsoDateSchema.optional(),
+    termsMetadata: hrMetadataSchema.optional(),
+    salaryAmount: hrSalaryAmountSchema.optional(),
+    currency: z.literal("INR").default("INR"),
+  })
+  .refine((v) => v.endDate === undefined || Date.parse(v.endDate) >= Date.parse(v.startDate), {
+    message: "endDate must be on or after startDate",
+    path: ["endDate"],
+  });
+
+// Supersede creates a NEW ACTIVE contract version (same shape as create) and
+// flips the prior row to SUPERSEDED in the same tx (§4.2).
+export const supersedeContractSchema = createContractSchema;
+
+// ── Leave policies (route #9 — PUT /leave-policies/:leaveType) ──
+// leaveType comes from the path; the body carries the policy config.
+export const putLeavePolicySchema = z.object({
+  annualQuotaDays: z.number().int().min(0),
+  accrualRule: hrAccrualRuleEnum,
+  active: z.boolean().optional(),
+});
+
+// ── Leave applications (routes #11 staff / #28 self) ──
+// `days` is derived server-side (inclusive endpoints) and NEVER trusted from the
+// client; startDate/endDate must share one calendar year (multi-year rejected).
+export const createLeaveApplicationSchema = z
+  .object({
+    leaveType: hrLeaveTypeEnum,
+    startDate: hrIsoDateSchema,
+    endDate: hrIsoDateSchema,
+    reason: z.string().min(1).max(2000),
+  })
+  .refine((v) => Date.parse(v.endDate) >= Date.parse(v.startDate), {
+    message: "endDate must be on or after startDate",
+    path: ["endDate"],
+  })
+  .refine((v) => new Date(v.startDate).getUTCFullYear() === new Date(v.endDate).getUTCFullYear(), {
+    message: "leave startDate and endDate must share one calendar year",
+    path: ["endDate"],
+  });
+
+// Approve / reject carry an optional review note (routes #12 / #13).
+export const reviewLeaveApplicationSchema = z.object({
+  reviewNote: z.string().min(1).max(2000).optional(),
+});
+
+// ── Shifts (routes #16a POST / #16b PATCH) ──
+export const putShiftSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  startMinute: z.number().int().min(0).max(1439),
+  endMinute: z.number().int().min(0).max(1439),
+  active: z.boolean().optional(),
+});
+
+// PATCH /shifts/:id — all fields optional, at least one present.
+export const patchShiftSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    startMinute: z.number().int().min(0).max(1439).optional(),
+    endMinute: z.number().int().min(0).max(1439).optional(),
+    active: z.boolean().optional(),
+  })
+  .refine(
+    (v) =>
+      v.name !== undefined ||
+      v.startMinute !== undefined ||
+      v.endMinute !== undefined ||
+      v.active !== undefined,
+    { message: "no updatable fields provided" },
+  );
+
+// ── Employee attendance (routes #18 record / #19 correct) ──
+export const recordAttendanceSchema = z.object({
+  attendanceDate: hrIsoDateSchema,
+  status: hrAttendanceStatusEnum,
+  source: hrAttendanceSourceEnum.optional(),
+  shiftId: z.string().min(1).optional(),
+});
+
+// Correction (PATCH .../attendance/:date) — the date is in the path; the body
+// carries the new status (+ optional shift / reason / metadata).
+export const correctAttendanceSchema = z.object({
+  status: hrAttendanceStatusEnum,
+  source: hrAttendanceSourceEnum.optional(),
+  shiftId: z.string().min(1).nullable().optional(),
+  reason: z.string().min(1).max(2000).optional(),
+  metadata: hrMetadataSchema.optional(),
+});
+
+// ── Leave-balance query (routes #15 staff / #27b self) ──
+// year optional int bounded 2000..2100, default current calendar year. The
+// handler derives referenceDate = min(today, Dec 31 of year) server-side.
+export const leaveBalanceQuerySchema = z.object({
+  year: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+
+// ── Report date-range query (routes #21–#24) ──
+// from/to ISO dates, to >= from, range <= 366 days.
+export const hrReportRangeQuerySchema = z
+  .object({
+    from: hrIsoDateSchema,
+    to: hrIsoDateSchema,
+  })
+  .refine((v) => Date.parse(v.to) >= Date.parse(v.from), {
+    message: "to must be on or after from",
+    path: ["to"],
+  })
+  .refine(
+    (v) => (Date.parse(v.to) - Date.parse(v.from)) / (24 * 60 * 60 * 1000) <= 366,
+    { message: "range must not exceed 366 days", path: ["to"] },
+  );
+
+export type HrEmploymentTypeValue = z.infer<typeof hrEmploymentTypeEnum>;
+export type HrEmployeeStatusValue = z.infer<typeof hrEmployeeStatusEnum>;
+export type HrContractTypeValue = z.infer<typeof hrContractTypeEnum>;
+export type HrLeaveTypeValue = z.infer<typeof hrLeaveTypeEnum>;
+export type HrAccrualRuleValue = z.infer<typeof hrAccrualRuleEnum>;
+export type HrAttendanceStatusValue = z.infer<typeof hrAttendanceStatusEnum>;
+export type HrAttendanceSourceValue = z.infer<typeof hrAttendanceSourceEnum>;
+export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
+export type PatchEmployeeInput = z.infer<typeof patchEmployeeSchema>;
+export type CreateContractInput = z.infer<typeof createContractSchema>;
+export type SupersedeContractInput = z.infer<typeof supersedeContractSchema>;
+export type PutLeavePolicyInput = z.infer<typeof putLeavePolicySchema>;
+export type CreateLeaveApplicationInput = z.infer<typeof createLeaveApplicationSchema>;
+export type ReviewLeaveApplicationInput = z.infer<typeof reviewLeaveApplicationSchema>;
+export type PutShiftInput = z.infer<typeof putShiftSchema>;
+export type PatchShiftInput = z.infer<typeof patchShiftSchema>;
+export type RecordAttendanceInput = z.infer<typeof recordAttendanceSchema>;
+export type CorrectAttendanceInput = z.infer<typeof correctAttendanceSchema>;
+export type LeaveBalanceQueryInput = z.infer<typeof leaveBalanceQuerySchema>;
+export type HrReportRangeQueryInput = z.infer<typeof hrReportRangeQuerySchema>;

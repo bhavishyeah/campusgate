@@ -218,6 +218,25 @@ export const AUDIT_ACTIONS = [
   { key: "faculty.workload.overallocated", module: "faculty_management", description: "Faculty workload written over the policy max with an explicit override + reason" },
   { key: "faculty.workload_policy.updated", module: "faculty_management", description: "Per-institution faculty workload policy upserted" },
   { key: "faculty.teaching_history.reconciled", module: "faculty_management", description: "Teaching-history ledger reconciled from FacultyAssignment rows (append-only)" },
+  // hr.* (15) — Phase 9.2 HR Management mutations (past-tense). No migration
+  // mirror (validated only in recordAuditEvent). The permission/audit KEY prefix
+  // is hr.*; the module registry key is hr_management. Every key is emitted by a
+  // route (no dead keys); DENIED branches reuse the same key with result "DENIED".
+  { key: "hr.employee.created", module: "hr_management", description: "Employee record created (also binds the target user to the EMPLOYEE role in-tx)" },
+  { key: "hr.employee.updated", module: "hr_management", description: "Employee record updated" },
+  { key: "hr.contract.created", module: "hr_management", description: "Employment contract created (incl. the new version of a supersede)" },
+  { key: "hr.contract.superseded", module: "hr_management", description: "Prior contract flipped ACTIVE -> SUPERSEDED on replacement" },
+  { key: "hr.contract.ended", module: "hr_management", description: "Contract flipped ACTIVE -> ENDED" },
+  { key: "hr.leave_policy.updated", module: "hr_management", description: "Leave policy upserted (per institution + leave type)" },
+  { key: "hr.leave.requested", module: "hr_management", description: "Leave application created (REQUESTED) by staff or self-service" },
+  { key: "hr.leave.approved", module: "hr_management", description: "Leave application REQUESTED -> APPROVED (or DENIED on balance)" },
+  { key: "hr.leave.rejected", module: "hr_management", description: "Leave application REQUESTED -> REJECTED" },
+  { key: "hr.leave.cancelled", module: "hr_management", description: "Leave application REQUESTED -> CANCELLED (self-cancel)" },
+  { key: "hr.shift.created", module: "hr_management", description: "Shift definition created" },
+  { key: "hr.shift.updated", module: "hr_management", description: "Shift definition updated" },
+  { key: "hr.attendance.recorded", module: "hr_management", description: "Employee attendance recorded (+ append-only history row)" },
+  { key: "hr.attendance.corrected", module: "hr_management", description: "Employee attendance corrected (+ append-only history row)" },
+  { key: "hr.reports.exported", module: "hr_management", description: "HR report exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

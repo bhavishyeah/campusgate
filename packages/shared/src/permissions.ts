@@ -532,6 +532,50 @@ export const PERMISSIONS = [
     description: "Faculty self-service read of OWN profile/workload/history/qualifications",
   },
 
+  // hr.* — Phase 9.2 HR Management: employees, contracts, leave (policies +
+  // applications + balance engine), employee attendance + shifts, reports. Gated
+  // module (requireModuleActive("hr_management")) in addition to permission. The
+  // module registry key is `hr_management`; the permission/audit KEY prefix is
+  // `hr.*` (the exams examinations->exams.* / faculty faculty_management->faculty.*
+  // precedent). Separation of duties (design §B.9): STUDENT/FACULTY never get an
+  // hr.* key; the self-scope hr.view_own binds to the NEW additive EMPLOYEE role
+  // ONLY; staff roles (ADMIN, HR_MANAGER) never get hr.view_own.
+  {
+    key: "hr.employees.manage",
+    module: "hr_management",
+    description: "Create/update employee records (staff)",
+  },
+  {
+    key: "hr.contracts.manage",
+    module: "hr_management",
+    description: "Create/supersede/end employment contracts (staff)",
+  },
+  {
+    key: "hr.leave.manage",
+    module: "hr_management",
+    description: "Manage leave policies + approve/reject leave applications (staff)",
+  },
+  {
+    key: "hr.attendance.manage",
+    module: "hr_management",
+    description: "Manage shifts + record/correct employee attendance (staff)",
+  },
+  {
+    key: "hr.reports.view",
+    module: "hr_management",
+    description: "Read + export (XLSX) leave/attendance reports (staff)",
+  },
+  {
+    key: "hr.directory.view",
+    module: "hr_management",
+    description: "Read any employee's records, contracts, leave, attendance, config (staff)",
+  },
+  {
+    key: "hr.view_own",
+    module: "hr_management",
+    description: "Employee self-service read of OWN employment/contracts/leave/attendance; self-apply/cancel leave",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -627,6 +671,21 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "admissions.enroll",
   ],
   APPLICANT: ["admissions.view_own"],
+  // HR_MANAGER — additive platform template role (ACCOUNTANT/LIBRARIAN/
+  // ADMISSION_OFFICER precedent); the six HR staff keys ONLY (full-tenant HR
+  // visibility + management). Does NOT hold the self-scope hr.view_own.
+  HR_MANAGER: [
+    "hr.employees.manage",
+    "hr.contracts.manage",
+    "hr.leave.manage",
+    "hr.attendance.manage",
+    "hr.reports.view",
+    "hr.directory.view",
+  ],
+  // EMPLOYEE — additive platform template role (design §3.3): the HR self-service
+  // role bound to a user when their hr_employees row is created. Holds ONLY the
+  // self-scope hr.view_own; never a staff .manage/.directory.view/.reports key.
+  EMPLOYEE: ["hr.view_own"],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -739,6 +798,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "faculty.workload.manage",
     "faculty.teaching_history.manage",
     "faculty.directory.view",
+    "hr.employees.manage",
+    "hr.contracts.manage",
+    "hr.leave.manage",
+    "hr.attendance.manage",
+    "hr.reports.view",
+    "hr.directory.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

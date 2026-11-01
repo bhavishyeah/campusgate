@@ -318,6 +318,13 @@ model Institution {
   facultyWorkloadPolicies      FacultyWorkloadPolicy[]
   facultyWorkloads             FacultyWorkload[]
   facultyTeachingHistory       FacultyTeachingHistory[]
+  hrEmployees                  HrEmployee[]
+  hrContracts                  HrContract[]
+  hrLeavePolicies              HrLeavePolicy[]
+  hrLeaveApplications          HrLeaveApplication[]
+  hrShifts                     HrShift[]
+  hrEmployeeAttendance         HrEmployeeAttendance[]
+  hrEmployeeAttendanceHistory  HrEmployeeAttendanceHistory[]
 
   @@map("institutions")
 }
@@ -338,6 +345,7 @@ model Department {
   programs            Program[]
   academicCalendarDays AcademicCalendarDay[]
   facultyProfiles      FacultyProfile[]
+  hrEmployees          HrEmployee[]
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -384,6 +392,7 @@ model User {
   supportGrantsRevoked   SupportGrant[] @relation("SupportGrantRevoker")
   facultyProfile         FacultyProfile?
   applications           Application[]  @relation("ApplicationApplicant")
+  hrEmployees            HrEmployee[]
 
   @@unique([id, institutionId])
   @@map("users")
@@ -3041,4 +3050,263 @@ enum FacultyQualificationKind {
 enum FacultyTeachingHistoryChangeType {
   ASSIGNED
   ENDED
+}
+
+// ─── PHASE 9.2 HR MANAGEMENT ────────────────────────────────────────────────
+// Eight tenant-owned tables (design PART B §4). Prisma models reference single
+// PKs; the composite same-tenant FK VARIANTS, CHECKs, RLS policies and column-
+// guard / append-only triggers are raw SQL in the migration (the
+// faculty_management convention). institutionId / (id, institutionId) /
+// (institutionId) index on every table.
+
+model HrEmployee {
+  id              String             @id @default(cuid())
+  institutionId   String
+  institution     Institution        @relation(fields: [institutionId], references: [id])
+  userId          String
+  user            User               @relation(fields: [userId], references: [id])
+  employeeNo      String // unique per tenant
+  designation     String?
+  employmentType  HrEmploymentType
+  departmentId    String?
+  department      Department?        @relation(fields: [departmentId], references: [id])
+  joiningDate     DateTime
+  status          HrEmployeeStatus   @default(ACTIVE)
+  createdByUserId String // recorded actor id, NO FK
+  updatedByUserId String // recorded actor id, NO FK
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  contracts  HrContract[]
+  leaveApps  HrLeaveApplication[]
+  attendance HrEmployeeAttendance[]
+
+  // Mutable (editable-with-audit); no trigger. Composite same-tenant FKs
+  // (institutionId, userId)->users, (institutionId, departmentId)->departments
+  // and CHECK char_length(employeeNo) >= 1 are raw SQL in the migration.
+  @@unique([institutionId, userId]) // one employee per user per tenant
+  @@unique([institutionId, employeeNo]) // employeeNo unique per tenant
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, departmentId])
+  @@map("hr_employees")
+}
+
+model HrContract {
+  id                   String             @id @default(cuid())
+  institutionId        String
+  institution          Institution        @relation(fields: [institutionId], references: [id])
+  employeeId           String
+  employee             HrEmployee         @relation(fields: [employeeId], references: [id])
+  contractType         HrContractType
+  startDate            DateTime
+  endDate              DateTime?
+  termsMetadata        Json?
+  salaryAmount         BigInt? // minor units, metadata only — NO fees integration
+  currency             String             @default("INR")
+  status               HrContractStatus   @default(ACTIVE)
+  supersedesContractId String? // recorded id, NO FK (the decoupling precedent)
+  createdByUserId      String // recorded actor id, NO FK
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  // Versioned-append with a column guard (§4.2): identity/economic columns
+  // frozen; status forward-only ACTIVE->ENDED|SUPERSEDED; no DELETE. Composite
+  // same-tenant FK (institutionId, employeeId)->hr_employees, CHECKs
+  // (currency = 'INR'; salaryAmount IS NULL OR salaryAmount >= 0) and the
+  // hr_contracts_guard() trigger are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, employeeId])
+  @@map("hr_contracts")
+}
+
+model HrLeavePolicy {
+  id              String        @id @default(cuid())
+  institutionId   String
+  institution     Institution   @relation(fields: [institutionId], references: [id])
+  leaveType       HrLeaveType
+  annualQuotaDays Int
+  accrualRule     HrAccrualRule @default(ANNUAL_LUMP_SUM)
+  active          Boolean       @default(true)
+  updatedByUserId String // recorded actor id, NO FK
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Mutable config (editable-with-audit); no trigger. CHECK annualQuotaDays >= 0
+  // is raw SQL in the migration.
+  @@unique([institutionId, leaveType]) // one policy per leave type per tenant
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("hr_leave_policies")
+}
+
+model HrLeaveApplication {
+  id               String                   @id @default(cuid())
+  institutionId    String
+  institution      Institution              @relation(fields: [institutionId], references: [id])
+  employeeId       String
+  employee         HrEmployee               @relation(fields: [employeeId], references: [id])
+  leaveType        HrLeaveType
+  startDate        DateTime
+  endDate          DateTime
+  days             Int // derived server-side (inclusive endpoints)
+  periodYear       Int // calendar year of startDate (accrual period)
+  reason           String
+  status           HrLeaveApplicationStatus @default(REQUESTED)
+  reviewedByUserId String? // recorded actor id, NO FK
+  reviewedAt       DateTime?
+  reviewNote       String?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  // Forward-only lifecycle via a column guard (§4.3): immutable columns frozen;
+  // REQUESTED->APPROVED|REJECTED|CANCELLED only; no DELETE. Composite same-tenant
+  // FK (institutionId, employeeId)->hr_employees, CHECKs (days >= 1;
+  // endDate >= startDate; char_length(reason) >= 1) and the
+  // hr_leave_applications_guard() trigger are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, employeeId])
+  @@index([institutionId, employeeId, leaveType, periodYear]) // balance aggregate
+  @@index([institutionId, status]) // staff queue by status
+  @@map("hr_leave_applications")
+}
+
+model HrShift {
+  id              String                 @id @default(cuid())
+  institutionId   String
+  institution     Institution            @relation(fields: [institutionId], references: [id])
+  name            String
+  startMinute     Int
+  endMinute       Int
+  active          Boolean                @default(true)
+  updatedByUserId String // recorded actor id, NO FK
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  attendance HrEmployeeAttendance[]
+
+  // Mutable config (editable-with-audit); no trigger. CHECK startMinute/endMinute
+  // in 0..1439 is raw SQL in the migration.
+  @@unique([institutionId, name]) // one shift name per tenant
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("hr_shifts")
+}
+
+model HrEmployeeAttendance {
+  id               String                        @id @default(cuid())
+  institutionId    String
+  institution      Institution                   @relation(fields: [institutionId], references: [id])
+  employeeId       String
+  employee         HrEmployee                    @relation(fields: [employeeId], references: [id])
+  attendanceDate   DateTime                      @db.Date
+  status           HrAttendanceStatus
+  source           HrAttendanceSource            @default(MANUAL)
+  shiftId          String?
+  shift            HrShift?                      @relation(fields: [shiftId], references: [id])
+  recordedByUserId String // recorded actor id, NO FK
+  createdAt        DateTime                      @default(now())
+  updatedAt        DateTime                      @updatedAt
+
+  history HrEmployeeAttendanceHistory[]
+
+  // Mutable current state (editable-with-audit); correction writes an immutable
+  // history row. No trigger on this table. Composite same-tenant FKs
+  // (institutionId, employeeId)->hr_employees, (institutionId, shiftId)->hr_shifts
+  // are raw SQL in the migration.
+  @@unique([institutionId, employeeId, attendanceDate]) // one record per employee per day
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, employeeId])
+  @@map("hr_employee_attendance")
+}
+
+model HrEmployeeAttendanceHistory {
+  id                   String                          @id @default(cuid())
+  institutionId        String
+  institution          Institution                     @relation(fields: [institutionId], references: [id])
+  employeeAttendanceId String
+  employeeAttendance   HrEmployeeAttendance            @relation(fields: [employeeAttendanceId], references: [id])
+  changeType           HrAttendanceHistoryChangeType
+  previousStatus       HrAttendanceStatus?
+  newStatus            HrAttendanceStatus
+  actorUserId          String // recorded actor id, NO FK
+  reason               String?
+  metadata             Json?
+  createdAt            DateTime                        @default(now())
+
+  // STRICTLY append-only (the attendance_record_history precedent): createdAt
+  // only (no updatedAt). Append-only RLS pair {tenant_isolation_select,
+  // hr_employee_attendance_history_tenant_insert} + the unconditional-raise
+  // hr_employee_attendance_history_append_only() BEFORE UPDATE OR DELETE trigger +
+  // composite same-tenant FK (institutionId, employeeAttendanceId)->
+  // hr_employee_attendance are raw SQL in the migration.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, employeeAttendanceId])
+  @@map("hr_employee_attendance_history")
+}
+
+enum HrEmploymentType {
+  PERMANENT
+  CONTRACT
+  PART_TIME
+}
+
+enum HrEmployeeStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum HrContractType {
+  PERMANENT
+  FIXED_TERM
+  PROBATION
+  CONSULTANT
+}
+
+enum HrContractStatus {
+  ACTIVE
+  ENDED
+  SUPERSEDED
+}
+
+enum HrLeaveType {
+  CASUAL
+  SICK
+  EARNED
+  UNPAID
+  OTHER
+}
+
+enum HrAccrualRule {
+  ANNUAL_LUMP_SUM
+  MONTHLY_ACCRUAL
+}
+
+enum HrLeaveApplicationStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HrAttendanceStatus {
+  PRESENT
+  ABSENT
+  ON_LEAVE
+  HALF_DAY
+}
+
+enum HrAttendanceSource {
+  MANUAL
+  DERIVED
+}
+
+enum HrAttendanceHistoryChangeType {
+  RECORDED
+  CORRECTED
 }
