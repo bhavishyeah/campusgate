@@ -331,6 +331,14 @@ model Institution {
   hostelCheckEvents            HostelCheckEvent[]
   hostelLeaveApplications      HostelLeaveApplication[]
   hostelMaintenanceRequests    HostelMaintenanceRequest[]
+  transportVehicles                 TransportVehicle[]
+  transportDrivers                  TransportDriver[]
+  transportRoutes                   TransportRoute[]
+  transportRouteStops               TransportRouteStop[]
+  transportRouteAssignments         TransportRouteAssignment[]
+  transportEnrollments              TransportEnrollment[]
+  transportVehicleMaintenanceRequests TransportVehicleMaintenanceRequest[]
+  transportRouteSchedules           TransportRouteSchedule[]
 
   @@map("institutions")
 }
@@ -535,6 +543,7 @@ model StudentProfile {
   hostelRoomAllocations   HostelRoomAllocation[]
   hostelCheckEvents       HostelCheckEvent[]
   hostelLeaveApplications HostelLeaveApplication[]
+  transportEnrollments    TransportEnrollment[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -3522,4 +3531,275 @@ enum HostelMaintenanceStatus {
   IN_PROGRESS
   RESOLVED
   CANCELLED
+}
+
+
+// ─── TRANSPORT MANAGEMENT (Phase 9.4, tenant-owned) ─────────────────────────
+// Backend-only gated "booster" module (design §B). Eight tenant-owned tables.
+// transport_enrollments anchors on StudentProfile via a composite same-tenant
+// FK. Prisma models carry ONLY the field/index shape; composite same-tenant
+// FKs, RLS (ENABLE+FORCE), CHECKs, the forward-only column-guard triggers, the
+// campass_app GRANT refresh, and the catalogue seed all live in the
+// hand-authored migration 20270110000000_phase9_transport. Actor/provenance ids
+// (createdByUserId, reportedByUserId, assigneeUserId, userId) are recorded ids
+// with NO FK (the hostel/faculty createdByUserId precedent).
+
+model TransportVehicle {
+  id              String                 @id @default(cuid())
+  institutionId   String
+  institution     Institution            @relation(fields: [institutionId], references: [id])
+  registrationNo  String // CHECK char_length(registrationNo) >= 1 (raw SQL)
+  type            TransportVehicleType
+  seatCapacity    Int // CHECK seatCapacity >= 1 (raw SQL)
+  status          TransportVehicleStatus @default(ACTIVE)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  routeAssignments    TransportRouteAssignment[]
+  maintenanceRequests TransportVehicleMaintenanceRequest[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, registrationNo) + CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("transport_vehicles")
+}
+
+model TransportDriver {
+  id              String                @id @default(cuid())
+  institutionId   String
+  institution     Institution           @relation(fields: [institutionId], references: [id])
+  name            String // CHECK char_length(name) >= 1 (raw SQL)
+  licenseNo       String // CHECK char_length(licenseNo) >= 1 (raw SQL)
+  phone           String?
+  userId          String? // recorded actor id, NO FK
+  status          TransportDriverStatus @default(ACTIVE)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  routeAssignments TransportRouteAssignment[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, licenseNo) + CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("transport_drivers")
+}
+
+model TransportRoute {
+  id              String               @id @default(cuid())
+  institutionId   String
+  institution     Institution          @relation(fields: [institutionId], references: [id])
+  name            String // CHECK char_length(name) >= 1 (raw SQL)
+  code            String // CHECK char_length(code) >= 1 (raw SQL)
+  status          TransportRouteStatus @default(ACTIVE)
+  feeAmount       Int? // int paise; CHECK feeAmount >= 0 (raw SQL)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  stops           TransportRouteStop[]
+  assignments     TransportRouteAssignment[]
+  enrollments     TransportEnrollment[]
+  schedules       TransportRouteSchedule[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, code) + CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("transport_routes")
+}
+
+model TransportRouteStop {
+  id                  String         @id @default(cuid())
+  institutionId       String
+  institution         Institution    @relation(fields: [institutionId], references: [id])
+  routeId             String
+  route               TransportRoute @relation(fields: [routeId], references: [id])
+  name                String // CHECK char_length(name) >= 1 (raw SQL)
+  sequence            Int // CHECK sequence >= 1 (raw SQL)
+  landmark            String?
+  latitude            Float?
+  longitude           Float?
+  pickupOffsetMinutes Int? // CHECK pickupOffsetMinutes >= 0 (raw SQL)
+  createdByUserId     String // recorded actor id, NO FK
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  enrollments TransportEnrollment[]
+  schedules   TransportRouteSchedule[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, routeId, sequence) + composite same-tenant FK
+  // (institutionId, routeId)->transport_routes + CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, routeId])
+  @@map("transport_route_stops")
+}
+
+model TransportRouteAssignment {
+  id              String                   @id @default(cuid())
+  institutionId   String
+  institution     Institution              @relation(fields: [institutionId], references: [id])
+  routeId         String
+  route           TransportRoute           @relation(fields: [routeId], references: [id])
+  vehicleId       String
+  vehicle         TransportVehicle         @relation(fields: [vehicleId], references: [id])
+  driverId        String
+  driver          TransportDriver          @relation(fields: [driverId], references: [id])
+  effectiveFrom   DateTime
+  effectiveTo     DateTime? // CHECK effectiveTo IS NULL OR effectiveTo >= effectiveFrom (raw SQL)
+  status          TransportAssignmentStatus @default(ACTIVE)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  // Forward-only lifecycle (ACTIVE->ENDED). Standard RLS pair + column-guard
+  // trigger transport_route_assignments_guard + composite same-tenant FKs
+  // ((institutionId, routeId)->transport_routes, (institutionId, vehicleId)->
+  // transport_vehicles, (institutionId, driverId)->transport_drivers) + the
+  // partial unique one-ACTIVE-per-route are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, routeId])
+  @@index([institutionId, vehicleId])
+  @@map("transport_route_assignments")
+}
+
+model TransportEnrollment {
+  id              String                    @id @default(cuid())
+  institutionId   String
+  institution     Institution               @relation(fields: [institutionId], references: [id])
+  studentId       String
+  student         StudentProfile            @relation(fields: [studentId], references: [id])
+  routeId         String
+  route           TransportRoute            @relation(fields: [routeId], references: [id])
+  stopId          String
+  stop            TransportRouteStop        @relation(fields: [stopId], references: [id])
+  status          TransportEnrollmentStatus @default(ACTIVE)
+  enrolledAt      DateTime
+  endedAt         DateTime? // set on ENDED
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  // Forward-only lifecycle (ACTIVE->SUSPENDED|ENDED, SUSPENDED->ENDED). Standard
+  // RLS pair + column-guard trigger transport_enrollments_guard + composite
+  // same-tenant FKs ((institutionId, studentId)->student_profiles,
+  // (institutionId, routeId)->transport_routes, (institutionId, stopId)->
+  // transport_route_stops) + the partial unique one-ACTIVE-per-student-route
+  // are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, routeId])
+  @@index([institutionId, studentId])
+  @@map("transport_enrollments")
+}
+
+model TransportVehicleMaintenanceRequest {
+  id               String                     @id @default(cuid())
+  institutionId    String
+  institution      Institution                @relation(fields: [institutionId], references: [id])
+  vehicleId        String
+  vehicle          TransportVehicle           @relation(fields: [vehicleId], references: [id])
+  issue            String // CHECK char_length(issue) >= 1 (raw SQL)
+  status           TransportMaintenanceStatus @default(OPEN)
+  assigneeUserId   String? // recorded actor id, NO FK
+  cost             Int? // int paise; CHECK cost >= 0 (raw SQL)
+  reportedByUserId String // recorded actor id = creator (NO createdByUserId), NO FK
+  resolutionNote   String?
+  resolvedAt       DateTime? // set on RESOLVED
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  // Forward-only lifecycle (OPEN->IN_PROGRESS->RESOLVED, OPEN|IN_PROGRESS->
+  // CANCELLED). DELIBERATELY NO createdByUserId — reportedByUserId is the creator
+  // actor, mirroring hostel_maintenance_requests. Standard RLS pair + column-guard
+  // trigger transport_vehicle_maintenance_requests_guard + composite same-tenant
+  // FK (institutionId, vehicleId)->transport_vehicles are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, vehicleId])
+  @@index([institutionId, status])
+  @@map("transport_vehicle_maintenance_requests")
+}
+
+model TransportRouteSchedule {
+  id              String              @id @default(cuid())
+  institutionId   String
+  institution     Institution         @relation(fields: [institutionId], references: [id])
+  routeId         String
+  route           TransportRoute      @relation(fields: [routeId], references: [id])
+  stopId          String?
+  stop            TransportRouteStop? @relation(fields: [stopId], references: [id])
+  dayOfWeek       TransportDayOfWeek? // exactly-one-of dayOfWeek/date (raw SQL CHECK)
+  date            DateTime?
+  departureTime   Int // minutes-of-day; CHECK 0..1439 (raw SQL)
+  arrivalTime     Int? // minutes-of-day; CHECK 0..1439 (raw SQL)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair + composite
+  // same-tenant FKs ((institutionId, routeId)->transport_routes, (institutionId,
+  // stopId)->transport_route_stops; NULL stopId is a no-op via MATCH SIMPLE) +
+  // CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, routeId])
+  @@map("transport_route_schedules")
+}
+
+enum TransportVehicleType {
+  BUS
+  VAN
+  CAR
+  OTHER
+}
+
+enum TransportVehicleStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum TransportDriverStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TransportRouteStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TransportAssignmentStatus {
+  ACTIVE
+  ENDED
+}
+
+enum TransportEnrollmentStatus {
+  ACTIVE
+  SUSPENDED
+  ENDED
+}
+
+enum TransportMaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+enum TransportDayOfWeek {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
 }
