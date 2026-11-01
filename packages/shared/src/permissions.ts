@@ -532,6 +532,44 @@ export const PERMISSIONS = [
     description: "Faculty self-service read of OWN profile/workload/history/qualifications",
   },
 
+  // hostel.* — Phase 9.3 Hostel Management: buildings, rooms, capacity-safe
+  // allocation + transfer, immutable check-in/out, forward-only hostel leave,
+  // per-room maintenance, and computed occupancy. Gated module
+  // (requireModuleActive("hostel")) in addition to permission. The module
+  // registry key and the permission/audit KEY prefix are both `hostel`.
+  // Separation of duties (design §B.8): STUDENT never gets a staff key; no staff
+  // role gets the SELF-scope hostel.view_own.
+  {
+    key: "hostel.buildings.manage",
+    module: "hostel",
+    description: "Create/update buildings + rooms; reduce capacity (guarded)",
+  },
+  {
+    key: "hostel.allocations.manage",
+    module: "hostel",
+    description: "Allocate, transfer, vacate; record check-in/out",
+  },
+  {
+    key: "hostel.leave.manage",
+    module: "hostel",
+    description: "Warden/admin approve/reject hostel leave",
+  },
+  {
+    key: "hostel.maintenance.manage",
+    module: "hostel",
+    description: "Create/advance/resolve maintenance requests",
+  },
+  {
+    key: "hostel.view",
+    module: "hostel",
+    description: "Staff read of buildings/rooms/allocations/occupancy/leave/maintenance + reports/export",
+  },
+  {
+    key: "hostel.view_own",
+    module: "hostel",
+    description: "Student self-service: own allocation + room occupancy + apply/list/cancel own leave",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -591,6 +629,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "fees.view_own",
     "exams.results.view_own",
     "exams.reeval.request_own",
+    "hostel.view_own",
   ],
   FACULTY: [
     "classes.view_own",
@@ -617,6 +656,18 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "library.return",
     "library.reservations.manage",
     "library.fines.manage",
+  ],
+  // WARDEN — additive platform template role (ACCOUNTANT/LIBRARIAN/
+  // ADMISSION_OFFICER precedent); hostel-scoped ONLY. A warden runs the hostel
+  // end to end within tenant (buildings/rooms, allocation, leave, maintenance,
+  // read) without inheriting institution-wide admin rights. Separation of duties:
+  // WARDEN never gets the STUDENT-only hostel.view_own.
+  WARDEN: [
+    "hostel.buildings.manage",
+    "hostel.allocations.manage",
+    "hostel.leave.manage",
+    "hostel.maintenance.manage",
+    "hostel.view",
   ],
   ADMISSION_OFFICER: [
     "admissions.campaigns.manage",
@@ -739,6 +790,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "faculty.workload.manage",
     "faculty.teaching_history.manage",
     "faculty.directory.view",
+    "hostel.buildings.manage",
+    "hostel.allocations.manage",
+    "hostel.leave.manage",
+    "hostel.maintenance.manage",
+    "hostel.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

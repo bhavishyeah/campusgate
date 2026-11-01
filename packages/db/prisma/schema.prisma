@@ -318,6 +318,12 @@ model Institution {
   facultyWorkloadPolicies      FacultyWorkloadPolicy[]
   facultyWorkloads             FacultyWorkload[]
   facultyTeachingHistory       FacultyTeachingHistory[]
+  hostelBuildings              HostelBuilding[]
+  hostelRooms                  HostelRoom[]
+  hostelRoomAllocations        HostelRoomAllocation[]
+  hostelCheckEvents            HostelCheckEvent[]
+  hostelLeaveApplications      HostelLeaveApplication[]
+  hostelMaintenanceRequests    HostelMaintenanceRequest[]
 
   @@map("institutions")
 }
@@ -517,6 +523,9 @@ model StudentProfile {
   marksRecords         MarksRecord[]
   resultSnapshots      ResultSnapshot[]
   reevalRequests       ReevalRequest[]
+  hostelRoomAllocations   HostelRoomAllocation[]
+  hostelCheckEvents       HostelCheckEvent[]
+  hostelLeaveApplications HostelLeaveApplication[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -3041,4 +3050,207 @@ enum FacultyQualificationKind {
 enum FacultyTeachingHistoryChangeType {
   ASSIGNED
   ENDED
+}
+
+// ─── HOSTEL MANAGEMENT (Phase 9.3, tenant-owned) ─────────────────────────────
+// Backend-only gated "booster" module (design §B). Six tenant-owned tables
+// anchored on StudentProfile via composite same-tenant FKs. Prisma models carry
+// ONLY the field/index shape; composite same-tenant FKs, RLS (ENABLE+FORCE),
+// CHECKs, the forward-only column-guard + append-only triggers, the campass_app
+// GRANT refresh, and the catalogue seed all live in the hand-authored migration
+// 20270103000000_phase9_hostel. Actor/provenance ids (wardenUserId,
+// createdByUserId, allocatedByUserId, recordedByUserId, reportedByUserId,
+// assigneeUserId, transferFromAllocationId) are recorded ids with NO FK (the
+// faculty createdByUserId/recordedByUserId precedent, assumption A1).
+
+model HostelBuilding {
+  id              String             @id @default(cuid())
+  institutionId   String
+  institution     Institution        @relation(fields: [institutionId], references: [id])
+  name            String
+  type            HostelBuildingType
+  wardenUserId    String? // recorded actor id, NO FK (assumption A1)
+  isActive        Boolean            @default(true) // building active flag (FR-1.1); NOT a multi-state status enum
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  rooms HostelRoom[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, name) + CHECK char_length(name) >= 1 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("hostel_buildings")
+}
+
+model HostelRoom {
+  id              String           @id @default(cuid())
+  institutionId   String
+  institution     Institution      @relation(fields: [institutionId], references: [id])
+  buildingId      String
+  building        HostelBuilding   @relation(fields: [buildingId], references: [id])
+  roomNumber      String
+  capacity        Int // CHECK capacity >= 1 (raw SQL)
+  floor           Int?
+  status          HostelRoomStatus @default(AVAILABLE) // manual staff flag only, never auto-derived from occupancy (FR-1.2)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  allocations        HostelRoomAllocation[]
+  maintenanceRequests HostelMaintenanceRequest[]
+
+  // Mutable-with-audit. Standard RLS pair; composite same-tenant FK
+  // (institutionId, buildingId)->hostel_buildings, business unique
+  // (institutionId, buildingId, roomNumber), CHECK capacity >= 1 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, buildingId])
+  @@map("hostel_rooms")
+}
+
+model HostelRoomAllocation {
+  id                       String                 @id @default(cuid())
+  institutionId            String
+  institution              Institution            @relation(fields: [institutionId], references: [id])
+  roomId                   String
+  room                     HostelRoom             @relation(fields: [roomId], references: [id])
+  studentId                String
+  student                  StudentProfile         @relation(fields: [studentId], references: [id])
+  status                   HostelAllocationStatus @default(ACTIVE)
+  allocatedAt              DateTime
+  vacatedAt                DateTime? // set on VACATED/TRANSFERRED
+  allocatedByUserId        String // recorded actor id, NO FK
+  transferFromAllocationId String? // provenance link, write-once at INSERT, NO FK
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+
+  checkEvents HostelCheckEvent[]
+
+  // Forward-only lifecycle (ACTIVE->VACATED|TRANSFERRED). Standard RLS pair +
+  // column-guard trigger hostel_room_allocations_guard + composite same-tenant
+  // FKs ((institutionId, roomId)->hostel_rooms, (institutionId, studentId)->
+  // student_profiles) + the partial unique one-ACTIVE-per-student are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, roomId])
+  @@index([institutionId, studentId])
+  @@map("hostel_room_allocations")
+}
+
+model HostelCheckEvent {
+  id               String                @id @default(cuid())
+  institutionId    String
+  institution      Institution           @relation(fields: [institutionId], references: [id])
+  allocationId     String
+  allocation       HostelRoomAllocation  @relation(fields: [allocationId], references: [id])
+  studentId        String
+  student          StudentProfile        @relation(fields: [studentId], references: [id])
+  eventType        HostelCheckEventType
+  occurredAt       DateTime
+  recordedByUserId String // recorded actor id, NO FK
+  createdAt        DateTime              @default(now())
+
+  // STRICTLY append-only (the marks_record_history precedent): createdAt only (no
+  // updatedAt). Append-only RLS pair + hostel_check_events_append_only trigger +
+  // composite same-tenant FKs ((institutionId, allocationId)->
+  // hostel_room_allocations, (institutionId, studentId)->student_profiles) raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, allocationId])
+  @@index([institutionId, studentId])
+  @@map("hostel_check_events")
+}
+
+model HostelLeaveApplication {
+  id              String            @id @default(cuid())
+  institutionId   String
+  institution     Institution       @relation(fields: [institutionId], references: [id])
+  studentId       String
+  student         StudentProfile    @relation(fields: [studentId], references: [id])
+  fromDate        DateTime
+  toDate          DateTime // CHECK toDate >= fromDate (raw SQL)
+  reason          String // CHECK char_length(reason) >= 1 (raw SQL)
+  status          HostelLeaveStatus @default(REQUESTED)
+  appliedByUserId String // the student's user id (recorded actor id, NO FK)
+  decidedByUserId String? // warden/admin on APPROVE/REJECT
+  decidedAt       DateTime?
+  decisionNote    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Forward-only lifecycle (REQUESTED->APPROVED|REJECTED|CANCELLED). Standard RLS
+  // pair + column-guard trigger hostel_leave_applications_guard + composite
+  // same-tenant FK (institutionId, studentId)->student_profiles are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, status])
+  @@map("hostel_leave_applications")
+}
+
+model HostelMaintenanceRequest {
+  id               String                  @id @default(cuid())
+  institutionId    String
+  institution      Institution             @relation(fields: [institutionId], references: [id])
+  roomId           String
+  room             HostelRoom              @relation(fields: [roomId], references: [id])
+  issue            String // CHECK char_length(issue) >= 1 (raw SQL)
+  status           HostelMaintenanceStatus @default(OPEN)
+  assigneeUserId   String? // recorded actor id, NO FK (assumption A1)
+  reportedByUserId String // recorded actor id, NO FK
+  resolvedAt       DateTime? // set on RESOLVED
+  resolutionNote   String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  // Forward-only lifecycle (OPEN->IN_PROGRESS->RESOLVED, OPEN|IN_PROGRESS->
+  // CANCELLED). Standard RLS pair + column-guard trigger
+  // hostel_maintenance_requests_guard + composite same-tenant FK
+  // (institutionId, roomId)->hostel_rooms are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, roomId])
+  @@index([institutionId, status])
+  @@map("hostel_maintenance_requests")
+}
+
+enum HostelBuildingType {
+  BOYS
+  GIRLS
+  MIXED
+  STAFF
+}
+
+enum HostelRoomStatus {
+  AVAILABLE
+  FULL
+  MAINTENANCE
+  CLOSED
+}
+
+enum HostelAllocationStatus {
+  ACTIVE
+  VACATED
+  TRANSFERRED
+}
+
+enum HostelCheckEventType {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum HostelLeaveStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HostelMaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
 }

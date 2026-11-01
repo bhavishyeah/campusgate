@@ -34,6 +34,7 @@ const TEMPLATE_ROLE_NAMES: Record<string, string> = {
   ADMISSION_OFFICER: "Admission Officer",
   APPLICANT: "Applicant",
   ACCOUNTANT: "Accountant",
+  WARDEN: "Warden",
 };
 
 /**
