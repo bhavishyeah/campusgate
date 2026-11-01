@@ -2783,6 +2783,260 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-9.2 HR Management tables (design §10) ────────────────────────────
+  // The six mutable/guarded tables (hr_employees, hr_contracts,
+  // hr_leave_policies, hr_leave_applications, hr_shifts, hr_employee_attendance):
+  // cross-tenant read denied, spoofed/cross-tenant write denied, foreign-parent
+  // composite-FK violation, buggy-query backstop, three-GUC-state fail-closed.
+  // hr_employee_attendance_history (STRICTLY append-only): a self-contained
+  // case — insert OK, cross-tenant SELECT empty, UPDATE+DELETE both denied.
+
+  it("3r1. HR read escape: tenant A cannot see tenant B's HR rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.hrEmployee.findUnique({ where: { id: B.hrEmployeeId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hrContract.findUnique({ where: { id: B.hrContractId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hrLeavePolicy.findUnique({ where: { id: B.hrLeavePolicyId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hrLeaveApplication.findUnique({ where: { id: B.hrLeaveApplicationId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hrShift.findUnique({ where: { id: B.hrShiftId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hrEmployeeAttendance.findUnique({ where: { id: B.hrEmployeeAttendanceId } }))).toBeNull();
+
+    // Unscoped lists under A return only A's rows, never B's.
+    const ownEmployees = await withTenant(A.institutionId, (tx) => tx.hrEmployee.findMany({}));
+    expect(ownEmployees.length).toBeGreaterThan(0);
+    for (const row of ownEmployees) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.hrEmployeeId);
+    }
+  }, 60_000);
+
+  it("3r2. HR spoofed insert: A cannot stamp an employee/leave-policy institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hrEmployee.create({
+          data: {
+            id: `${PREFIX}SPOOF_HREMP`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            userId: B.hrUserId,
+            employeeNo: `${PREFIX}SPOOF_NO`,
+            employmentType: "PERMANENT",
+            joiningDate: new Date("2026-01-01T00:00:00.000Z"),
+            createdByUserId: B.userId,
+            updatedByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hrLeavePolicy.create({
+          data: {
+            id: `${PREFIX}SPOOF_HRPOL`,
+            institutionId: B.institutionId, // spoof
+            leaveType: "SICK",
+            annualQuotaDays: 5,
+            updatedByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3r3. HR foreign-parent: A cannot reference B's employee / user / shift", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // hr_employees.(institutionId, userId) composite FK forbids binding B's user
+    // under A's tenant (the single-identity guarantee).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hrEmployee.create({
+          data: {
+            id: `${PREFIX}FOREIGN_HREMP`,
+            institutionId: A.institutionId,
+            userId: B.hrUserId, // B's user under A's tenant
+            employeeNo: `${PREFIX}FOREIGN_NO`,
+            employmentType: "PERMANENT",
+            joiningDate: new Date("2026-01-01T00:00:00.000Z"),
+            createdByUserId: A.userId,
+            updatedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // hr_contracts.(institutionId, employeeId) composite FK forbids referencing
+    // B's employee under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hrContract.create({
+          data: {
+            id: `${PREFIX}FOREIGN_HRCON`,
+            institutionId: A.institutionId,
+            employeeId: B.hrEmployeeId, // B's employee under A's tenant
+            contractType: "PERMANENT",
+            startDate: new Date("2026-01-01T00:00:00.000Z"),
+            currency: "INR",
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // hr_employee_attendance.(institutionId, shiftId) composite FK forbids
+    // referencing B's shift under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hrEmployeeAttendance.create({
+          data: {
+            id: `${PREFIX}FOREIGN_HRATT`,
+            institutionId: A.institutionId,
+            employeeId: A.hrEmployeeId,
+            attendanceDate: new Date("2026-05-05T00:00:00.000Z"),
+            status: "PRESENT",
+            shiftId: B.hrShiftId, // B's shift under A's tenant
+            recordedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3r4. HR spoofed update: A cannot flip B's shift to A's context", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.hrShift.updateMany({
+        where: { id: B.hrShiftId },
+        data: { name: `${PREFIX}HIJACK` },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.hrShift.findUnique({ where: { id: B.hrShiftId } });
+    expect(bRow!.institutionId).toBe(B.institutionId);
+    expect(bRow!.name).not.toBe(`${PREFIX}HIJACK`);
+  }, 60_000);
+
+  it("3r5. HR buggy-query backstop: unfiltered findMany under A returns only A's rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    const employees = await withTenant(A.institutionId, (tx) => tx.hrEmployee.findMany({}));
+    for (const r of employees) expect(r.institutionId).toBe(A.institutionId);
+    expect(employees.some((r: { id: string }) => r.id === B.hrEmployeeId)).toBe(false);
+
+    const contracts = await withTenant(A.institutionId, (tx) => tx.hrContract.findMany({}));
+    for (const r of contracts) expect(r.institutionId).toBe(A.institutionId);
+    expect(contracts.some((r: { id: string }) => r.id === B.hrContractId)).toBe(false);
+
+    const policies = await withTenant(A.institutionId, (tx) => tx.hrLeavePolicy.findMany({}));
+    for (const r of policies) expect(r.institutionId).toBe(A.institutionId);
+    expect(policies.some((r: { id: string }) => r.id === B.hrLeavePolicyId)).toBe(false);
+
+    const applications = await withTenant(A.institutionId, (tx) => tx.hrLeaveApplication.findMany({}));
+    for (const r of applications) expect(r.institutionId).toBe(A.institutionId);
+    expect(applications.some((r: { id: string }) => r.id === B.hrLeaveApplicationId)).toBe(false);
+
+    const shifts = await withTenant(A.institutionId, (tx) => tx.hrShift.findMany({}));
+    for (const r of shifts) expect(r.institutionId).toBe(A.institutionId);
+    expect(shifts.some((r: { id: string }) => r.id === B.hrShiftId)).toBe(false);
+
+    const attendance = await withTenant(A.institutionId, (tx) => tx.hrEmployeeAttendance.findMany({}));
+    for (const r of attendance) expect(r.institutionId).toBe(A.institutionId);
+    expect(attendance.some((r: { id: string }) => r.id === B.hrEmployeeAttendanceId)).toBe(false);
+
+    const aCount = await adminClient.hrEmployee.count({ where: { institutionId: A.institutionId } });
+    expect(employees.length).toBe(aCount);
+  }, 60_000);
+
+  it("3r6. HR fail-closed: unset / empty-string GUC yield zero rows for every mutable table", async () => {
+    // (i) no tenant context set => GUC unset => NULL => no rows
+    const unsetEmployees = await appClient.hrEmployee.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unsetEmployees.length).toBe(0);
+
+    // (ii) empty-string GUC => nullif(...,'') => NULL => no rows (all six tables)
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const e = await tx.hrEmployee.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const c = await tx.hrContract.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const p = await tx.hrLeavePolicy.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const l = await tx.hrLeaveApplication.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const s = await tx.hrShift.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const a = await tx.hrEmployeeAttendance.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return e.length + c.length + p.length + l.length + s.length + a.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC (the complementary direction).
+    const A = seeded.A!;
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.hrEmployee.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.hrEmployeeId)).toBe(true);
+  }, 60_000);
+
+  it("3r7. hr_employee_attendance_history APPEND-ONLY (self-contained): insert OK, cross-tenant SELECT empty, UPDATE+DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the faculty_teaching_history case 3q5 + the
+    // audit_events precedent): INSERT one ledger row under A (a plain INSERT does
+    // NOT trip the BEFORE UPDATE OR DELETE trigger and satisfies the
+    // hr_employee_attendance_history_tenant_insert policy), read under A, empty
+    // under B, then prove UPDATE + DELETE are both denied (REVOKE + append-only
+    // trigger -> restrict_violation). The row is removed here within THIS test's
+    // trigger-disable scope so the shared teardown is not blocked. This is the
+    // ONLY place the escape suite touches hr_employee_attendance_history.
+    const histId = `${PREFIX}HRAHIST_A`;
+    await withTenant(A.institutionId, (tx) =>
+      tx.hrEmployeeAttendanceHistory.create({
+        data: {
+          id: histId,
+          institutionId: A.institutionId,
+          employeeAttendanceId: A.hrEmployeeAttendanceId,
+          changeType: "RECORDED",
+          previousStatus: null,
+          newStatus: "PRESENT",
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable under A, empty under B (tenant isolation).
+    expect(await withTenant(A.institutionId, (tx) => tx.hrEmployeeAttendanceHistory.findUnique({ where: { id: histId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.hrEmployeeAttendanceHistory.findUnique({ where: { id: histId } }))).toBeNull();
+
+    // STRICTLY append-only: UPDATE + DELETE both denied (REVOKE + trigger).
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.hrEmployeeAttendanceHistory.update({ where: { id: histId }, data: { reason: "mutate" } })),
+    ).rejects.toBeTruthy();
+    await expect(
+      withTenant(A.institutionId, (tx) => tx.hrEmployeeAttendanceHistory.delete({ where: { id: histId } })),
+    ).rejects.toBeTruthy();
+
+    // Survived both attempts.
+    expect(await adminClient.hrEmployeeAttendanceHistory.findUnique({ where: { id: histId } })).toBeTruthy();
+
+    // Clean up within a scoped trigger-disable so the shared teardown is not blocked.
+    await adminClient.$executeRawUnsafe(
+      `ALTER TABLE "hr_employee_attendance_history" DISABLE TRIGGER "hr_employee_attendance_history_no_update_delete"`,
+    );
+    try {
+      await adminClient.hrEmployeeAttendanceHistory.deleteMany({ where: { id: histId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(
+        `ALTER TABLE "hr_employee_attendance_history" ENABLE TRIGGER "hr_employee_attendance_history_no_update_delete"`,
+      );
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -2905,6 +3159,13 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // three mutable faculty tables carry the standard modify pair (asserted by
       // the EXPECTED_POLICIES/DEFAULT_POLICIES loop above).
       "faculty_teaching_history",
+      // Phase-9.2: hr_employee_attendance_history is STRICTLY append-only (design
+      // §10) — INSERT-only policy + REVOKE + trigger, NO modify policy. The six
+      // mutable/guarded HR tables carry the standard modify pair (the
+      // hr_contracts/hr_leave_applications column-guard triggers enforce
+      // immutability at the row level, not via RLS — asserted by the
+      // EXPECTED_POLICIES/DEFAULT_POLICIES loop above).
+      "hr_employee_attendance_history",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

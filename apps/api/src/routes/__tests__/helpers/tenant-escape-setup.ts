@@ -219,6 +219,24 @@ export interface SeededTenant {
   facultyQualificationId: string;
   facultyWorkloadPolicyId: string;
   facultyWorkloadId: string;
+  // Phase-9.2 HR Management (design §10). The SIX mutable/guarded tables
+  // (hr_employees, hr_contracts, hr_leave_policies, hr_leave_applications,
+  // hr_shifts, hr_employee_attendance) are seeded here (standard RLS pair;
+  // hr_contracts + hr_leave_applications additionally carry column-guard
+  // triggers), via a NEW dedicated HR User per tenant (NOT the student/faculty
+  // user — hr_employees(institutionId,userId) is unique). The seventh table,
+  // hr_employee_attendance_history, is STRICTLY append-only (its BEFORE UPDATE OR
+  // DELETE trigger blocks even adminClient in the shared teardown), so it is
+  // EXCLUDED from this generic seed/cleanup loop and proven by the self-contained
+  // append-only case — the faculty_teaching_history / marks_record_history
+  // precedent.
+  hrUserId: string;
+  hrEmployeeId: string;
+  hrContractId: string;
+  hrLeavePolicyId: string;
+  hrLeaveApplicationId: string;
+  hrShiftId: string;
+  hrEmployeeAttendanceId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -328,6 +346,17 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const facultyQualificationId = id(`fqual_${key}`);
   const facultyWorkloadPolicyId = id(`fwpol_${key}`);
   const facultyWorkloadId = id(`fwork_${key}`);
+  // Phase-9.2 HR Management IDs (deterministic so cleanup is exact). A dedicated
+  // HR user per tenant (the student/faculty users are already consumed by other
+  // domains and hr_employees(institutionId,userId) is unique). The append-only
+  // hr_employee_attendance_history is NOT seeded here (self-contained case).
+  const hrUserId = id(`hruser_${key}`);
+  const hrEmployeeId = id(`hremp_${key}`);
+  const hrContractId = id(`hrcontract_${key}`);
+  const hrLeavePolicyId = id(`hrpolicy_${key}`);
+  const hrLeaveApplicationId = id(`hrleave_${key}`);
+  const hrShiftId = id(`hrshift_${key}`);
+  const hrEmployeeAttendanceId = id(`hratt_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1102,6 +1131,109 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.2 HR Management MUTABLE/GUARDED tables (design §10). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: a dedicated HR user -> employee (references that user +
+  // department) -> contract (ACTIVE, column-guard class) -> leave-policy ->
+  // leave-application (REQUESTED, column-guard class) -> shift -> attendance
+  // (references the employee + shift). hr_employee_attendance_history is
+  // DELIBERATELY NOT seeded here — its BEFORE UPDATE OR DELETE trigger blocks even
+  // adminClient in the shared teardown (the faculty_teaching_history /
+  // marks_record_history precedent); its escape behaviour is covered by the
+  // self-contained append-only case. The hr_contracts + hr_leave_applications
+  // column-guard triggers forbid DELETE unconditionally, so those two are deleted
+  // in teardown within a scoped trigger-disable (the examinations / marks_records
+  // dance).
+  await adminClient.user.create({
+    data: {
+      id: hrUserId,
+      email: `${PREFIX.toLowerCase()}hr_${key.toLowerCase()}@example.test`,
+      role: "GUARD", // inert non-actor legacy value for a pure-HR user
+      institutionId,
+    },
+  });
+
+  await adminClient.hrEmployee.create({
+    data: {
+      id: hrEmployeeId,
+      institutionId,
+      userId: hrUserId,
+      employeeNo: id(`EMPNO_${key}`),
+      employmentType: "PERMANENT",
+      departmentId,
+      joiningDate: new Date("2026-01-01T00:00:00.000Z"),
+      status: "ACTIVE",
+      createdByUserId: userId,
+      updatedByUserId: userId,
+    },
+  });
+
+  await adminClient.hrContract.create({
+    data: {
+      id: hrContractId,
+      institutionId,
+      employeeId: hrEmployeeId,
+      contractType: "PERMANENT",
+      startDate: new Date("2026-01-01T00:00:00.000Z"),
+      salaryAmount: 5000000n,
+      currency: "INR",
+      status: "ACTIVE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.hrLeavePolicy.create({
+    data: {
+      id: hrLeavePolicyId,
+      institutionId,
+      leaveType: "CASUAL",
+      annualQuotaDays: 12,
+      accrualRule: "ANNUAL_LUMP_SUM",
+      active: true,
+      updatedByUserId: userId,
+    },
+  });
+
+  await adminClient.hrLeaveApplication.create({
+    data: {
+      id: hrLeaveApplicationId,
+      institutionId,
+      employeeId: hrEmployeeId,
+      leaveType: "CASUAL",
+      startDate: new Date("2026-03-01T00:00:00.000Z"),
+      endDate: new Date("2026-03-02T00:00:00.000Z"),
+      days: 2,
+      periodYear: 2026,
+      reason: `${PREFIX}seed leave ${key}`,
+      status: "REQUESTED",
+    },
+  });
+
+  await adminClient.hrShift.create({
+    data: {
+      id: hrShiftId,
+      institutionId,
+      name: `${PREFIX}Shift ${key}`,
+      startMinute: 540,
+      endMinute: 1020,
+      active: true,
+      updatedByUserId: userId,
+    },
+  });
+
+  await adminClient.hrEmployeeAttendance.create({
+    data: {
+      id: hrEmployeeAttendanceId,
+      institutionId,
+      employeeId: hrEmployeeId,
+      attendanceDate: new Date("2026-02-02T00:00:00.000Z"),
+      status: "PRESENT",
+      source: "MANUAL",
+      shiftId: hrShiftId,
+      recordedByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1160,6 +1292,13 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     facultyQualificationId,
     facultyWorkloadPolicyId,
     facultyWorkloadId,
+    hrUserId,
+    hrEmployeeId,
+    hrContractId,
+    hrLeavePolicyId,
+    hrLeaveApplicationId,
+    hrShiftId,
+    hrEmployeeAttendanceId,
   };
 }
 
@@ -1173,6 +1312,56 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.2 HR Management tables FIRST (child -> parent), BEFORE the
+  // users / departments / institution deletes below (hr_employees references
+  // users + departments with ON DELETE RESTRICT). The append-only
+  // hr_employee_attendance_history is never seeded by the generic loop, so there
+  // is nothing to delete here for it (the faculty_teaching_history /
+  // marks_record_history precedent) — but a self-contained append-only case
+  // seeds + self-cleans a ledger row; if it errored mid-way it can leave residue,
+  // so delete defensively here within a scoped trigger-disable (no-op when
+  // empty). Then: attendance -> (leave-application + contract, guard-disabled) ->
+  // leave-policy -> shift -> employee -> hr user. hr_contracts +
+  // hr_leave_applications carry column-guard triggers that forbid DELETE
+  // unconditionally, so delete them with those triggers disabled (the
+  // examinations / marks_records dance).
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(
+      `ALTER TABLE "hr_employee_attendance_history" DISABLE TRIGGER "hr_employee_attendance_history_no_update_delete"`,
+    ),
+  );
+  try {
+    await withRetry(() => adminClient.hrEmployeeAttendanceHistory.deleteMany({ where }));
+  } finally {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(
+        `ALTER TABLE "hr_employee_attendance_history" ENABLE TRIGGER "hr_employee_attendance_history_no_update_delete"`,
+      ),
+    );
+  }
+  await withRetry(() => adminClient.hrEmployeeAttendance.deleteMany({ where }));
+  const hrGuardedTables = [
+    { table: "hr_leave_applications", trigger: "hr_leave_applications_guard" },
+    { table: "hr_contracts", trigger: "hr_contracts_guard" },
+  ];
+  for (const { table, trigger } of hrGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.hrLeaveApplication.deleteMany({ where }));
+    await withRetry(() => adminClient.hrContract.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of hrGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.hrLeavePolicy.deleteMany({ where }));
+  await withRetry(() => adminClient.hrShift.deleteMany({ where }));
+  await withRetry(() => adminClient.hrEmployee.deleteMany({ where }));
   // Phase-9.1 Faculty Management tables FIRST (leaves), BEFORE the
   // faculty_profiles / academic_terms deletes below (their composite FKs are ON
   // DELETE RESTRICT). The three mutable tables are deleted directly; the
@@ -1449,6 +1638,15 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-9.2 HR Management MUTABLE/GUARDED tables (hr_employee_attendance_history
+    // is append-only and never seeded by the generic loop, so it is not counted —
+    // the faculty_teaching_history precedent). Counted SEQUENTIALLY (pooler cap).
+    () => adminClient.hrEmployeeAttendance.count({ where }),
+    () => adminClient.hrLeaveApplication.count({ where }),
+    () => adminClient.hrContract.count({ where }),
+    () => adminClient.hrLeavePolicy.count({ where }),
+    () => adminClient.hrShift.count({ where }),
+    () => adminClient.hrEmployee.count({ where }),
     // Phase-9.1 faculty-management MUTABLE tables (faculty_teaching_history is
     // append-only and never seeded by the generic loop, so it is not counted —
     // the marks_record_history precedent). Counted SEQUENTIALLY (pooler cap).
@@ -1663,6 +1861,20 @@ export const RLS_TABLES = [
   "faculty_workload_policies",
   "faculty_workloads",
   "faculty_teaching_history",
+  // Phase-9.2 HR Management tables (design §10). The six mutable/guarded tables
+  // (hr_employees, hr_contracts, hr_leave_policies, hr_leave_applications,
+  // hr_shifts, hr_employee_attendance) use the default modify pair — the
+  // column-guard triggers on hr_contracts/hr_leave_applications enforce
+  // immutability at the row level, NOT via an append-only RLS policy, so they
+  // still carry tenant_isolation_modify. hr_employee_attendance_history is
+  // STRICTLY append-only (EXPECTED_POLICIES below).
+  "hr_employees",
+  "hr_contracts",
+  "hr_leave_policies",
+  "hr_leave_applications",
+  "hr_shifts",
+  "hr_employee_attendance",
+  "hr_employee_attendance_history",
 ] as const;
 
 /**
@@ -1763,6 +1975,16 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   faculty_teaching_history: [
     "tenant_isolation_select",
     "faculty_teaching_history_tenant_insert",
+  ],
+  // Phase-9.2: hr_employee_attendance_history is STRICTLY append-only (design
+  // §10) — the SELECT + INSERT pair, NO modify policy. The six mutable/guarded HR
+  // tables are deliberately ABSENT here so they fall through to DEFAULT_POLICIES
+  // (the column-guard triggers on hr_contracts/hr_leave_applications enforce
+  // immutability at the row level, not via an append-only RLS policy — the
+  // payment_transactions precedent).
+  hr_employee_attendance_history: [
+    "tenant_isolation_select",
+    "hr_employee_attendance_history_tenant_insert",
   ],
 };
 
