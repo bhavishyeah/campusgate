@@ -598,6 +598,46 @@ deliberately reserved for the HR module; no employment fields were added to
 **527/527** green (was 497); both live-DB suites green **in isolation** (`faculty-behavioral`
 5/5, extended `tenant-escape` 89/89); `campass_app` remains NOSUPERUSER NOBYPASSRLS.
 
+**Hostel — CONVERGED (backend only).** The third Phase-9 module (built on branch
+`phase9-hostel`), a gated booster layered additively via the hand-authored migration
+`20270103000000_phase9_hostel` (strictly additive — **no DROP** on existing tables, the 17
+prior frozen dirs byte-untouched; `prisma migrate status` up to date at **18** migrations).
+New module key `hostel` in the registry with `deps = []` (foundational-not-gated, the faculty
+precedent); routes gated by `requireModuleActive("hostel")`. Six new tenant-owned tables
+(`hostel_buildings`, `hostel_rooms`, `hostel_room_allocations`, `hostel_check_events`,
+`hostel_leave_applications`, `hostel_maintenance_requests`), each institutionId-scoped with
+composite same-tenant FKs and ENABLE+FORCE RLS fail-closed policies; the three lifecycle
+tables carry column-guard triggers (forward-only status, frozen identity, DELETE rejected),
+and `hostel_check_events` is strictly append-only (UPDATE/DELETE rejected at the DB). The
+`/api/hostel` surface covers buildings/rooms (with a capacity-reduction-below-occupancy guard
+under the per-room advisory lock), the advisory-lock + conditional-count + one-ACTIVE
+partial-unique allocation idiom, atomic transfers, append-only check-in/out, forward-only
+leave + maintenance lifecycles, computed occupancy, staff JSON/XLSX reports, and student
+self-service (`/me/*`, self-scoped by resolved StudentProfile, never a studentId from input).
+RBAC: new `WARDEN` template role + six `hostel.*` permissions (`module:"hostel"`) with
+ADMIN/WARDEN binding the five staff keys and STUDENT binding `hostel.view_own`; 15 `hostel.*`
+audit keys; catalogue-sync set-equality is the self-enforcing backstop. No auto gate-pass, no
+fees coupling (explicit-integration-only, per scope).
+
+Convergence verification (run in the worktree, `PRISMA_QUERY_ENGINE_LIBRARY` pinned to the
+installed engine for the offline mirror): full workspace build green (`@campusgate/shared`,
+`@campusgate/db`, `@campusgate/api` [`prisma generate` + `tsc`], `@campusgate/web`
+[`next build`]); fast suite **542/542** (the lone `reliability-engine` property-test flake is
+pre-existing, not hostel, and passes on rerun); `catalogue-sync` 4/4; `hostel-behavioral` +
+self-service **12/12**; and the six hostel-specific `tenant-escape` cases (`3r1`–`3r6`: the
+five guarded tables + append-only `hostel_check_events`) **6/6**. `campass_app` remains
+NOSUPERUSER NOBYPASSRLS.
+
+> **Deferred by explicit orchestrator decision:** the FULL shared `tenant-escape` green
+> (all 95 cases in one run) is **not** gated on this module loop. On the shared Supabase DB,
+> a parallel worktree running escape suites on the same `ESCAPE_TEST_` fixture namespace
+> clobbers the A/B base seed mid-run and leaves residue that blocks `beforeAll` cleanup,
+> producing a **non-deterministic** set of **non-hostel** failures (zero hostel cases ever
+> fail). The authoritative full-suite pass is an orchestrator-owned CROSS-MODULE check to be
+> run serially against a quiesced DB after both Wave-1 modules merge. Hostel's own
+> `ESCAPE_TEST_` residue was purged via the suite's own `cleanup()` helper, leaving the DB
+> clean for that run.
+
 ---
 
 ## Phase 10 — Advanced ERP

@@ -8,7 +8,7 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ─── ENUMS ──────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ ENUMS ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 enum UserRole {
   STUDENT
@@ -120,7 +120,7 @@ enum ModuleState {
   SUSPENDED
 }
 
-// ─── ACADEMICS (Phase 1 — sessions / terms / programs / calendar) ───────────
+// ΓöÇΓöÇΓöÇ ACADEMICS (Phase 1 ΓÇö sessions / terms / programs / calendar) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 enum AcademicSessionStatus {
   UPCOMING
@@ -192,7 +192,7 @@ enum EmergencyStatus {
   RESOLVED
 }
 
-// ─── STUDENTS / SIS (Phase 2 — student lifecycle, history, documents) ───────
+// ΓöÇΓöÇΓöÇ STUDENTS / SIS (Phase 2 ΓÇö student lifecycle, history, documents) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 enum StudentStatus {
   APPLICANT
@@ -223,7 +223,7 @@ enum StudentDocumentKind {
   OTHER
 }
 
-// ─── INSTITUTION (future multi-tenancy) ─────────────────────────────────────
+// ΓöÇΓöÇΓöÇ INSTITUTION (future multi-tenancy) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Institution {
   id        String            @id @default(cuid())
@@ -325,11 +325,17 @@ model Institution {
   hrShifts                     HrShift[]
   hrEmployeeAttendance         HrEmployeeAttendance[]
   hrEmployeeAttendanceHistory  HrEmployeeAttendanceHistory[]
+  hostelBuildings              HostelBuilding[]
+  hostelRooms                  HostelRoom[]
+  hostelRoomAllocations        HostelRoomAllocation[]
+  hostelCheckEvents            HostelCheckEvent[]
+  hostelLeaveApplications      HostelLeaveApplication[]
+  hostelMaintenanceRequests    HostelMaintenanceRequest[]
 
   @@map("institutions")
 }
 
-// ─── DEPARTMENT ─────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ DEPARTMENT ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Department {
   id            String      @id @default(cuid())
@@ -352,7 +358,7 @@ model Department {
   @@map("departments")
 }
 
-// ─── USER (unified auth) ────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ USER (unified auth) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model User {
   id            String        @id @default(cuid())
@@ -398,7 +404,7 @@ model User {
   @@map("users")
 }
 
-// ─── IDENTITY & RBAC (B-2) ──────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ IDENTITY & RBAC (B-2) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model InstitutionMembership {
   id                 String           @id @default(cuid())
@@ -474,7 +480,7 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-// ─── STUDENT PROFILE ────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ STUDENT PROFILE ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model StudentProfile {
   id            String      @id @default(cuid())
@@ -496,7 +502,7 @@ model StudentProfile {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
-  // Phase 2 SIS generalization — all additive-nullable / defaulted so every
+  // Phase 2 SIS generalization ΓÇö all additive-nullable / defaulted so every
   // existing live row stays valid and every live query keeps working.
   status            StudentStatus    @default(ACTIVE)
   admissionDate     DateTime?
@@ -526,6 +532,9 @@ model StudentProfile {
   marksRecords         MarksRecord[]
   resultSnapshots      ResultSnapshot[]
   reevalRequests       ReevalRequest[]
+  hostelRoomAllocations   HostelRoomAllocation[]
+  hostelCheckEvents       HostelCheckEvent[]
+  hostelLeaveApplications HostelLeaveApplication[]
 
   @@unique([id, institutionId])
   @@index([institutionId])
@@ -534,7 +543,7 @@ model StudentProfile {
   @@map("student_profiles")
 }
 
-// ─── STUDENT PROFILE HISTORY (Phase 2, tenant-owned, append-only) ───────────
+// ΓöÇΓöÇΓöÇ STUDENT PROFILE HISTORY (Phase 2, tenant-owned, append-only) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model StudentProfileHistory {
   id               String                   @id @default(cuid())
@@ -572,7 +581,7 @@ model StudentProfileHistory {
   @@map("student_profile_history")
 }
 
-// ─── STUDENT DOCUMENT (Phase 2, tenant-owned, reference metadata only) ──────
+// ΓöÇΓöÇΓöÇ STUDENT DOCUMENT (Phase 2, tenant-owned, reference metadata only) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model StudentDocument {
   id               String              @id @default(cuid())
@@ -595,7 +604,7 @@ model StudentDocument {
   @@map("student_documents")
 }
 
-// ─── HOD PROFILE ────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ HOD PROFILE ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model HodProfile {
   id            String      @id @default(cuid())
@@ -616,7 +625,7 @@ model HodProfile {
   @@map("hod_profiles")
 }
 
-// ─── GUARD PROFILE ──────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GUARD PROFILE ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model GuardProfile {
   id            String      @id @default(cuid())
@@ -637,7 +646,7 @@ model GuardProfile {
   @@map("guard_profiles")
 }
 
-// ─── GATE ───────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GATE ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Gate {
   id            String      @id @default(cuid())
@@ -658,7 +667,7 @@ model Gate {
   @@map("gates")
 }
 
-// ─── GUARD ↔ GATE (many-to-many) ───────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GUARD Γåö GATE (many-to-many) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model GuardGateAssignment {
   id            String       @id @default(cuid())
@@ -675,7 +684,7 @@ model GuardGateAssignment {
   @@map("guard_gate_assignments")
 }
 
-// ─── EXIT REASONS (configurable) ────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ EXIT REASONS (configurable) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model ExitReason {
   id            String      @id @default(cuid())
@@ -693,7 +702,7 @@ model ExitReason {
   @@map("exit_reasons")
 }
 
-// ─── GATE PASS (core entity) ────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GATE PASS (core entity) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model GatePass {
   id             String         @id @default(cuid())
@@ -740,7 +749,7 @@ model GatePass {
   @@map("gate_passes")
 }
 
-// ─── GATE EVENTS ────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GATE EVENTS ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model GateEvent {
   id            String        @id @default(cuid())
@@ -761,7 +770,7 @@ model GateEvent {
   @@map("gate_events")
 }
 
-// ─── GUARD SHIFTS ───────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ GUARD SHIFTS ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model GuardShift {
   id               String           @id @default(cuid())
@@ -788,7 +797,7 @@ model GuardShift {
   @@map("guard_shifts")
 }
 
-// ─── AUDIT LOG ──────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ AUDIT LOG ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model AuditLog {
   id            String      @id @default(cuid())
@@ -808,7 +817,7 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ─── AUDIT EVENT v2 (Super Admin & platform security, FEAT-001) ─────────────
+// ΓöÇΓöÇΓöÇ AUDIT EVENT v2 (Super Admin & platform security, FEAT-001) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // Generic string-keyed audit table (action validated against the shared
 // catalogue, not a pg enum) with a NULLABLE institutionId for platform actions.
 // Single-column FKs: the actor can be a platform user with no membership and
@@ -838,7 +847,7 @@ model AuditEvent {
   @@map("audit_events")
 }
 
-// ─── SUPPORT GRANT (break-glass, FEAT-001) ──────────────────────────────────
+// ΓöÇΓöÇΓöÇ SUPPORT GRANT (break-glass, FEAT-001) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // PLATFORM-owned, single-tenant, purpose-bound, time-limited, revocable,
 // tenant-visible, fully audited break-glass authorization record.
 model SupportGrant {
@@ -866,13 +875,13 @@ model SupportGrant {
   @@map("support_grants")
 }
 
-// ─── MODULE ENTITLEMENT / ACTIVATION (CAMPASS booster model, architecture.md §5) ─
+// ΓöÇΓöÇΓöÇ MODULE ENTITLEMENT / ACTIVATION (CAMPASS booster model, architecture.md ┬º5) ΓöÇ
 // TENANT-OWNED lifecycle row for one (institution, module) pair. The four states
-// in architecture.md §5.2 are NOT_ENTITLED -> ENTITLED -> ACTIVE <-> SUSPENDED;
+// in architecture.md ┬º5.2 are NOT_ENTITLED -> ENTITLED -> ACTIVE <-> SUSPENDED;
 // NOT_ENTITLED is modelled as the ABSENCE of a row, so the enum holds only the
 // three states a row can be in. Platform grants/revokes entitlement (privileged
 // path); the tenant admin activates/suspends under RLS. who/when fields carry
-// actor ids only (no composite FK — a platform actor has no membership in this
+// actor ids only (no composite FK ΓÇö a platform actor has no membership in this
 // tenant, mirroring AuditEvent.actorUserId).
 model InstitutionModule {
   id            String      @id @default(cuid())
@@ -898,7 +907,7 @@ model InstitutionModule {
   @@map("institution_modules")
 }
 
-// ─── ACADEMIC SESSION / TERM (Phase 1, tenant-owned) ────────────────────────
+// ΓöÇΓöÇΓöÇ ACADEMIC SESSION / TERM (Phase 1, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model AcademicSession {
   id            String                @id @default(cuid())
@@ -964,7 +973,7 @@ model AcademicTerm {
   @@map("academic_terms")
 }
 
-// ─── PROGRAM (Phase 1, tenant-owned) ────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ PROGRAM (Phase 1, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Program {
   id            String              @id @default(cuid())
@@ -1000,7 +1009,7 @@ model Program {
   @@map("programs")
 }
 
-// ─── ACADEMIC CALENDAR DAY REVISION (Phase 1, tenant-owned, append-only) ────
+// ΓöÇΓöÇΓöÇ ACADEMIC CALENDAR DAY REVISION (Phase 1, tenant-owned, append-only) ΓöÇΓöÇΓöÇΓöÇ
 
 model AcademicCalendarDayRevision {
   id                String           @id @default(cuid())
@@ -1028,7 +1037,7 @@ model AcademicCalendarDayRevision {
   @@map("academic_calendar_day_revisions")
 }
 
-// ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ NOTIFICATIONS ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Notification {
   id            String      @id @default(cuid())
@@ -1047,7 +1056,7 @@ model Notification {
   @@map("notifications")
 }
 
-// ─── ALLOWANCE POLICY ───────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ ALLOWANCE POLICY ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model InstitutionConfig {
   id                           String       @id @default(cuid())
@@ -1103,7 +1112,7 @@ model AllowancePolicy {
   @@map("allowance_policies")
 }
 
-// ─── EMERGENCY OVERRIDE ─────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ EMERGENCY OVERRIDE ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model EmergencyOverride {
   id             String      @id @default(cuid())
@@ -1143,7 +1152,7 @@ model EmergencyAlert {
   @@map("emergency_alerts")
 }
 
-// ─── RELIABILITY SCORE SNAPSHOT ─────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ RELIABILITY SCORE SNAPSHOT ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model ReliabilityScoreSnapshot {
   id             String         @id @default(cuid())
@@ -1151,7 +1160,7 @@ model ReliabilityScoreSnapshot {
   student        StudentProfile @relation(fields: [studentId], references: [id])
   institutionId  String
   institution    Institution    @relation(fields: [institutionId], references: [id])
-  score          Float // 0.0–5.0
+  score          Float // 0.0ΓÇô5.0
   movementNumber Int // sequential movement count at time of snapshot
   computedAt     DateTime       @default(now())
 
@@ -1160,13 +1169,13 @@ model ReliabilityScoreSnapshot {
   @@map("reliability_score_snapshots")
 }
 
-// ─── SESSION & DEVICE SECURITY ──────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ SESSION & DEVICE SECURITY ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model Session {
   id           String    @id @default(cuid())
   userId       String
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  // Stores the JWT jti claim — revoke by marking this row revoked
+  // Stores the JWT jti claim ΓÇö revoke by marking this row revoked
   jti          String    @unique
   deviceName   String?
   deviceType   String?   // "desktop" | "mobile" | "tablet"
@@ -1213,12 +1222,12 @@ enum SecurityEventType {
   NEW_DEVICE_LOGIN
 }
 
-// ─── CLASS & COURSE MANAGEMENT (Phase 3 — classes.*) ─────────────────────────
+// ΓöÇΓöÇΓöÇ CLASS & COURSE MANAGEMENT (Phase 3 ΓÇö classes.*) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // Tenant-owned class/course/timetable domain. RLS, composite same-tenant FKs,
 // CHECK constraints, and the schedule_revisions append-only trigger are carried
 // by the hand-authored 20261028000000_phase3_classes migration (Prisma does not
 // model them). Course.status / Subject.status deliberately reuse ProgramStatus
-// (design §6.2): a course/subject shares the ACTIVE/INACTIVE lifecycle of a
+// (design ┬º6.2): a course/subject shares the ACTIVE/INACTIVE lifecycle of a
 // program, independent of its program's own status.
 
 enum ClassSectionStatus {
@@ -1522,7 +1531,7 @@ model ScheduleRevision {
   @@map("schedule_revisions")
 }
 
-// ─── ATTENDANCE (Phase 4, tenant-owned) ─────────────────────────────────────
+// ΓöÇΓöÇΓöÇ ATTENDANCE (Phase 4, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // Four new tables recording attendance against the Phase 3 scheduling substrate
 // plus a controlled correction workflow. All follow the A2 tenancy checklist
 // (institutionId + composite same-tenant FKs + ENABLE/FORCE RLS). The composite
@@ -1653,12 +1662,12 @@ model AttendanceRecordHistory {
   @@map("attendance_record_history")
 }
 
-// ─── LIBRARY (Phase 5, tenant-owned, gated module) ──────────────────────────
+// ΓöÇΓöÇΓöÇ LIBRARY (Phase 5, tenant-owned, gated module) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //
 // Five tenant-owned tables (BookTitle, BookCopy, LibraryLoan, BookReservation,
 // LibraryFine) + seven enums. Each table carries institutionId +
 // `institution Institution @relation(...)`, @@unique([id, institutionId]) (anchors
-// composite same-tenant FKs), an (institutionId) index, and the design §3 query
+// composite same-tenant FKs), an (institutionId) index, and the design ┬º3 query
 // indexes. The composite same-tenant FKs (incl. institutionId), partial unique
 // indexes, RLS policies, CHECK constraints, GRANT refresh and the library.*
 // permission/role seed live in the hand-authored migration
@@ -1721,7 +1730,7 @@ model BookTitle {
   title           String
   author          String
   publisher       String?
-  isbn            String? // normalized (digits only) at the service layer; NOT business-unique (design §3.1)
+  isbn            String? // normalized (digits only) at the service layer; NOT business-unique (design ┬º3.1)
   category        String?
   edition         String?
   publicationYear Int?
@@ -1785,7 +1794,7 @@ model LibraryLoan {
 
   // Partial unique index `library_loans_one_active_per_copy` on
   // (institutionId, bookCopyId) WHERE status='ACTIVE' is the hard concurrency
-  // backstop (design §5.2) — Prisma cannot express a partial index, so it is
+  // backstop (design ┬º5.2) ΓÇö Prisma cannot express a partial index, so it is
   // created as raw SQL in the migration.
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
   @@index([institutionId])
@@ -1815,8 +1824,8 @@ model BookReservation {
   updatedAt         DateTime              @updatedAt
 
   // Partial unique index `book_reservations_one_pending_per_student_title` on
-  // (institutionId, bookTitleId, studentId) WHERE status='PENDING' (design §3.4)
-  // — created as raw SQL in the migration (Prisma cannot express it).
+  // (institutionId, bookTitleId, studentId) WHERE status='PENDING' (design ┬º3.4)
+  // ΓÇö created as raw SQL in the migration (Prisma cannot express it).
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
   @@index([institutionId])
   @@index([institutionId, bookTitleId, status, queuePosition])
@@ -1850,7 +1859,7 @@ model LibraryFine {
   @@map("library_fines")
 }
 
-// ─── ADMISSIONS (Phase 6, tenant-owned) ─────────────────────────────────────
+// ΓöÇΓöÇΓöÇ ADMISSIONS (Phase 6, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 enum AdmissionCampaignStatus {
   DRAFT
@@ -2029,8 +2038,8 @@ model AdmissionOffer {
   updatedAt        DateTime             @updatedAt
 
   // Partial unique index `admission_offers_one_live_per_application` on
-  // (institutionId, applicationId) WHERE status IN ('ISSUED','ACCEPTED') — at
-  // most one live offer per application (design §5) — Prisma cannot express a
+  // (institutionId, applicationId) WHERE status IN ('ISSUED','ACCEPTED') ΓÇö at
+  // most one live offer per application (design ┬º5) ΓÇö Prisma cannot express a
   // partial index, so it is created as raw SQL in the migration.
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
   @@index([institutionId])
@@ -2062,7 +2071,7 @@ model Enrollment {
   @@map("enrollments")
 }
 
-// ─── FEES & PAYMENTS (Phase 7 slice 1, tenant-owned) ────────────────────────
+// ΓöÇΓöÇΓöÇ FEES & PAYMENTS (Phase 7 slice 1, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //
 // Money is INTEGER PAISE (BigInt) end-to-end; currency is a stored non-null
 // 'INR' (CHECK currency = 'INR' in the migration). Prisma models reference
@@ -2179,10 +2188,10 @@ model StudentCharge {
   refundReversals   RefundReversal[]
   adjustments       Adjustment[]
 
-  // Posted = IMMUTABLE SNAPSHOT: only `status` (forward-only — relaxed in slice
-  // 7.1 to any valid state, see migration §E.1) and `updatedAt`
+  // Posted = IMMUTABLE SNAPSHOT: only `status` (forward-only ΓÇö relaxed in slice
+  // 7.1 to any valid state, see migration ┬ºE.1) and `updatedAt`
   // may change. The column-guard trigger `student_charges_guard` (raw SQL,
-  // migration §h, copied verbatim from design §D.3) freezes every snapshot
+  // migration ┬ºh, copied verbatim from design ┬ºD.3) freezes every snapshot
   // column and enforces the forward-only status transition. Composite
   // same-tenant FKs (studentId->student_profiles, feeStructureId->fee_structures,
   // feeComponentId->fee_components) + CHECKs (amountPaise > 0, currency = 'INR',
@@ -2207,7 +2216,7 @@ model PaymentTransaction {
   razorpayOrderId   String
   razorpayPaymentId String?
   razorpaySignature String?
-  targetChargeIds   String[] // authoritative server-persisted charge-id set (NOT a FK; §D.2 NIT-1)
+  targetChargeIds   String[] // authoritative server-persisted charge-id set (NOT a FK; ┬ºD.2 NIT-1)
   initiatedByUserId String? // recorded actor id (no FK)
   createdAt         DateTime                 @default(now())
   capturedAt        DateTime?
@@ -2219,9 +2228,9 @@ model PaymentTransaction {
   refunds              Refund[]
 
   // APPEND-ONLY fact: identity/amount columns immutable, status forward-only,
-  // terminal (CAPTURED/FAILED) frozen — enforced by the column-guard trigger
-  // `payment_transactions_guard` (raw SQL, migration §h, copied verbatim from
-  // design §D.3). Unique (institutionId, razorpayOrderId) + the partial unique
+  // terminal (CAPTURED/FAILED) frozen ΓÇö enforced by the column-guard trigger
+  // `payment_transactions_guard` (raw SQL, migration ┬ºh, copied verbatim from
+  // design ┬ºD.3). Unique (institutionId, razorpayOrderId) + the partial unique
   // `payment_transactions_payment_id_unique` on (institutionId, razorpayPaymentId)
   // WHERE razorpayPaymentId IS NOT NULL (raw SQL), the composite same-tenant FK
   // (studentId->student_profiles), and CHECKs (amountPaise > 0, currency = 'INR')
@@ -2298,19 +2307,19 @@ model ProcessedWebhookEvent {
 
   // INSERT-only idempotency ledger (NO updatedAt): append-only RLS + REVOKE
   // UPDATE,DELETE + trigger are hand-authored in the migration. The GLOBAL
-  // unique on razorpayEventId (the hard idempotency key, §D.7) + the composite
+  // unique on razorpayEventId (the hard idempotency key, ┬ºD.7) + the composite
   // (institutionId, razorpayEventId) unique + the composite same-tenant FK
   // (paymentTransactionId->payment_transactions, nullable) are raw SQL in the
   // migration.
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
-  @@unique([razorpayEventId]) // GLOBAL idempotency key (§D.7)
+  @@unique([razorpayEventId]) // GLOBAL idempotency key (┬ºD.7)
   @@unique([institutionId, razorpayEventId])
   @@index([institutionId])
   @@index([institutionId, paymentTransactionId])
   @@map("processed_webhook_events")
 }
 
-// ─── FEES & PAYMENTS (Phase 7 slice 7.1): concessions, refunds, adjustments ──
+// ΓöÇΓöÇΓöÇ FEES & PAYMENTS (Phase 7 slice 7.1): concessions, refunds, adjustments ΓöÇΓöÇ
 // Money-OUT + corrections half of the ledger. Strictly additive; never mutates
 // a captured fact. Six new tables: concession_definitions + refunds are mutable
 // (standard RLS pair; refunds carries a column-guard like payment_transactions);
@@ -2519,7 +2528,7 @@ model Adjustment {
   @@map("adjustments")
 }
 
-// ─── EXAMINATIONS & RESULTS (Phase 8 slice 8.1): exam lifecycle, schedules, ──
+// ΓöÇΓöÇΓöÇ EXAMINATIONS & RESULTS (Phase 8 slice 8.1): exam lifecycle, schedules, ΓöÇΓöÇ
 // capacity-aware room allocation, candidates, weighted assessments, scoped
 // marks entry with audited corrections, a deterministic grading engine, and
 // controlled append-only versioned result publication (step-up-gated).
@@ -2563,7 +2572,7 @@ enum ResultPublicationStatus {
 // Slice 8.2: a re-evaluation REQUEST is its own tracked, audited, forward-only
 // record. Lifecycle REQUESTED -> UNDER_REVIEW -> REMARKED -> CLOSED (+ the side
 // exit REQUESTED|UNDER_REVIEW -> REJECTED), enforced by the reeval_requests_guard
-// column-guard trigger (raw SQL, migration §h).
+// column-guard trigger (raw SQL, migration ┬ºh).
 enum ReevalRequestStatus {
   REQUESTED
   UNDER_REVIEW
@@ -2589,8 +2598,8 @@ model Examination {
   // Slice 8.2: nullable self-FK linking a SUPPLEMENTARY exam to its parent. The
   // single-column Prisma relation below is cosmetic; the real guarantee is the
   // composite same-tenant self-FK (institutionId, parentExaminationId)->
-  // examinations(institutionId, id) in raw SQL (migration §k). Set at create and
-  // then frozen by the re-authored examinations_guard (migration §l).
+  // examinations(institutionId, id) in raw SQL (migration ┬ºk). Set at create and
+  // then frozen by the re-authored examinations_guard (migration ┬ºl).
   parentExaminationId String?
   parentExamination   Examination?  @relation("SupplementaryParent", fields: [parentExaminationId], references: [id])
   createdAt         DateTime          @default(now())
@@ -2606,7 +2615,7 @@ model Examination {
   supplementaryChildren Examination[] @relation("SupplementaryParent")
 
   // Forward-only lifecycle via the examinations_guard column-guard trigger (raw
-  // SQL, migration §h). Composite same-tenant FKs (academicSessionId->
+  // SQL, migration ┬ºh). Composite same-tenant FKs (academicSessionId->
   // academic_sessions, academicTermId->academic_terms, programId->programs,
   // and in 8.2 (institutionId, parentExaminationId)->examinations) + CHECK
   // char_length(name) >= 1 + RLS are raw SQL in the migration.
@@ -2774,7 +2783,7 @@ model MarksRecord {
   history MarksRecordHistory[]
 
   // Forward-only identity-frozen column guard marks_records_guard (raw SQL,
-  // migration §h); DELETE forbidden. Composite same-tenant FKs ((institutionId,
+  // migration ┬ºh); DELETE forbidden. Composite same-tenant FKs ((institutionId,
   // examId)->examinations, (institutionId, assessmentId)->assessments,
   // (institutionId, candidateId)->candidates, (institutionId, studentId)->
   // student_profiles), the (assessmentId, candidateId) unique, and CHECK
@@ -2834,7 +2843,7 @@ model ResultPublication {
   // Slice 8.2: immutability moves from an unconditional append-only trigger to a
   // COLUMN-GUARD (result_publications_guard) that permits EXACTLY PUBLISHED->
   // SUPERSEDED and forbids every other mutation + all DELETEs (raw SQL, migration
-  // §m). The RLS pair becomes the default {tenant_isolation_select,
+  // ┬ºm). The RLS pair becomes the default {tenant_isolation_select,
   // tenant_isolation_modify} and campass_app gains GRANT UPDATE. Composite
   // same-tenant FKs ((institutionId, examId)->examinations, (institutionId,
   // gradingSchemeId)->grading_schemes), the (institutionId, examId, version)
@@ -2900,15 +2909,15 @@ model ReevalRequest {
   sourcePublication   ResultPublication   @relation("ReevalSourcePublication", fields: [sourcePublicationId], references: [id])
   status              ReevalRequestStatus @default(REQUESTED)
   studentReason       String
-  requestedByUserId   String // recorded actor id (no FK) — the student user
-  processedByUserId   String? // recorded actor id (no FK) — staff
+  requestedByUserId   String // recorded actor id (no FK) ΓÇö the student user
+  processedByUserId   String? // recorded actor id (no FK) ΓÇö staff
   staffNote           String?
   outcomePublicationId String? // set when a REMARKED change is re-published (no FK; frozen provenance, cycle-avoidance)
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
   // Forward-only lifecycle via the reeval_requests_guard column-guard trigger
-  // (raw SQL, migration §h). Composite same-tenant FKs ((institutionId, examId)->
+  // (raw SQL, migration ┬ºh). Composite same-tenant FKs ((institutionId, examId)->
   // examinations, (institutionId, candidateId)->candidates, (institutionId,
   // studentId)->student_profiles, (institutionId, subjectId)->subjects,
   // (institutionId, sourcePublicationId)->result_publications), the partial
@@ -2928,9 +2937,9 @@ model ReevalRequest {
   @@map("reeval_requests")
 }
 
-// ─── FACULTY MANAGEMENT (Phase 9.1, tenant-owned) ───────────────────────────
+// ΓöÇΓöÇΓöÇ FACULTY MANAGEMENT (Phase 9.1, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // Academic domain records that REFERENCE the authoritative FacultyProfile
-// identity + FacultyAssignment academic assignments — never duplicating them.
+// identity + FacultyAssignment academic assignments ΓÇö never duplicating them.
 // All tables carry institutionId + the (id, institutionId) composite anchor;
 // composite same-tenant FKs, RLS (ENABLE+FORCE), and CHECKs live in the
 // hand-authored migration 20261220000000_phase9_faculty_management.
@@ -2946,7 +2955,7 @@ model FacultyQualification {
   issuingBody     String? // institution / board / university
   field           String? // field of study / specialization
   year            Int? // year awarded
-  documentRef     String? // metadata string/URL only — NO blob (Document Mgmt owns storage later)
+  documentRef     String? // metadata string/URL only ΓÇö NO blob (Document Mgmt owns storage later)
   createdByUserId String // recorded actor id, NO FK (the 8.1 createdByUserId precedent)
   createdAt       DateTime                 @default(now())
   updatedAt       DateTime                 @updatedAt
@@ -2969,8 +2978,8 @@ model FacultyWorkloadPolicy {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
-  // One policy per institution — a deliberate this-slice commitment (design
-  // §B.2.2 F9). Standard RLS pair; CHECK maxWeeklyHours > 0 is raw SQL.
+  // One policy per institution ΓÇö a deliberate this-slice commitment (design
+  // ┬ºB.2.2 F9). Standard RLS pair; CHECK maxWeeklyHours > 0 is raw SQL.
   @@unique([institutionId]) // one policy per institution
   @@unique([id, institutionId]) // anchors composite same-tenant FKs
   @@index([institutionId])
@@ -3052,8 +3061,8 @@ enum FacultyTeachingHistoryChangeType {
   ENDED
 }
 
-// ─── PHASE 9.2 HR MANAGEMENT ────────────────────────────────────────────────
-// Eight tenant-owned tables (design PART B §4). Prisma models reference single
+// ΓöÇΓöÇΓöÇ PHASE 9.2 HR MANAGEMENT ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// Eight tenant-owned tables (design PART B ┬º4). Prisma models reference single
 // PKs; the composite same-tenant FK VARIANTS, CHECKs, RLS policies and column-
 // guard / append-only triggers are raw SQL in the migration (the
 // faculty_management convention). institutionId / (id, institutionId) /
@@ -3102,7 +3111,7 @@ model HrContract {
   startDate            DateTime
   endDate              DateTime?
   termsMetadata        Json?
-  salaryAmount         BigInt? // minor units, metadata only — NO fees integration
+  salaryAmount         BigInt? // minor units, metadata only ΓÇö NO fees integration
   currency             String             @default("INR")
   status               HrContractStatus   @default(ACTIVE)
   supersedesContractId String? // recorded id, NO FK (the decoupling precedent)
@@ -3110,7 +3119,7 @@ model HrContract {
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
-  // Versioned-append with a column guard (§4.2): identity/economic columns
+  // Versioned-append with a column guard (┬º4.2): identity/economic columns
   // frozen; status forward-only ACTIVE->ENDED|SUPERSEDED; no DELETE. Composite
   // same-tenant FK (institutionId, employeeId)->hr_employees, CHECKs
   // (currency = 'INR'; salaryAmount IS NULL OR salaryAmount >= 0) and the
@@ -3160,7 +3169,7 @@ model HrLeaveApplication {
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
 
-  // Forward-only lifecycle via a column guard (§4.3): immutable columns frozen;
+  // Forward-only lifecycle via a column guard (┬º4.3): immutable columns frozen;
   // REQUESTED->APPROVED|REJECTED|CANCELLED only; no DELETE. Composite same-tenant
   // FK (institutionId, employeeId)->hr_employees, CHECKs (days >= 1;
   // endDate >= startDate; char_length(reason) >= 1) and the
@@ -3309,4 +3318,208 @@ enum HrAttendanceSource {
 enum HrAttendanceHistoryChangeType {
   RECORDED
   CORRECTED
+}
+
+
+// ΓöÇΓöÇΓöÇ HOSTEL MANAGEMENT (Phase 9.3, tenant-owned) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// Backend-only gated "booster" module (design ┬ºB). Six tenant-owned tables
+// anchored on StudentProfile via composite same-tenant FKs. Prisma models carry
+// ONLY the field/index shape; composite same-tenant FKs, RLS (ENABLE+FORCE),
+// CHECKs, the forward-only column-guard + append-only triggers, the campass_app
+// GRANT refresh, and the catalogue seed all live in the hand-authored migration
+// 20270103000000_phase9_hostel. Actor/provenance ids (wardenUserId,
+// createdByUserId, allocatedByUserId, recordedByUserId, reportedByUserId,
+// assigneeUserId, transferFromAllocationId) are recorded ids with NO FK (the
+// faculty createdByUserId/recordedByUserId precedent, assumption A1).
+
+model HostelBuilding {
+  id              String             @id @default(cuid())
+  institutionId   String
+  institution     Institution        @relation(fields: [institutionId], references: [id])
+  name            String
+  type            HostelBuildingType
+  wardenUserId    String? // recorded actor id, NO FK (assumption A1)
+  isActive        Boolean            @default(true) // building active flag (FR-1.1); NOT a multi-state status enum
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  rooms HostelRoom[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, name) + CHECK char_length(name) >= 1 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("hostel_buildings")
+}
+
+model HostelRoom {
+  id              String           @id @default(cuid())
+  institutionId   String
+  institution     Institution      @relation(fields: [institutionId], references: [id])
+  buildingId      String
+  building        HostelBuilding   @relation(fields: [buildingId], references: [id])
+  roomNumber      String
+  capacity        Int // CHECK capacity >= 1 (raw SQL)
+  floor           Int?
+  status          HostelRoomStatus @default(AVAILABLE) // manual staff flag only, never auto-derived from occupancy (FR-1.2)
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  allocations        HostelRoomAllocation[]
+  maintenanceRequests HostelMaintenanceRequest[]
+
+  // Mutable-with-audit. Standard RLS pair; composite same-tenant FK
+  // (institutionId, buildingId)->hostel_buildings, business unique
+  // (institutionId, buildingId, roomNumber), CHECK capacity >= 1 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, buildingId])
+  @@map("hostel_rooms")
+}
+
+model HostelRoomAllocation {
+  id                       String                 @id @default(cuid())
+  institutionId            String
+  institution              Institution            @relation(fields: [institutionId], references: [id])
+  roomId                   String
+  room                     HostelRoom             @relation(fields: [roomId], references: [id])
+  studentId                String
+  student                  StudentProfile         @relation(fields: [studentId], references: [id])
+  status                   HostelAllocationStatus @default(ACTIVE)
+  allocatedAt              DateTime
+  vacatedAt                DateTime? // set on VACATED/TRANSFERRED
+  allocatedByUserId        String // recorded actor id, NO FK
+  transferFromAllocationId String? // provenance link, write-once at INSERT, NO FK
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+
+  checkEvents HostelCheckEvent[]
+
+  // Forward-only lifecycle (ACTIVE->VACATED|TRANSFERRED). Standard RLS pair +
+  // column-guard trigger hostel_room_allocations_guard + composite same-tenant
+  // FKs ((institutionId, roomId)->hostel_rooms, (institutionId, studentId)->
+  // student_profiles) + the partial unique one-ACTIVE-per-student are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, roomId])
+  @@index([institutionId, studentId])
+  @@map("hostel_room_allocations")
+}
+
+model HostelCheckEvent {
+  id               String                @id @default(cuid())
+  institutionId    String
+  institution      Institution           @relation(fields: [institutionId], references: [id])
+  allocationId     String
+  allocation       HostelRoomAllocation  @relation(fields: [allocationId], references: [id])
+  studentId        String
+  student          StudentProfile        @relation(fields: [studentId], references: [id])
+  eventType        HostelCheckEventType
+  occurredAt       DateTime
+  recordedByUserId String // recorded actor id, NO FK
+  createdAt        DateTime              @default(now())
+
+  // STRICTLY append-only (the marks_record_history precedent): createdAt only (no
+  // updatedAt). Append-only RLS pair + hostel_check_events_append_only trigger +
+  // composite same-tenant FKs ((institutionId, allocationId)->
+  // hostel_room_allocations, (institutionId, studentId)->student_profiles) raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, allocationId])
+  @@index([institutionId, studentId])
+  @@map("hostel_check_events")
+}
+
+model HostelLeaveApplication {
+  id              String            @id @default(cuid())
+  institutionId   String
+  institution     Institution       @relation(fields: [institutionId], references: [id])
+  studentId       String
+  student         StudentProfile    @relation(fields: [studentId], references: [id])
+  fromDate        DateTime
+  toDate          DateTime // CHECK toDate >= fromDate (raw SQL)
+  reason          String // CHECK char_length(reason) >= 1 (raw SQL)
+  status          HostelLeaveStatus @default(REQUESTED)
+  appliedByUserId String // the student's user id (recorded actor id, NO FK)
+  decidedByUserId String? // warden/admin on APPROVE/REJECT
+  decidedAt       DateTime?
+  decisionNote    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Forward-only lifecycle (REQUESTED->APPROVED|REJECTED|CANCELLED). Standard RLS
+  // pair + column-guard trigger hostel_leave_applications_guard + composite
+  // same-tenant FK (institutionId, studentId)->student_profiles are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, studentId])
+  @@index([institutionId, status])
+  @@map("hostel_leave_applications")
+}
+
+model HostelMaintenanceRequest {
+  id               String                  @id @default(cuid())
+  institutionId    String
+  institution      Institution             @relation(fields: [institutionId], references: [id])
+  roomId           String
+  room             HostelRoom              @relation(fields: [roomId], references: [id])
+  issue            String // CHECK char_length(issue) >= 1 (raw SQL)
+  status           HostelMaintenanceStatus @default(OPEN)
+  assigneeUserId   String? // recorded actor id, NO FK (assumption A1)
+  reportedByUserId String // recorded actor id, NO FK
+  resolvedAt       DateTime? // set on RESOLVED
+  resolutionNote   String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  // Forward-only lifecycle (OPEN->IN_PROGRESS->RESOLVED, OPEN|IN_PROGRESS->
+  // CANCELLED). Standard RLS pair + column-guard trigger
+  // hostel_maintenance_requests_guard + composite same-tenant FK
+  // (institutionId, roomId)->hostel_rooms are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, roomId])
+  @@index([institutionId, status])
+  @@map("hostel_maintenance_requests")
+}
+
+enum HostelBuildingType {
+  BOYS
+  GIRLS
+  MIXED
+  STAFF
+}
+
+enum HostelRoomStatus {
+  AVAILABLE
+  FULL
+  MAINTENANCE
+  CLOSED
+}
+
+enum HostelAllocationStatus {
+  ACTIVE
+  VACATED
+  TRANSFERRED
+}
+
+enum HostelCheckEventType {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum HostelLeaveStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HostelMaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
 }

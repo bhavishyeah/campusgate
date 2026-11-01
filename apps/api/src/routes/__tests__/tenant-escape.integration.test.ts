@@ -2847,6 +2847,69 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     ).rejects.toBeTruthy();
   }, 60_000);
 
+  // ─── Phase-9.3 Hostel Management tables (design §B.2) ───────────────────────
+  // The five mutable/guarded tables (hostel_buildings, hostel_rooms,
+  // hostel_room_allocations, hostel_leave_applications,
+  // hostel_maintenance_requests): cross-tenant read denied, spoofed/cross-tenant
+  // write denied, foreign-parent composite-FK violation, buggy-query backstop,
+  // three-GUC-state fail-closed. hostel_check_events (STRICTLY append-only):
+  // a self-contained case — insert OK, cross-tenant SELECT empty, UPDATE+DELETE
+  // both denied.
+
+  it("3r1. hostel read escape: tenant A cannot see tenant B's hostel rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelBuilding.findUnique({ where: { id: B.hostelBuildingId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelRoom.findUnique({ where: { id: B.hostelRoomId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelRoomAllocation.findUnique({ where: { id: B.hostelAllocationId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelLeaveApplication.findUnique({ where: { id: B.hostelLeaveId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelMaintenanceRequest.findUnique({ where: { id: B.hostelMaintenanceId } }))).toBeNull();
+
+    // Unscoped lists under A return only A's rows, never B's.
+    const ownBuildings = await withTenant(A.institutionId, (tx) => tx.hostelBuilding.findMany({}));
+    expect(ownBuildings.length).toBeGreaterThan(0);
+    for (const row of ownBuildings) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.hostelBuildingId);
+    }
+  }, 60_000);
+
+  it("3r2. hostel spoofed insert: A cannot stamp a building/allocation institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hostelBuilding.create({
+          data: {
+            id: `${PREFIX}SPOOF_HBUILDING`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            name: `${PREFIX}SPOOF Building`,
+            type: "BOYS",
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hostelRoomAllocation.create({
+          data: {
+            id: `${PREFIX}SPOOF_HALLOC`,
+            institutionId: B.institutionId, // spoof
+            roomId: B.hostelRoomId,
+            studentId: B.studentProfileId,
+            status: "ACTIVE",
+            allocatedAt: new Date(),
+            allocatedByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
   it("3r3. HR foreign-parent: A cannot reference B's employee / user / shift", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -2901,6 +2964,46 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
             status: "PRESENT",
             shiftId: B.hrShiftId, // B's shift under A's tenant
             recordedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3r3. hostel foreign-parent: A cannot reference B's building / room / student", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // The composite same-tenant FK (institutionId, buildingId) makes it physically
+    // impossible to put a room under B's building while in A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hostelRoom.create({
+          data: {
+            id: `${PREFIX}FOREIGN_HROOM`,
+            institutionId: A.institutionId,
+            buildingId: B.hostelBuildingId, // B's building under A's tenant
+            roomNumber: `${PREFIX}FR`,
+            capacity: 2,
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // And a leave cannot reference B's student under A (composite FK).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.hostelLeaveApplication.create({
+          data: {
+            id: `${PREFIX}FOREIGN_HLEAVE`,
+            institutionId: A.institutionId,
+            studentId: B.studentProfileId, // B's student under A's tenant
+            fromDate: new Date("2027-01-01T00:00:00.000Z"),
+            toDate: new Date("2027-01-02T00:00:00.000Z"),
+            reason: `${PREFIX}foreign`,
+            status: "REQUESTED",
+            appliedByUserId: A.userId,
           },
         }),
       ),
@@ -3037,6 +3140,99 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  it("3r4. hostel spoofed update: A cannot flip B's maintenance request", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.hostelMaintenanceRequest.updateMany({
+        where: { id: B.hostelMaintenanceId },
+        data: { status: "IN_PROGRESS" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.hostelMaintenanceRequest.findUnique({ where: { id: B.hostelMaintenanceId } });
+    expect(bRow!.status).toBe("OPEN");
+  }, 60_000);
+
+  it("3r5. hostel buggy-query backstop + fail-closed (unset / empty-string GUC)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // (i) unscoped findMany under A returns only A's rows.
+    const allocs = await withTenant(A.institutionId, (tx) => tx.hostelRoomAllocation.findMany({}));
+    for (const r of allocs) expect(r.institutionId).toBe(A.institutionId);
+    expect(allocs.some((r: { id: string }) => r.id === B.hostelAllocationId)).toBe(false);
+
+    const rooms = await withTenant(A.institutionId, (tx) => tx.hostelRoom.findMany({}));
+    for (const r of rooms) expect(r.institutionId).toBe(A.institutionId);
+    expect(rooms.some((r: { id: string }) => r.id === B.hostelRoomId)).toBe(false);
+
+    // (ii) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.hostelRoomAllocation.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (iii) empty-string GUC => nullif(...,'') => NULL => no rows.
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const b = await tx.hostelBuilding.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.hostelRoom.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const a = await tx.hostelRoomAllocation.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const l = await tx.hostelLeaveApplication.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const m = await tx.hostelMaintenanceRequest.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return b.length + r.length + a.length + l.length + m.length;
+    });
+    expect(empty).toBe(0);
+  }, 60_000);
+
+  it("3r6. hostel_check_events APPEND-ONLY (self-contained): insert OK, cross-tenant SELECT empty, UPDATE+DELETE denied", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Self-contained (mirrors the 3q5 faculty append-only case): INSERT one
+    // check-event row under A against A's already-seeded ACTIVE allocation, read
+    // under A, empty under B, then prove UPDATE + DELETE are both denied (REVOKE +
+    // append-only trigger). Removed here within this test's trigger-disable scope
+    // so the shared teardown is not blocked.
+    const eventId = `${PREFIX}HCHECK_A`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.hostelCheckEvent.create({
+        data: {
+          id: eventId,
+          institutionId: A.institutionId,
+          allocationId: A.hostelAllocationId,
+          studentId: A.studentProfileId,
+          eventType: "CHECK_IN",
+          occurredAt: new Date("2026-11-02T08:00:00.000Z"),
+          recordedByUserId: A.userId,
+        },
+      }),
+    );
+
+    // Readable under A, empty under B.
+    expect(await withTenant(A.institutionId, (tx) => tx.hostelCheckEvent.findUnique({ where: { id: eventId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.hostelCheckEvent.findUnique({ where: { id: eventId } }))).toBeNull();
+
+    // STRICTLY append-only: UPDATE + DELETE both denied (REVOKE + trigger).
+    await expect(withTenant(A.institutionId, (tx) => tx.hostelCheckEvent.update({ where: { id: eventId }, data: { eventType: "CHECK_OUT" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.hostelCheckEvent.delete({ where: { id: eventId } }))).rejects.toBeTruthy();
+
+    // Survived.
+    expect(await adminClient.hostelCheckEvent.findUnique({ where: { id: eventId } })).toBeTruthy();
+
+    // Clean up within a scoped trigger-disable so the shared teardown is not blocked.
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "hostel_check_events" DISABLE TRIGGER "hostel_check_events_no_update_delete"`);
+    try {
+      await adminClient.hostelCheckEvent.deleteMany({ where: { id: eventId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "hostel_check_events" ENABLE TRIGGER "hostel_check_events_no_update_delete"`);
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -3166,6 +3362,13 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // immutability at the row level, not via RLS — asserted by the
       // EXPECTED_POLICIES/DEFAULT_POLICIES loop above).
       "hr_employee_attendance_history",
+      // Phase-9.3: hostel_check_events is STRICTLY append-only (design §B.2) —
+      // INSERT-only policy + REVOKE + trigger, NO modify policy. The five
+      // mutable/guarded hostel tables carry the standard modify pair (their
+      // lifecycle immutability is a column guard, not an RLS policy — the
+      // examinations / marks_records precedent), asserted by the
+      // EXPECTED_POLICIES/DEFAULT_POLICIES loop above.
+      "hostel_check_events",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

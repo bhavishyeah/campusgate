@@ -237,6 +237,26 @@ export const AUDIT_ACTIONS = [
   { key: "hr.attendance.recorded", module: "hr_management", description: "Employee attendance recorded (+ append-only history row)" },
   { key: "hr.attendance.corrected", module: "hr_management", description: "Employee attendance corrected (+ append-only history row)" },
   { key: "hr.reports.exported", module: "hr_management", description: "HR report exported (XLSX)" },
+  // hostel.* (15) — Phase 9.3 Hostel Management mutations (past-tense). No
+  // migration mirror (validated only in recordAuditEvent). The permission/audit
+  // KEY prefix and the module registry key are both `hostel`. DENIED decisions
+  // (capacity full / already-allocated / capacity-below-occupancy / dest full)
+  // reuse the corresponding mutation key with result DENIED.
+  { key: "hostel.building.created", module: "hostel", description: "Hostel building created" },
+  { key: "hostel.building.updated", module: "hostel", description: "Hostel building updated" },
+  { key: "hostel.room.created", module: "hostel", description: "Hostel room created" },
+  { key: "hostel.room.updated", module: "hostel", description: "Hostel room updated (DENIED on capacity below current occupancy)" },
+  { key: "hostel.allocation.created", module: "hostel", description: "Room allocation created (DENIED on room full / student already allocated / room not accepting)" },
+  { key: "hostel.allocation.transferred", module: "hostel", description: "Student transferred between rooms (source TRANSFERRED, new ACTIVE in destination; DENIED on destination full)" },
+  { key: "hostel.allocation.vacated", module: "hostel", description: "Room allocation vacated (ACTIVE -> VACATED)" },
+  { key: "hostel.checkevent.recorded", module: "hostel", description: "Check-in/out event recorded (append-only)" },
+  { key: "hostel.leave.applied", module: "hostel", description: "Student applied for hostel leave (REQUESTED)" },
+  { key: "hostel.leave.approved", module: "hostel", description: "Hostel leave approved (REQUESTED -> APPROVED)" },
+  { key: "hostel.leave.rejected", module: "hostel", description: "Hostel leave rejected (REQUESTED -> REJECTED)" },
+  { key: "hostel.leave.cancelled", module: "hostel", description: "Hostel leave cancelled by the student (REQUESTED -> CANCELLED)" },
+  { key: "hostel.maintenance.created", module: "hostel", description: "Maintenance request created (OPEN)" },
+  { key: "hostel.maintenance.transitioned", module: "hostel", description: "Maintenance request advanced ({from,to}) incl. CANCELLED/RESOLVED" },
+  { key: "hostel.allocation.exported", module: "hostel", description: "Allocation list exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

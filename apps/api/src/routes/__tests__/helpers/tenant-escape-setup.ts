@@ -237,6 +237,23 @@ export interface SeededTenant {
   hrLeaveApplicationId: string;
   hrShiftId: string;
   hrEmployeeAttendanceId: string;
+  // Phase-9.3 Hostel Management (design §B.2). The FIVE mutable/guarded tables
+  // (hostel_buildings, hostel_rooms, hostel_room_allocations,
+  // hostel_leave_applications, hostel_maintenance_requests) are seeded here in
+  // child-safe order (building -> room -> ACTIVE allocation on the ALREADY-seeded
+  // studentProfile -> leave -> maintenance). hostel_check_events is STRICTLY
+  // append-only (its BEFORE UPDATE OR DELETE trigger blocks even adminClient in
+  // the shared teardown), so it is EXCLUDED from this generic seed/cleanup loop
+  // and proven by the self-contained append-only case — the
+  // faculty_teaching_history / marks_record_history precedent. The three
+  // column-guard tables (allocations/leave/maintenance) forbid DELETE
+  // unconditionally, so teardown deletes them within a scoped trigger-disable
+  // (the examinations/marks_records dance).
+  hostelBuildingId: string;
+  hostelRoomId: string;
+  hostelAllocationId: string;
+  hostelLeaveId: string;
+  hostelMaintenanceId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -357,6 +374,13 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const hrLeaveApplicationId = id(`hrleave_${key}`);
   const hrShiftId = id(`hrshift_${key}`);
   const hrEmployeeAttendanceId = id(`hratt_${key}`);
+  // Phase-9.3 hostel IDs (deterministic so cleanup is exact). The append-only
+  // hostel_check_events is NOT seeded here (self-contained case).
+  const hostelBuildingId = id(`hbuilding_${key}`);
+  const hostelRoomId = id(`hroom_${key}`);
+  const hostelAllocationId = id(`halloc_${key}`);
+  const hostelLeaveId = id(`hleave_${key}`);
+  const hostelMaintenanceId = id(`hmaint_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1182,6 +1206,24 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.3 Hostel Management MUTABLE/GUARDED tables (design §B.2). Seeded via
+  // the RLS-bypassing adminClient in child-safe order: building -> room (AVAILABLE,
+  // capacity 1 so the escape seed row is a single-seat room) -> ACTIVE allocation
+  // on the ALREADY-seeded studentProfile -> leave -> maintenance. The append-only
+  // hostel_check_events is DELIBERATELY NOT seeded here (its trigger blocks the
+  // shared teardown); its append-only behaviour is proven by the self-contained
+  // case. The three column-guard tables forbid DELETE, so teardown removes them
+  // within a scoped trigger-disable.
+  await adminClient.hostelBuilding.create({
+    data: {
+      id: hostelBuildingId,
+      institutionId,
+      name: `${PREFIX}Building ${key}`,
+      type: "BOYS",
+      createdByUserId: userId,
+    },
+  });
+
   await adminClient.hrLeavePolicy.create({
     data: {
       id: hrLeavePolicyId,
@@ -1231,6 +1273,54 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
       source: "MANUAL",
       shiftId: hrShiftId,
       recordedByUserId: userId,
+    },
+  });
+
+  await adminClient.hostelRoom.create({
+    data: {
+      id: hostelRoomId,
+      institutionId,
+      buildingId: hostelBuildingId,
+      roomNumber: id(`RM_${key}`),
+      capacity: 1,
+      status: "AVAILABLE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.hostelRoomAllocation.create({
+    data: {
+      id: hostelAllocationId,
+      institutionId,
+      roomId: hostelRoomId,
+      studentId: studentProfileId,
+      status: "ACTIVE",
+      allocatedAt: new Date("2026-11-01T00:00:00.000Z"),
+      allocatedByUserId: userId,
+    },
+  });
+
+  await adminClient.hostelLeaveApplication.create({
+    data: {
+      id: hostelLeaveId,
+      institutionId,
+      studentId: studentProfileId,
+      fromDate: new Date("2026-12-20T00:00:00.000Z"),
+      toDate: new Date("2026-12-27T00:00:00.000Z"),
+      reason: `${PREFIX}home visit ${key}`,
+      status: "REQUESTED",
+      appliedByUserId: userId,
+    },
+  });
+
+  await adminClient.hostelMaintenanceRequest.create({
+    data: {
+      id: hostelMaintenanceId,
+      institutionId,
+      roomId: hostelRoomId,
+      issue: `${PREFIX}leaking tap ${key}`,
+      status: "OPEN",
+      reportedByUserId: userId,
     },
   });
 
@@ -1299,6 +1389,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     hrLeaveApplicationId,
     hrShiftId,
     hrEmployeeAttendanceId,
+    hostelBuildingId,
+    hostelRoomId,
+    hostelAllocationId,
+    hostelLeaveId,
+    hostelMaintenanceId,
   };
 }
 
@@ -1362,6 +1457,55 @@ export async function cleanup(): Promise<void> {
   await withRetry(() => adminClient.hrLeavePolicy.deleteMany({ where }));
   await withRetry(() => adminClient.hrShift.deleteMany({ where }));
   await withRetry(() => adminClient.hrEmployee.deleteMany({ where }));
+
+  // Phase-9.3 Hostel Management tables FIRST (child -> parent), BEFORE the
+  // hostel_rooms / hostel_buildings / student_profiles deletes below (their
+  // composite FKs are ON DELETE RESTRICT). The append-only hostel_check_events
+  // is never seeded by the generic loop, so there is nothing to delete here for
+  // it; but a self-contained append-only case seeds + self-cleans a row, so
+  // delete defensively here within its own trigger-disable (no-op when empty) in
+  // case that case errored mid-way. The three column-guard tables
+  // (hostel_room_allocations, hostel_leave_applications,
+  // hostel_maintenance_requests) forbid DELETE unconditionally, so delete them
+  // with those triggers disabled (the examinations/marks_records dance). Order:
+  // check_events -> maintenance -> leave -> allocations -> rooms -> buildings.
+  await withRetry(() =>
+    adminClient.$executeRawUnsafe(
+      `ALTER TABLE "hostel_check_events" DISABLE TRIGGER "hostel_check_events_no_update_delete"`,
+    ),
+  );
+  try {
+    await withRetry(() => adminClient.hostelCheckEvent.deleteMany({ where }));
+  } finally {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(
+        `ALTER TABLE "hostel_check_events" ENABLE TRIGGER "hostel_check_events_no_update_delete"`,
+      ),
+    );
+  }
+  const hostelGuardedTables = [
+    { table: "hostel_maintenance_requests", trigger: "hostel_maintenance_requests_guard" },
+    { table: "hostel_leave_applications", trigger: "hostel_leave_applications_guard" },
+    { table: "hostel_room_allocations", trigger: "hostel_room_allocations_guard" },
+  ];
+  for (const { table, trigger } of hostelGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.hostelMaintenanceRequest.deleteMany({ where }));
+    await withRetry(() => adminClient.hostelLeaveApplication.deleteMany({ where }));
+    await withRetry(() => adminClient.hostelRoomAllocation.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of hostelGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.hostelRoom.deleteMany({ where }));
+  await withRetry(() => adminClient.hostelBuilding.deleteMany({ where }));
   // Phase-9.1 Faculty Management tables FIRST (leaves), BEFORE the
   // faculty_profiles / academic_terms deletes below (their composite FKs are ON
   // DELETE RESTRICT). The three mutable tables are deleted directly; the
@@ -1653,6 +1797,14 @@ export async function countRemainingTestRows(): Promise<number> {
     () => adminClient.facultyWorkload.count({ where }),
     () => adminClient.facultyWorkloadPolicy.count({ where }),
     () => adminClient.facultyQualification.count({ where }),
+    // Phase-9.3 Hostel Management MUTABLE/GUARDED tables (hostel_check_events is
+    // append-only and never seeded by the generic loop, so it is not counted —
+    // the faculty_teaching_history precedent). Counted SEQUENTIALLY (pooler cap).
+    () => adminClient.hostelMaintenanceRequest.count({ where }),
+    () => adminClient.hostelLeaveApplication.count({ where }),
+    () => adminClient.hostelRoomAllocation.count({ where }),
+    () => adminClient.hostelRoom.count({ where }),
+    () => adminClient.hostelBuilding.count({ where }),
     // Phase-8 exams MUTABLE/GUARDED tables (the two INSERT-only snapshot/history
     // tables are never seeded by the generic loop, so they are not counted — the
     // payment_allocations precedent). reeval_requests + the seeded
@@ -1875,6 +2027,19 @@ export const RLS_TABLES = [
   "hr_shifts",
   "hr_employee_attendance",
   "hr_employee_attendance_history",
+  // Phase-9.3 Hostel Management tables (design §B.2). The five mutable/guarded
+  // tables (hostel_buildings, hostel_rooms, hostel_room_allocations,
+  // hostel_leave_applications, hostel_maintenance_requests) use the default
+  // modify pair — the column-guard triggers on the three lifecycle tables enforce
+  // immutability at the row level, NOT via an append-only RLS policy, so they
+  // still carry tenant_isolation_modify. hostel_check_events is STRICTLY
+  // append-only (EXPECTED_POLICIES below).
+  "hostel_buildings",
+  "hostel_rooms",
+  "hostel_room_allocations",
+  "hostel_leave_applications",
+  "hostel_maintenance_requests",
+  "hostel_check_events",
 ] as const;
 
 /**
@@ -1985,6 +2150,15 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   hr_employee_attendance_history: [
     "tenant_isolation_select",
     "hr_employee_attendance_history_tenant_insert",
+  ],
+  // Phase-9.3: hostel_check_events is STRICTLY append-only (design §B.2) — the
+  // SELECT + INSERT pair, NO modify policy. The five mutable/guarded hostel
+  // tables are deliberately ABSENT here so they fall through to DEFAULT_POLICIES
+  // (their lifecycle immutability is a column guard, not an append-only RLS
+  // policy — the examinations / marks_records precedent).
+  hostel_check_events: [
+    "tenant_isolation_select",
+    "hostel_check_events_tenant_insert",
   ],
 };
 
