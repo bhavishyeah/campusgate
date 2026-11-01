@@ -254,6 +254,26 @@ export interface SeededTenant {
   hostelAllocationId: string;
   hostelLeaveId: string;
   hostelMaintenanceId: string;
+  // Phase-9.4 Transport Management (design §B.1). All EIGHT tables are mutable
+  // (NO append-only transport table this phase), so every one is seeded here (the
+  // standard RLS pair) and torn down in the generic child-first loop — none is
+  // excluded. Seed order respects the RESTRICT composite FKs: vehicle -> driver
+  // -> route -> stop -> ACTIVE assignment (route+vehicle+driver) -> ACTIVE
+  // enrollment on the ALREADY-seeded studentProfile (+ the seeded stop) ->
+  // maintenance request -> schedule. The three column-guard tables
+  // (transport_route_assignments, transport_enrollments,
+  // transport_vehicle_maintenance_requests) forbid DELETE unconditionally, so
+  // teardown deletes them within a scoped trigger-disable (the
+  // examinations/marks_records dance); the five mutable tables are deleted
+  // directly.
+  transportVehicleId: string;
+  transportDriverId: string;
+  transportRouteId: string;
+  transportStopId: string;
+  transportAssignmentId: string;
+  transportEnrollmentId: string;
+  transportMaintenanceId: string;
+  transportScheduleId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -381,6 +401,16 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const hostelAllocationId = id(`halloc_${key}`);
   const hostelLeaveId = id(`hleave_${key}`);
   const hostelMaintenanceId = id(`hmaint_${key}`);
+  // Phase-9.4 transport IDs (deterministic so cleanup is exact). No append-only
+  // transport table this phase, so all eight are in the generic loop.
+  const transportVehicleId = id(`tveh_${key}`);
+  const transportDriverId = id(`tdrv_${key}`);
+  const transportRouteId = id(`trt_${key}`);
+  const transportStopId = id(`tstop_${key}`);
+  const transportAssignmentId = id(`tasg_${key}`);
+  const transportEnrollmentId = id(`tenr_${key}`);
+  const transportMaintenanceId = id(`tmnt_${key}`);
+  const transportScheduleId = id(`tsch_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1324,6 +1354,113 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.4 Transport Management MUTABLE tables (design §B.1). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: vehicle (seatCapacity >= 1) -> driver -> route -> stop ->
+  // ACTIVE assignment (route+vehicle+driver) -> ACTIVE enrollment on the
+  // ALREADY-seeded studentProfile (+ the seeded stop, single-identity composite
+  // FK) -> maintenance request (reportedByUserId is the creator actor — there is
+  // NO createdByUserId) -> schedule. ALL EIGHT tables are mutable this phase
+  // (NO append-only transport table), so every one is in the generic seed/cleanup
+  // loop — none is excluded. The three column-guard tables (assignments /
+  // enrollments / maintenance) forbid DELETE unconditionally, so teardown removes
+  // them within a scoped trigger-disable (the examinations/marks_records dance).
+  await adminClient.transportVehicle.create({
+    data: {
+      id: transportVehicleId,
+      institutionId,
+      registrationNo: id(`REG_${key}`),
+      type: "BUS",
+      seatCapacity: 40,
+      status: "ACTIVE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportDriver.create({
+    data: {
+      id: transportDriverId,
+      institutionId,
+      name: `${PREFIX}Driver ${key}`,
+      licenseNo: id(`LIC_${key}`),
+      status: "ACTIVE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportRoute.create({
+    data: {
+      id: transportRouteId,
+      institutionId,
+      name: `${PREFIX}Route ${key}`,
+      code: id(`RTCODE_${key}`),
+      status: "ACTIVE",
+      feeAmount: 150000, // ₹1,500 (int paise)
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportRouteStop.create({
+    data: {
+      id: transportStopId,
+      institutionId,
+      routeId: transportRouteId,
+      name: `${PREFIX}Stop ${key}`,
+      sequence: 1,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportRouteAssignment.create({
+    data: {
+      id: transportAssignmentId,
+      institutionId,
+      routeId: transportRouteId,
+      vehicleId: transportVehicleId,
+      driverId: transportDriverId,
+      effectiveFrom: new Date("2026-11-01T00:00:00.000Z"),
+      status: "ACTIVE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportEnrollment.create({
+    data: {
+      id: transportEnrollmentId,
+      institutionId,
+      studentId: studentProfileId,
+      routeId: transportRouteId,
+      stopId: transportStopId,
+      status: "ACTIVE",
+      enrolledAt: new Date("2026-11-02T00:00:00.000Z"),
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.transportVehicleMaintenanceRequest.create({
+    data: {
+      id: transportMaintenanceId,
+      institutionId,
+      vehicleId: transportVehicleId,
+      issue: `${PREFIX}brake check ${key}`,
+      status: "OPEN",
+      reportedByUserId: userId,
+    },
+  });
+
+  await adminClient.transportRouteSchedule.create({
+    data: {
+      id: transportScheduleId,
+      institutionId,
+      routeId: transportRouteId,
+      stopId: transportStopId,
+      dayOfWeek: "MON",
+      departureTime: 480, // 08:00
+      arrivalTime: 540, // 09:00
+      createdByUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1394,6 +1531,14 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     hostelAllocationId,
     hostelLeaveId,
     hostelMaintenanceId,
+    transportVehicleId,
+    transportDriverId,
+    transportRouteId,
+    transportStopId,
+    transportAssignmentId,
+    transportEnrollmentId,
+    transportMaintenanceId,
+    transportScheduleId,
   };
 }
 
@@ -1407,6 +1552,45 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.4 Transport Management tables FIRST (child -> parent), BEFORE the
+  // student_profiles / users / institution deletes below (the enrollment's
+  // composite FKs to student_profiles/routes/stops and the tenant-root FKs are ON
+  // DELETE RESTRICT). There is NO append-only transport table this phase, so
+  // every one of the eight is deleted here — none is excluded. The three
+  // column-guard tables (transport_route_assignments, transport_enrollments,
+  // transport_vehicle_maintenance_requests) forbid DELETE unconditionally, so
+  // delete them with those triggers disabled (the examinations/marks_records
+  // dance). Order: schedules + maintenance + enrollments + assignments (children)
+  // -> stops -> routes + drivers + vehicles.
+  await withRetry(() => adminClient.transportRouteSchedule.deleteMany({ where }));
+  const transportGuardedTables = [
+    {
+      table: "transport_vehicle_maintenance_requests",
+      trigger: "transport_vehicle_maintenance_requests_guard",
+    },
+    { table: "transport_enrollments", trigger: "transport_enrollments_guard" },
+    { table: "transport_route_assignments", trigger: "transport_route_assignments_guard" },
+  ];
+  for (const { table, trigger } of transportGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.transportVehicleMaintenanceRequest.deleteMany({ where }));
+    await withRetry(() => adminClient.transportEnrollment.deleteMany({ where }));
+    await withRetry(() => adminClient.transportRouteAssignment.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of transportGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.transportRouteStop.deleteMany({ where }));
+  await withRetry(() => adminClient.transportRoute.deleteMany({ where }));
+  await withRetry(() => adminClient.transportDriver.deleteMany({ where }));
+  await withRetry(() => adminClient.transportVehicle.deleteMany({ where }));
   // Phase-9.2 HR Management tables FIRST (child -> parent), BEFORE the
   // users / departments / institution deletes below (hr_employees references
   // users + departments with ON DELETE RESTRICT). The append-only
@@ -1782,6 +1966,17 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-9.4 Transport Management MUTABLE tables (NO append-only table this
+    // phase, so all eight are seeded + torn down by the generic loop and counted
+    // here). Counted SEQUENTIALLY (session-pooler client cap).
+    () => adminClient.transportRouteSchedule.count({ where }),
+    () => adminClient.transportVehicleMaintenanceRequest.count({ where }),
+    () => adminClient.transportEnrollment.count({ where }),
+    () => adminClient.transportRouteAssignment.count({ where }),
+    () => adminClient.transportRouteStop.count({ where }),
+    () => adminClient.transportRoute.count({ where }),
+    () => adminClient.transportDriver.count({ where }),
+    () => adminClient.transportVehicle.count({ where }),
     // Phase-9.2 HR Management MUTABLE/GUARDED tables (hr_employee_attendance_history
     // is append-only and never seeded by the generic loop, so it is not counted —
     // the faculty_teaching_history precedent). Counted SEQUENTIALLY (pooler cap).
@@ -2040,6 +2235,22 @@ export const RLS_TABLES = [
   "hostel_leave_applications",
   "hostel_maintenance_requests",
   "hostel_check_events",
+  // Phase-9.4 Transport Management tables (design §B.1). ALL EIGHT use the
+  // default modify pair — the column-guard triggers on
+  // transport_route_assignments / transport_enrollments /
+  // transport_vehicle_maintenance_requests enforce forward-only immutability at
+  // the row level, NOT via an append-only RLS policy, so they still carry
+  // tenant_isolation_modify. There is NO append-only transport table this phase,
+  // so NONE appears in EXPECTED_POLICIES (they all fall through to
+  // DEFAULT_POLICIES).
+  "transport_vehicles",
+  "transport_drivers",
+  "transport_routes",
+  "transport_route_stops",
+  "transport_route_assignments",
+  "transport_enrollments",
+  "transport_vehicle_maintenance_requests",
+  "transport_route_schedules",
 ] as const;
 
 /**

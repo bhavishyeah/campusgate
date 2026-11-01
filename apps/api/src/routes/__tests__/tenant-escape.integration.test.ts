@@ -3233,6 +3233,197 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-9.4 Transport Management tables (design §B.1) ────────────────────
+  // All EIGHT tables (transport_vehicles, transport_drivers, transport_routes,
+  // transport_route_stops, transport_route_assignments, transport_enrollments,
+  // transport_vehicle_maintenance_requests, transport_route_schedules) are
+  // mutable/guarded — there is NO append-only transport table this phase, so
+  // every one is seeded in the shared setup and covered here with: cross-tenant
+  // read denied, spoofed/cross-tenant write denied, foreign-parent composite-FK
+  // violation, buggy-query backstop, and the three-GUC-state fail-closed case.
+  // The forward-only column guards on assignments/enrollments/maintenance enforce
+  // immutability at the row level (a column guard, not an append-only RLS policy),
+  // so they carry the standard modify pair — asserted by the policy meta-test
+  // (case 6) via DEFAULT_POLICIES; there is no append-only self-contained case.
+
+  it("3t1. transport read escape: tenant A cannot see tenant B's transport rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.transportVehicle.findUnique({ where: { id: B.transportVehicleId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportDriver.findUnique({ where: { id: B.transportDriverId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportRoute.findUnique({ where: { id: B.transportRouteId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportRouteStop.findUnique({ where: { id: B.transportStopId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportRouteAssignment.findUnique({ where: { id: B.transportAssignmentId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportEnrollment.findUnique({ where: { id: B.transportEnrollmentId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportVehicleMaintenanceRequest.findUnique({ where: { id: B.transportMaintenanceId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.transportRouteSchedule.findUnique({ where: { id: B.transportScheduleId } }))).toBeNull();
+
+    // Unscoped lists under A return only A's rows, never B's.
+    const ownVehicles = await withTenant(A.institutionId, (tx) => tx.transportVehicle.findMany({}));
+    expect(ownVehicles.length).toBeGreaterThan(0);
+    for (const row of ownVehicles) {
+      expect(row.institutionId).toBe(A.institutionId);
+      expect(row.id).not.toBe(B.transportVehicleId);
+    }
+  }, 60_000);
+
+  it("3t2. transport spoofed insert: A cannot stamp a vehicle/enrollment institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.transportVehicle.create({
+          data: {
+            id: `${PREFIX}SPOOF_TVEH`,
+            institutionId: B.institutionId, // spoof: claim to belong to B
+            registrationNo: `${PREFIX}SPOOF_REG`,
+            type: "VAN",
+            seatCapacity: 10,
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.transportEnrollment.create({
+          data: {
+            id: `${PREFIX}SPOOF_TENR`,
+            institutionId: B.institutionId, // spoof
+            studentId: B.studentProfileId,
+            routeId: B.transportRouteId,
+            stopId: B.transportStopId,
+            status: "ACTIVE",
+            enrolledAt: new Date(),
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3t3. transport foreign-parent: A cannot reference B's route / vehicle / student", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // transport_route_stops.(institutionId, routeId) composite FK forbids putting
+    // a stop under B's route while in A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.transportRouteStop.create({
+          data: {
+            id: `${PREFIX}FOREIGN_TSTOP`,
+            institutionId: A.institutionId,
+            routeId: B.transportRouteId, // B's route under A's tenant
+            name: `${PREFIX}foreign stop`,
+            sequence: 9,
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // transport_route_assignments.(institutionId, vehicleId) composite FK forbids
+    // referencing B's vehicle under A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.transportRouteAssignment.create({
+          data: {
+            id: `${PREFIX}FOREIGN_TASG`,
+            institutionId: A.institutionId,
+            routeId: A.transportRouteId,
+            vehicleId: B.transportVehicleId, // B's vehicle under A's tenant
+            driverId: A.transportDriverId,
+            effectiveFrom: new Date(),
+            status: "ACTIVE",
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // transport_enrollments.(institutionId, studentId) composite FK forbids
+    // enrolling B's student under A's tenant (single-identity guarantee).
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.transportEnrollment.create({
+          data: {
+            id: `${PREFIX}FOREIGN_TENR`,
+            institutionId: A.institutionId,
+            studentId: B.studentProfileId, // B's student under A's tenant
+            routeId: A.transportRouteId,
+            stopId: A.transportStopId,
+            status: "ACTIVE",
+            enrolledAt: new Date(),
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3t4. transport spoofed update: A cannot flip B's maintenance request", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.transportVehicleMaintenanceRequest.updateMany({
+        where: { id: B.transportMaintenanceId },
+        data: { status: "IN_PROGRESS" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.transportVehicleMaintenanceRequest.findUnique({ where: { id: B.transportMaintenanceId } });
+    expect(bRow!.status).toBe("OPEN");
+  }, 60_000);
+
+  it("3t5. transport buggy-query backstop + fail-closed (unset / empty-string GUC)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // (i) unscoped findMany under A returns only A's rows.
+    const enrollments = await withTenant(A.institutionId, (tx) => tx.transportEnrollment.findMany({}));
+    for (const r of enrollments) expect(r.institutionId).toBe(A.institutionId);
+    expect(enrollments.some((r: { id: string }) => r.id === B.transportEnrollmentId)).toBe(false);
+
+    const routes = await withTenant(A.institutionId, (tx) => tx.transportRoute.findMany({}));
+    for (const r of routes) expect(r.institutionId).toBe(A.institutionId);
+    expect(routes.some((r: { id: string }) => r.id === B.transportRouteId)).toBe(false);
+
+    const aCount = await adminClient.transportVehicle.count({ where: { institutionId: A.institutionId } });
+    const vehicles = await withTenant(A.institutionId, (tx) => tx.transportVehicle.findMany({}));
+    expect(vehicles.length).toBe(aCount);
+
+    // (ii) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.transportEnrollment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (iii) empty-string GUC => nullif(...,'') => NULL => no rows (all eight tables).
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const v = await tx.transportVehicle.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const d = await tx.transportDriver.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.transportRoute.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const s = await tx.transportRouteStop.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const a = await tx.transportRouteAssignment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const e = await tx.transportEnrollment.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const m = await tx.transportVehicleMaintenanceRequest.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const sc = await tx.transportRouteSchedule.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return v.length + d.length + r.length + s.length + a.length + e.length + m.length + sc.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iv) A's own rows ARE visible under A's GUC (the complementary direction).
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.transportEnrollment.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.transportEnrollmentId)).toBe(true);
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
