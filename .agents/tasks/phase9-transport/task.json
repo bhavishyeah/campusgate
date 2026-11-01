@@ -1,0 +1,7 @@
+{
+  "task_id": "task-phase9-transport",
+  "task_description": "CAMPASS Phase 9.4 Transport Management (backend only): 8 tenant-owned Prisma models + hand-authored lettered a-j migration (RLS fail-closed, forward-only/column guards, capacity + MAINTENANCE guards, catalogue seed), shared catalogue additions (transport module key, 8 permissions, TRANSPORT_MANAGER role + 15 role_permission pairs, 18 audit keys, Zod schemas), the /api/transport route module (34 routes mirroring hostel.ts: advisory-lock concurrency-safe enrollment, derived route capacity, fee-as-string metadata, reports + ExcelJS export, list-shaped self-service), and tests (tenant-escape extension for 8 tables + behavioral/concurrency live-DB suite). Work on main, no worktree, no push/deploy.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}
