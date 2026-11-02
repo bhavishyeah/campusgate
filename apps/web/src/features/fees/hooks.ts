@@ -262,6 +262,91 @@ export function useReconciliation(query: ReconciliationQuery) {
   });
 }
 
+// ─── Student self-service (fees.view_own) ────────────────────────────────────
+
+export interface Outstanding {
+  outstandingPaise: string;
+  currency: string;
+}
+
+/** Create-order response (Stage 1). amountPaise is a decimal paise STRING. */
+export interface CreatePaymentResult {
+  razorpayOrderId: string;
+  amountPaise: string;
+  currency: string;
+  keyId: string;
+  paymentTransactionId: string;
+}
+
+export interface VerifyPaymentResult {
+  ok: boolean;
+  pending: boolean;
+}
+
+export interface VerifyPaymentBody {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+/**
+ * Poll the outstanding total while a payment is "processing". When
+ * `refetchMs` is a number the query refetches on that interval; `false`
+ * disables polling. The webhook remains the authoritative settlement path.
+ */
+export function useMeOutstanding(refetchMs: number | false = false) {
+  return useQuery<Outstanding>({
+    queryKey: feesKeys.meOutstanding(),
+    queryFn: () => api.get("/api/fees/me/outstanding"),
+    enabled: can("fees.view_own", currentPermissions()),
+    refetchInterval: refetchMs,
+  });
+}
+
+export function useMeCharges() {
+  return useQuery<{ charges: LedgerCharge[] }>({
+    queryKey: feesKeys.meCharges(),
+    queryFn: () => api.get("/api/fees/me/charges"),
+    enabled: can("fees.view_own", currentPermissions()),
+  });
+}
+
+export function useMeReceipts() {
+  return useQuery<{ receipts: Receipt[] }>({
+    queryKey: feesKeys.meReceipts(),
+    queryFn: () => api.get("/api/fees/me/receipts"),
+    enabled: can("fees.view_own", currentPermissions()),
+  });
+}
+
+/**
+ * Stage 1 — create a Razorpay order from the selected chargeIds. NO client
+ * amount is sent; the server recomputes the payable sum. Errors are surfaced by
+ * the caller (not auto-toasted) because the PAY flow has per-status handling.
+ */
+export function useCreatePayment() {
+  return useMutation<CreatePaymentResult, ApiError, { chargeIds: string[] }>({
+    mutationFn: (body) => api.post("/api/fees/me/payments", body),
+  });
+}
+
+/**
+ * Stage 2 — optimistic verify (UX only; the webhook is authoritative). On
+ * success invalidates the student ledger / receipts / outstanding so the
+ * screen refetches. Caller handles the 400 "invalid payment signature" case.
+ */
+export function useVerifyPayment() {
+  const qc = useQueryClient();
+  return useMutation<VerifyPaymentResult, ApiError, VerifyPaymentBody>({
+    mutationFn: (body) => api.post("/api/fees/payments/verify", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: feesKeys.meCharges() });
+      qc.invalidateQueries({ queryKey: feesKeys.meReceipts() });
+      qc.invalidateQueries({ queryKey: feesKeys.meOutstanding() });
+    },
+  });
+}
+
 // ─── Mutation hooks ──────────────────────────────────────────────────────────
 
 export function useCreateStructure() {
