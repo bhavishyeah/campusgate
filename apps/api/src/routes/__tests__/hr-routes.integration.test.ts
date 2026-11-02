@@ -174,7 +174,14 @@ describe("Phase-9 HR routes (permission + module + validation + lifecycle + audi
       expect(ROLE_PERMISSIONS.ADMIN).toContain(k);
       expect(ROLE_PERMISSIONS.HR_MANAGER).toContain(k);
     }
-    expect(ROLE_PERMISSIONS.EMPLOYEE).toEqual(["hr.view_own"]);
+    // EMPLOYEE holds the HR self key and NO HR staff key. (EMPLOYEE also holds
+    // the Phase-9.7 baseline documents.download like every non-applicant tenant
+    // role, so this asserts the HR invariant by membership rather than exact
+    // array-equality on the now cross-module EMPLOYEE key set.)
+    expect(ROLE_PERMISSIONS.EMPLOYEE).toContain("hr.view_own");
+    for (const k of staffKeys) {
+      expect(ROLE_PERMISSIONS.EMPLOYEE).not.toContain(k);
+    }
     // ADMIN/HR_MANAGER never get the self-service key; STUDENT/FACULTY get nothing.
     expect(ROLE_PERMISSIONS.ADMIN).not.toContain("hr.view_own");
     for (const k of [...staffKeys, "hr.view_own"]) {

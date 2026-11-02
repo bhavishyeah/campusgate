@@ -353,6 +353,11 @@ model Institution {
   serviceRequests                   ServiceRequest[]
   serviceRequestActivities          ServiceRequestActivity[]
   serviceRequestFeedback            ServiceRequestFeedback[]
+  documentRetentionPolicies         DocumentRetentionPolicy[]
+  documents                         Document[]
+  documentVersions                  DocumentVersion[]
+  documentAccessGrants              DocumentAccessGrant[]
+  documentAccessLogs                DocumentAccessLog[]
 
   @@map("institutions")
 }
@@ -376,6 +381,7 @@ model Department {
   hrEmployees          HrEmployee[]
   inventoryCustodyAssets InventoryAsset[] @relation("InventoryAssetCustodyDepartment")
   serviceRequestTypes    ServiceRequestType[] @relation("ServiceRequestTypeDefaultDepartment")
+  documentAccessGrants   DocumentAccessGrant[] @relation("DocumentAccessGrantGranteeDepartment")
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -427,6 +433,11 @@ model User {
   serviceRequestsRequested ServiceRequest[] @relation("ServiceRequestRequester")
   serviceRequestsAssigned  ServiceRequest[] @relation("ServiceRequestAssignee")
   serviceRequestFeedback   ServiceRequestFeedback[] @relation("ServiceRequestFeedbackRequester")
+  documentsOwned           Document[] @relation("DocumentOwner")
+  documentVersionsUploaded DocumentVersion[] @relation("DocumentVersionUploadedBy")
+  documentAccessGrantsGrantee DocumentAccessGrant[] @relation("DocumentAccessGrantGrantee")
+  documentAccessGrantsGranted DocumentAccessGrant[] @relation("DocumentAccessGrantGrantedBy")
+  documentAccessLogs       DocumentAccessLog[] @relation("DocumentAccessLogUser")
 
   @@unique([id, institutionId])
   @@map("users")
@@ -4314,4 +4325,179 @@ enum ServiceRequestActivityKind {
   COMMENT
   ASSIGNMENT
   APPROVAL
+}
+
+// ─── Phase 9.7 Document Management (appended; raw-SQL migration dir
+//     20270131000000_phase9_documents mirrors the inventory/service-requests
+//     house style). Large file BLOBS live in OBJECT STORAGE (Supabase Storage)
+//     behind the ObjectStore adapter seam; the relational DB stores only
+//     METADATA. The composite same-tenant FKs, CHECKs, RLS, append-only triggers
+//     and the forward-only document_status_guard column guard are declared ONLY
+//     in the migration SQL (Prisma models the single-column relation for client
+//     typing; the migration replaces it with the composite — the known cosmetic
+//     diff). StudentDocument (SIS) and ApplicationDocument (admissions) are
+//     SEPARATE tables and are NOT touched.
+
+model DocumentRetentionPolicy {
+  id             String      @id @default(cuid())
+  institutionId  String
+  institution    Institution @relation(fields: [institutionId], references: [id])
+  name           String // CHECK char_length(name) >= 1 (raw SQL); business unique (institutionId, name)
+  retentionDays  Int // CHECK retentionDays >= 1 (raw SQL)
+  category       String? // optional scope
+  createdByUserId String // recorded actor id, NO FK
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  documents Document[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, name) + CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("document_retention_policies")
+}
+
+model Document {
+  id               String         @id @default(cuid())
+  institutionId    String
+  institution      Institution    @relation(fields: [institutionId], references: [id])
+  title            String // CHECK char_length(title) >= 1 (raw SQL)
+  description      String?
+  category         String?
+  ownerUserId      String
+  ownerUser        User           @relation("DocumentOwner", fields: [ownerUserId], references: [id])
+  // Nullable pointer to the current DocumentVersion — a plain String with NO FK
+  // to avoid a circular composite FK (versions reference documents); validated
+  // in the handler within the same tenant tx (the service-requests pointer
+  // precedent).
+  currentVersionId String?
+  status           DocumentStatus @default(ACTIVE)
+  retentionPolicyId String?
+  retentionPolicy  DocumentRetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  retainUntil      DateTime?
+  createdByUserId  String // recorded actor id, NO FK
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  versions DocumentVersion[]
+  grants   DocumentAccessGrant[]
+  accessLogs DocumentAccessLog[]
+
+  // Forward-only lifecycle column guard document_status_guard (freezes identity
+  // cols + forbids DELETE + enforces the legal transition set; PURGED terminal)
+  // + composite same-tenant FKs ((institutionId, ownerUserId)->users;
+  // (institutionId, retentionPolicyId)->document_retention_policies MATCH SIMPLE
+  // nullable no-op) + CHECK title non-empty are raw SQL. currentVersionId + the
+  // *ByUserId recorded ids carry NO FK.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, ownerUserId])
+  @@index([institutionId, status])
+  @@index([institutionId, retentionPolicyId])
+  @@index([institutionId, retainUntil])
+  @@map("documents")
+}
+
+// ─── Append-only (createdAt/uploadedAt-only, NO updatedAt) ───────────────────
+
+model DocumentVersion {
+  id               String      @id @default(cuid())
+  institutionId    String
+  institution      Institution @relation(fields: [institutionId], references: [id])
+  documentId       String
+  document         Document    @relation(fields: [documentId], references: [id])
+  version          Int // CHECK version >= 1 (raw SQL); business unique (institutionId, documentId, version)
+  filename         String // CHECK char_length(filename) >= 1 (raw SQL)
+  contentType      String // CHECK char_length(contentType) >= 1 (raw SQL)
+  sizeBytes        BigInt // CHECK sizeBytes >= 0 (raw SQL)
+  checksumSha256   String // CHECK checksumSha256 ~ '^[0-9a-f]{64}$' (raw SQL)
+  storageKey       String // CHECK non-empty (raw SQL); business unique (institutionId, storageKey)
+  uploadedByUserId String
+  uploadedByUser   User        @relation("DocumentVersionUploadedBy", fields: [uploadedByUserId], references: [id])
+  uploadedAt       DateTime    @default(now())
+
+  // Append-only (INSERT-only RLS pair {tenant_isolation_select,
+  // <table>_tenant_insert} + unconditional-raise trigger + REVOKE UPDATE,DELETE).
+  // Composite same-tenant FKs (institutionId, documentId)->documents and
+  // (institutionId, uploadedByUserId)->users + business uniques + CHECKs are raw
+  // SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, documentId])
+  @@map("document_versions")
+}
+
+model DocumentAccessGrant {
+  id                  String              @id @default(cuid())
+  institutionId       String
+  institution         Institution         @relation(fields: [institutionId], references: [id])
+  documentId          String
+  document            Document            @relation(fields: [documentId], references: [id])
+  // EXCLUSIVE-OR grantee: exactly one of granteeUserId / granteeDepartmentId is
+  // non-null (CHECK raw SQL). Both are nullable composite FKs (MATCH SIMPLE).
+  granteeUserId       String?
+  granteeUser         User?               @relation("DocumentAccessGrantGrantee", fields: [granteeUserId], references: [id])
+  granteeDepartmentId String?
+  granteeDepartment   Department?         @relation("DocumentAccessGrantGranteeDepartment", fields: [granteeDepartmentId], references: [id])
+  accessLevel         DocumentAccessLevel
+  grantedByUserId     String
+  grantedByUser       User                @relation("DocumentAccessGrantGrantedBy", fields: [grantedByUserId], references: [id])
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  revokedAt           DateTime?
+  revokedByUserId     String? // recorded actor id, NO FK
+
+  // Mutable config (grant/revoke-with-audit; no trigger). Standard RLS pair; the
+  // grant XOR CHECK + the two PARTIAL live-grant unique indexes (WHERE revokedAt
+  // IS NULL) + composite same-tenant FKs ((institutionId, documentId)->documents;
+  // (institutionId, granteeUserId)->users MATCH SIMPLE; (institutionId,
+  // granteeDepartmentId)->departments MATCH SIMPLE; (institutionId,
+  // grantedByUserId)->users) are raw SQL. revokedByUserId carries NO FK.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, documentId])
+  @@index([institutionId, granteeUserId])
+  @@index([institutionId, granteeDepartmentId])
+  @@map("document_access_grants")
+}
+
+model DocumentAccessLog {
+  id            String               @id @default(cuid())
+  institutionId String
+  institution   Institution          @relation(fields: [institutionId], references: [id])
+  documentId    String
+  document      Document             @relation(fields: [documentId], references: [id])
+  versionId     String // NOT NULL recorded id, NO FK — every logged action is a signed-URL mint against the then-current version
+  userId        String
+  user          User                 @relation("DocumentAccessLogUser", fields: [userId], references: [id])
+  action        DocumentAccessAction
+  createdAt     DateTime             @default(now())
+
+  // Append-only (INSERT-only RLS pair + unconditional-raise trigger + REVOKE
+  // UPDATE,DELETE). Composite same-tenant FKs (institutionId, documentId)->
+  // documents and (institutionId, userId)->users are raw SQL. versionId carries
+  // NO FK.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, documentId])
+  @@index([institutionId, userId])
+  @@index([institutionId, createdAt])
+  @@map("document_access_logs")
+}
+
+enum DocumentStatus {
+  ACTIVE
+  ARCHIVED
+  PURGE_PENDING
+  PURGED
+}
+
+enum DocumentAccessLevel {
+  READ
+  MANAGE
+}
+
+enum DocumentAccessAction {
+  DOWNLOAD_URL_MINTED
 }

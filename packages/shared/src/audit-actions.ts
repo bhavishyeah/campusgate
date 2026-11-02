@@ -321,6 +321,23 @@ export const AUDIT_ACTIONS = [
   { key: "service_requests.comment.added", module: "service_requests", description: "Comment appended to a request activity ledger (DENIED if not own/CLOSED)" },
   { key: "service_requests.feedback.submitted", module: "service_requests", description: "Feedback submitted on own RESOLVED/CLOSED request (DENIED if not terminal/own/dup)" },
   { key: "service_requests.register.exported", module: "service_requests", description: "Service request register exported (XLSX)" },
+  // documents.* (11) — Phase 9.7 Document Management mutations (past-tense). No
+  // migration mirror (validated only in recordAuditEvent). The permission/audit
+  // KEY prefix and the module registry key are both `documents`. DENIED decisions
+  // (not-public-by-default visibility, illegal transition, storage failures)
+  // reuse the corresponding mutation key with result DENIED. Metadata views
+  // (GET /:id) are NOT audited — they are ordinary authorized reads.
+  { key: "documents.document.created", module: "documents", description: "Document created (metadata row + v1 version)" },
+  { key: "documents.version.uploaded", module: "documents", description: "New document version uploaded (append-only version + object; pointer advanced)" },
+  { key: "documents.download_url.minted", module: "documents", description: "Short-lived signed download URL minted after the ownership-or-grant check (+ access-log row)" },
+  { key: "documents.grant.created", module: "documents", description: "Access grant created (to a user or a department; READ|MANAGE)" },
+  { key: "documents.grant.revoked", module: "documents", description: "Access grant revoked (stops future signed-URL mints)" },
+  { key: "documents.retention_policy.upserted", module: "documents", description: "Retention policy created or updated" },
+  { key: "documents.document.archived", module: "documents", description: "Document archived (ACTIVE -> ARCHIVED)" },
+  { key: "documents.document.unarchived", module: "documents", description: "Document un-archived (ARCHIVED -> ACTIVE)" },
+  { key: "documents.document.purge_requested", module: "documents", description: "Document marked for purge (-> PURGE_PENDING)" },
+  { key: "documents.purged", module: "documents", description: "Document purged (every version blob deleted via adapter; -> PURGED terminal, metadata tombstone retained)" },
+  { key: "documents.report.exported", module: "documents", description: "Document management report exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

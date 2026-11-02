@@ -2294,3 +2294,92 @@ export type RejectServiceRequestInput = z.infer<typeof rejectServiceRequestSchem
 export type ServiceRequestCommentInput = z.infer<typeof serviceRequestCommentSchema>;
 export type ServiceRequestFeedbackInput = z.infer<typeof serviceRequestFeedbackSchema>;
 export type ServiceRequestListQueryInput = z.infer<typeof serviceRequestListQuerySchema>;
+
+// ─── Phase 9.7 Document Management ───────────────────────────────────────────
+// institutionId / ownerUserId / storageKey / checksum / size are NEVER accepted
+// from external input — the owner is the verified token, and the storage key +
+// checksum + byte size are computed server-side from the received bytes (design
+// §7/§8). Enum members mirror the pg enums added by the
+// 20270131000000_phase9_documents migration. There are no money fields in this
+// module. The raw file bytes themselves arrive on the request body (the
+// encapsulated raw-body Buffer parser); these schemas validate the METADATA
+// envelope only.
+
+export const documentAccessLevelEnum = z.enum(["READ", "MANAGE"]);
+// The forward-only transition targets a staff lifecycle route may name.
+export const documentLifecycleTargetEnum = z.enum([
+  "ARCHIVED",
+  "ACTIVE",
+  "PURGE_PENDING",
+  "PURGED",
+]);
+
+const documentsCuidLike = z.string().min(1).max(64);
+
+// 1. Upload metadata (carried as headers/query alongside the raw body). title
+// non-empty <=300; description optional <=4000; category optional <=120;
+// filename non-empty <=255; contentType non-empty; optional retentionPolicyId.
+export const createDocumentSchema = z.object({
+  title: z.string().min(1, "Title is required").max(300),
+  description: z.string().max(4000).optional(),
+  category: z.string().max(120).optional(),
+  filename: z.string().min(1, "Filename is required").max(255),
+  contentType: z.string().min(1, "Content type is required").max(255),
+  retentionPolicyId: documentsCuidLike.optional(),
+});
+
+// 2. New version of an existing document (metadata only; the document id is a
+// path param). No title/description/category/retention — those live on the doc.
+export const newDocumentVersionSchema = z.object({
+  filename: z.string().min(1, "Filename is required").max(255),
+  contentType: z.string().min(1, "Content type is required").max(255),
+});
+
+// 3. Create grant. EXACTLY one of granteeUserId / granteeDepartmentId (XOR);
+// accessLevel READ|MANAGE. Grantee existence is validated same-tenant in-handler.
+export const createDocumentGrantSchema = z
+  .object({
+    granteeUserId: documentsCuidLike.optional(),
+    granteeDepartmentId: documentsCuidLike.optional(),
+    accessLevel: documentAccessLevelEnum,
+  })
+  .refine((v) => (v.granteeUserId !== undefined) !== (v.granteeDepartmentId !== undefined), {
+    message: "exactly one of granteeUserId or granteeDepartmentId is required",
+    path: ["granteeUserId"],
+  });
+
+// 4. Retention policy. name non-empty <=120; retentionDays int 1..36500; optional
+// category scope.
+export const upsertDocumentRetentionPolicySchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  retentionDays: z.coerce.number().int().min(1).max(36500),
+  category: z.string().max(120).optional(),
+});
+
+export const patchDocumentRetentionPolicySchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    retentionDays: z.coerce.number().int().min(1).max(36500).optional(),
+    category: z.string().max(120).nullish(),
+  })
+  .strict();
+
+// 5. List / report query. page >= 1 default 1; pageSize 1..100 default 20;
+// optional status / ownerUserId / category filters; scope (mine|all) optional.
+export const documentListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.string().max(40).optional(),
+  ownerUserId: documentsCuidLike.optional(),
+  category: z.string().max(120).optional(),
+  scope: z.enum(["mine", "all"]).optional(),
+});
+
+export type DocumentAccessLevelValue = z.infer<typeof documentAccessLevelEnum>;
+export type DocumentLifecycleTargetValue = z.infer<typeof documentLifecycleTargetEnum>;
+export type CreateDocumentInput = z.infer<typeof createDocumentSchema>;
+export type NewDocumentVersionInput = z.infer<typeof newDocumentVersionSchema>;
+export type CreateDocumentGrantInput = z.infer<typeof createDocumentGrantSchema>;
+export type UpsertDocumentRetentionPolicyInput = z.infer<typeof upsertDocumentRetentionPolicySchema>;
+export type PatchDocumentRetentionPolicyInput = z.infer<typeof patchDocumentRetentionPolicySchema>;
+export type DocumentListQueryInput = z.infer<typeof documentListQuerySchema>;

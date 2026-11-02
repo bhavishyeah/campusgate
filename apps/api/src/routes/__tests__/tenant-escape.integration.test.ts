@@ -4060,6 +4060,203 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-9.7 Document Management tables (design §13/§16.3) ───────────────
+  // document_retention_policies / documents / document_access_grants (the three
+  // mutable/guarded) + document_versions / document_access_logs (the two
+  // append-only ledgers): cross-tenant read denied, spoofed/cross-tenant write
+  // denied, foreign-parent composite-FK violation, three-GUC-state fail-closed,
+  // and the append-only ledger immutability. The tenant-escape suite touches NO
+  // object storage — the version row carries only a storageKey STRING.
+
+  it("3d1. documents read escape: A cannot see B's policy/document/grant rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.documentRetentionPolicy.findUnique({ where: { id: B.documentRetentionPolicyId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.document.findUnique({ where: { id: B.documentId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.documentAccessGrant.findUnique({ where: { id: B.documentAccessGrantId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.documentVersion.findUnique({ where: { id: B.documentVersionId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.documentAccessLog.findUnique({ where: { id: B.documentAccessLogId } }))).toBeNull();
+
+    // A's own rows ARE visible under A's GUC (the complementary direction).
+    const ownDocs = await withTenant(A.institutionId, (tx) => tx.document.findMany({}));
+    expect(ownDocs.some((r: { id: string }) => r.id === A.documentId)).toBe(true);
+    expect(ownDocs.some((r: { id: string }) => r.id === B.documentId)).toBe(false);
+    for (const r of ownDocs) expect(r.institutionId).toBe(A.institutionId);
+  }, 60_000);
+
+  it("3d2. documents spoofed-tenant insert: A cannot stamp a document/policy institutionId = B", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.documentRetentionPolicy.create({
+          data: {
+            id: `${PREFIX}SPOOF_DRP`,
+            institutionId: B.institutionId, // spoof
+            name: `${PREFIX}spoof`,
+            retentionDays: 30,
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.document.create({
+          data: {
+            id: `${PREFIX}SPOOF_DOC`,
+            institutionId: B.institutionId, // spoof
+            title: `${PREFIX}spoof`,
+            ownerUserId: B.userId,
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3d3. documents foreign-parent: A cannot reference B's document from a child row", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // document_versions.(institutionId, documentId) composite FK forbids a
+    // version under B's document while in A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.documentVersion.create({
+          data: {
+            id: `${PREFIX}FOREIGN_DVER`,
+            institutionId: A.institutionId,
+            documentId: B.documentId, // B's document under A's tenant
+            version: 99,
+            filename: `${PREFIX}foreign.txt`,
+            contentType: "text/plain",
+            sizeBytes: 1n,
+            checksumSha256: "b".repeat(64),
+            storageKey: `${A.institutionId}/foreign/ver`,
+            uploadedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // document_access_grants.(institutionId, documentId) composite FK forbids a
+    // grant under B's document.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.documentAccessGrant.create({
+          data: {
+            id: `${PREFIX}FOREIGN_DGRANT`,
+            institutionId: A.institutionId,
+            documentId: B.documentId, // B's document under A's tenant
+            granteeUserId: A.userId,
+            accessLevel: "READ",
+            grantedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3d4. documents fail-closed: unset / empty-string GUC yield zero rows", async () => {
+    const A = seeded.A!;
+
+    // (i) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.document.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (ii) empty-string GUC also fails closed.
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const p = await tx.documentRetentionPolicy.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const d = await tx.document.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const v = await tx.documentVersion.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const g = await tx.documentAccessGrant.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const l = await tx.documentAccessLog.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return p.length + d.length + v.length + g.length + l.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iii) A's own rows ARE visible under A's GUC.
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.documentVersion.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.documentVersionId)).toBe(true);
+  }, 60_000);
+
+  it("3d5. document_versions APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}DVER_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.documentVersion.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          documentId: A.documentId,
+          version: 2,
+          filename: `${PREFIX}v2.txt`,
+          contentType: "text/plain",
+          sizeBytes: 2n,
+          checksumSha256: "c".repeat(64),
+          storageKey: `${A.institutionId}/${A.documentId}/${rowId}`,
+          uploadedByUserId: A.userId,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.documentVersion.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.documentVersion.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.documentVersion.update({ where: { id: rowId }, data: { filename: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.documentVersion.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.documentVersion.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "document_versions" DISABLE TRIGGER "document_versions_no_update_delete"`);
+    try {
+      await adminClient.documentVersion.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "document_versions" ENABLE TRIGGER "document_versions_no_update_delete"`);
+    }
+  }, 60_000);
+
+  it("3d6. document_access_logs APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}DLOG_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.documentAccessLog.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          documentId: A.documentId,
+          versionId: A.documentVersionId,
+          userId: A.userId,
+          action: "DOWNLOAD_URL_MINTED",
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.documentAccessLog.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.documentAccessLog.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.documentAccessLog.update({ where: { id: rowId }, data: { action: "DOWNLOAD_URL_MINTED" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.documentAccessLog.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.documentAccessLog.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "document_access_logs" DISABLE TRIGGER "document_access_logs_no_update_delete"`);
+    try {
+      await adminClient.documentAccessLog.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "document_access_logs" ENABLE TRIGGER "document_access_logs_no_update_delete"`);
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -4214,6 +4411,14 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // loop above.
       "service_request_activities",
       "service_request_feedback",
+      // Phase-9.7: the two document ledgers are STRICTLY append-only (design
+      // §13.g) — INSERT-only policy + REVOKE + trigger, NO modify policy. The
+      // three mutable/guarded document tables carry the standard modify pair
+      // (documents's lifecycle immutability is a column guard, not an RLS policy —
+      // the service-requests / inventory precedent), asserted by the
+      // EXPECTED_POLICIES/DEFAULT_POLICIES loop above.
+      "document_versions",
+      "document_access_logs",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

@@ -43,6 +43,7 @@ const SEEDING_MIGRATION_DIRS = [
   "20270110000000_phase9_transport",
   "20270117000000_phase9_inventory",
   "20270124000000_phase9_service_requests",
+  "20270131000000_phase9_documents",
 ];
 
 function migrationSql(dir: string): string {

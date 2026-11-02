@@ -755,6 +755,57 @@ export const PERMISSIONS = [
     description: "Self-service: raise, list/view OWN, comment OWN, cancel OWN OPEN, close/feedback OWN",
   },
 
+  // documents.* — Phase 9.7 Document Management: document metadata + object-
+  // storage blobs behind the ObjectStore adapter seam, an append-only version
+  // chain, not-public-by-default access grants (user OR department, READ|MANAGE),
+  // short-lived signed-URL downloads, an append-only access ledger, a
+  // retention policy + forward-only purge lifecycle, and staff reports/export.
+  // Gated module (requireModuleActive("documents")) in addition to permission.
+  // The module registry key and the permission/audit KEY prefix are both
+  // `documents`. ACCESS MODEL: a document is NOT visible unless the requester is
+  // OWNER, holds an active GRANT, or is ADMIN/DOCUMENT_MANAGER — the record-level
+  // canAccessDocument check is the SOLE real visibility gate. `documents.download`
+  // is a GENUINE baseline-reachability key held by EVERY non-applicant tenant
+  // role so ANY same-tenant user- or department-grantee reaches that check; it
+  // carries NO record-level authority (a holder with no grant still gets 404).
+  // Separation of duties: the two owner self keys (upload_own, view_own) bind
+  // ONLY to FACULTY (the document-owning role), never to ADMIN/DOCUMENT_MANAGER.
+  {
+    key: "documents.upload_own",
+    module: "documents",
+    description: "Upload a new document + a new version of OWN docs (owner self)",
+  },
+  {
+    key: "documents.view_own",
+    module: "documents",
+    description: "List/view/download OWN docs + manage grants on OWN docs (owner self)",
+  },
+  {
+    key: "documents.download",
+    module: "documents",
+    description: "Baseline-reachability key (every non-applicant tenant role); the TRUE gate is the record-level canAccessDocument active-grant/owner/admin check",
+  },
+  {
+    key: "documents.grants.manage",
+    module: "documents",
+    description: "Grant/revoke access on a doc the caller owns, MANAGE-holds, or admins",
+  },
+  {
+    key: "documents.admin.view_all",
+    module: "documents",
+    description: "See ALL tenant documents + versions; run the aggregate report (inventory + access-log summary + purge queue) + XLSX export",
+  },
+  {
+    key: "documents.retention.manage",
+    module: "documents",
+    description: "Manage retention policies; archive/unarchive/purge-request/purge any doc",
+  },
+  {
+    key: "documents.audit.view",
+    module: "documents",
+    description: "Read the per-document access-log DETAIL ledger (GET /:id/access-log)",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -817,6 +868,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "hostel.view_own",
     "transport.view_own",
     "service_requests.request_own",
+    "documents.download",
   ],
   FACULTY: [
     "classes.view_own",
@@ -824,6 +876,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "attendance.view_own",
     "exams.marks.enter",
     "faculty.view_own",
+    // Phase 9.7: FACULTY is the document-owning role (owner self keys) + the
+    // baseline download + delegated grant administration.
+    "documents.upload_own",
+    "documents.view_own",
+    "documents.download",
+    "documents.grants.manage",
   ],
   // ACCOUNTANT — additive platform template role (FACULTY/LIBRARIAN/
   // ADMISSION_OFFICER precedent); fees-scoped ONLY (grants no exams/library/etc).
@@ -835,6 +893,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "fees.concession.manage",
     "fees.refund",
     "fees.adjust",
+    "documents.download",
   ],
   LIBRARIAN: [
     "library.books.view",
@@ -843,6 +902,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "library.return",
     "library.reservations.manage",
     "library.fines.manage",
+    "documents.download",
   ],
   // WARDEN — additive platform template role (ACCOUNTANT/LIBRARIAN/
   // ADMISSION_OFFICER precedent); hostel-scoped ONLY. A warden runs the hostel
@@ -855,6 +915,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "hostel.leave.manage",
     "hostel.maintenance.manage",
     "hostel.view",
+    "documents.download",
   ],
   ADMISSION_OFFICER: [
     "admissions.campaigns.manage",
@@ -863,7 +924,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "admissions.applications.review",
     "admissions.offers.manage",
     "admissions.enroll",
+    "documents.download",
   ],
+  // APPLICANT is the external admissions applicant — NOT an internal tenant
+  // member who would receive an internal document grant, so it is the ONLY role
+  // excluded from the baseline documents.download key (keeps the SIS/admissions
+  // decoupling intact).
   APPLICANT: ["admissions.view_own"],
   // HR_MANAGER — additive platform template role (ACCOUNTANT/LIBRARIAN/
   // ADMISSION_OFFICER precedent); the six HR staff keys ONLY (full-tenant HR
@@ -875,11 +941,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "hr.attendance.manage",
     "hr.reports.view",
     "hr.directory.view",
+    "documents.download",
   ],
   // EMPLOYEE — additive platform template role (design §3.3): the HR self-service
   // role bound to a user when their hr_employees row is created. Holds ONLY the
   // self-scope hr.view_own; never a staff .manage/.directory.view/.reports key.
-  EMPLOYEE: ["hr.view_own"],
+  EMPLOYEE: ["hr.view_own", "documents.download"],
   // TRANSPORT_MANAGER — additive platform template role (WARDEN/HR_MANAGER
   // precedent); transport-scoped ONLY. A transport manager runs transport end to
   // end within tenant (vehicles/drivers/routes, assignments, enrollment,
@@ -894,6 +961,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "transport.enrollments.manage",
     "transport.maintenance.manage",
     "transport.view",
+    "documents.download",
   ],
   // INVENTORY_MANAGER — additive platform template role (WARDEN/HR_MANAGER/
   // TRANSPORT_MANAGER precedent); inventory-scoped ONLY. An inventory manager
@@ -913,6 +981,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "inventory.audits.manage",
     "inventory.view",
     "inventory.view_own",
+    "documents.download",
   ],
   // SERVICE_AGENT — additive platform template role (WARDEN/HR_MANAGER/
   // TRANSPORT_MANAGER/INVENTORY_MANAGER precedent); service-requests-scoped ONLY.
@@ -927,6 +996,23 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "service_requests.requests.handle",
     "service_requests.requests.approve",
     "service_requests.view",
+    "documents.download",
+  ],
+  // DOCUMENT_MANAGER — additive platform template role (SERVICE_AGENT/
+  // INVENTORY_MANAGER/WARDEN precedent); documents-scoped ONLY. A document
+  // manager administers documents end to end within a tenant (see all docs,
+  // administer any grant, manage retention/purge, read the access ledger)
+  // without inheriting institution-wide admin rights, PLUS the baseline
+  // documents.download (it is a tenant role and may itself be a grantee).
+  // Separation of duties: DOCUMENT_MANAGER never gets the two owner self keys
+  // (upload_own, view_own) — grants.manage + admin.view_all already cover
+  // administering any grant and seeing all docs.
+  DOCUMENT_MANAGER: [
+    "documents.download",
+    "documents.grants.manage",
+    "documents.admin.view_all",
+    "documents.retention.manage",
+    "documents.audit.view",
   ],
   GUARD: [
     "campus_movement.gate.verify",
@@ -936,6 +1022,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "campus_movement.shift.manage_own",
     "campus_movement.emergency.view",
     "academics.view",
+    "documents.download",
   ],
   HOD: [
     "campus_movement.pass.view_department",
@@ -971,6 +1058,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "faculty.workload.manage",
     "faculty.teaching_history.manage",
     "faculty.directory.view",
+    "documents.download",
   ],
   ADMIN: [
     "admin.users.view",
@@ -1070,6 +1158,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "service_requests.requests.handle",
     "service_requests.requests.approve",
     "service_requests.view",
+    "documents.download",
+    "documents.grants.manage",
+    "documents.admin.view_all",
+    "documents.retention.manage",
+    "documents.audit.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

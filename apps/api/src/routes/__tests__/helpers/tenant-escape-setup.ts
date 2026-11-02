@@ -311,6 +311,18 @@ export interface SeededTenant {
   serviceRequestId: string;
   serviceRequestActivityId: string;
   serviceRequestFeedbackId: string;
+  // Phase-9.7 Document Management (6 tables). The three mutable/guarded
+  // (document_retention_policies / documents / document_access_grants) + the two
+  // append-only ledgers (document_versions / document_access_logs). The document
+  // row seeds a version (storageKey is a STRING ONLY — NO blob upload), a
+  // user-grant, and an access-log row. documents forbids DELETE unconditionally
+  // and the two ledgers forbid UPDATE/DELETE, so teardown deletes them within a
+  // scoped trigger-disable (the inventory/service-requests dance).
+  documentRetentionPolicyId: string;
+  documentId: string;
+  documentVersionId: string;
+  documentAccessGrantId: string;
+  documentAccessLogId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -471,6 +483,16 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const serviceRequestId = id(`srreq_${key}`);
   const serviceRequestActivityId = id(`sract_${key}`);
   const serviceRequestFeedbackId = id(`srfb_${key}`);
+  // Phase-9.7 document-management IDs (deterministic so cleanup is exact). All
+  // six tables are seeded: a retention policy, a document (ACTIVE, owner = the
+  // seeded user), a version (storageKey is a STRING ONLY "<inst>/<doc>/<ver>" —
+  // NO blob upload), a user-grant on the seeded doc, and an access-log row
+  // (DOWNLOAD_URL_MINTED, versionId = the seeded version-id string, NOT NULL).
+  const documentRetentionPolicyId = id(`drp_${key}`);
+  const documentId = id(`doc_${key}`);
+  const documentVersionId = id(`dver_${key}`);
+  const documentAccessGrantId = id(`dgrant_${key}`);
+  const documentAccessLogId = id(`dlog_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1727,6 +1749,76 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.7 Document Management tables (design §16.3). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: a retention policy -> a document (ACTIVE, owner = the seeded
+  // user, pointing at the version via currentVersionId) -> a version (storageKey
+  // is a STRING ONLY — NO blob upload, the tenant-escape suite must touch NO
+  // object storage) -> a user-grant on the seeded doc -> an access-log row
+  // (DOWNLOAD_URL_MINTED, versionId = the seeded version id string). The two
+  // append-only ledgers (versions, access_logs) forbid UPDATE/DELETE and
+  // documents forbids DELETE unconditionally, so teardown deletes them within a
+  // scoped trigger-disable (the inventory/service-requests dance).
+  await adminClient.documentRetentionPolicy.create({
+    data: {
+      id: documentRetentionPolicyId,
+      institutionId,
+      name: `${PREFIX}Retention ${key}`,
+      retentionDays: 365,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.document.create({
+    data: {
+      id: documentId,
+      institutionId,
+      title: `${PREFIX}Document ${key}`,
+      ownerUserId: userId,
+      status: "ACTIVE",
+      currentVersionId: documentVersionId, // plain pointer (NO FK)
+      retentionPolicyId: documentRetentionPolicyId,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.documentVersion.create({
+    data: {
+      id: documentVersionId,
+      institutionId,
+      documentId: documentId,
+      version: 1,
+      filename: `${PREFIX}file-${key}.txt`,
+      contentType: "text/plain",
+      sizeBytes: 11n,
+      checksumSha256: "a".repeat(64), // 64-hex (CHECK); NO real blob
+      storageKey: `${institutionId}/${documentId}/${documentVersionId}`,
+      uploadedByUserId: userId,
+    },
+  });
+
+  await adminClient.documentAccessGrant.create({
+    data: {
+      id: documentAccessGrantId,
+      institutionId,
+      documentId: documentId,
+      granteeUserId: userId,
+      accessLevel: "READ",
+      grantedByUserId: userId,
+    },
+  });
+
+  await adminClient.documentAccessLog.create({
+    data: {
+      id: documentAccessLogId,
+      institutionId,
+      documentId: documentId,
+      versionId: documentVersionId, // NOT NULL recorded id (string)
+      userId: userId,
+      action: "DOWNLOAD_URL_MINTED",
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1820,6 +1912,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     serviceRequestId,
     serviceRequestActivityId,
     serviceRequestFeedbackId,
+    documentRetentionPolicyId,
+    documentId,
+    documentVersionId,
+    documentAccessGrantId,
+    documentAccessLogId,
   };
 }
 
@@ -1833,6 +1930,36 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.7 Document Management tables FIRST (child -> parent), BEFORE the
+  // users / departments / institution deletes below (the composite FKs to
+  // users/departments and the children's FKs to the document/policy are ON
+  // DELETE RESTRICT). The two append-only ledgers (versions, access_logs) forbid
+  // UPDATE/DELETE and documents forbids DELETE unconditionally, so delete them
+  // with those triggers disabled (the inventory dance). Order: access_logs +
+  // versions + grants (children of document) -> documents -> retention_policies.
+  const documentGuardedTables = [
+    { table: "document_versions", trigger: "document_versions_no_update_delete" },
+    { table: "document_access_logs", trigger: "document_access_logs_no_update_delete" },
+    { table: "documents", trigger: "document_status_guard" },
+  ];
+  for (const { table, trigger } of documentGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.documentAccessLog.deleteMany({ where }));
+    await withRetry(() => adminClient.documentVersion.deleteMany({ where }));
+    await withRetry(() => adminClient.documentAccessGrant.deleteMany({ where }));
+    await withRetry(() => adminClient.document.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of documentGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.documentRetentionPolicy.deleteMany({ where }));
   // Phase-9.6 Service Requests Management tables FIRST (child -> parent), BEFORE
   // the users / departments / institution deletes below (the composite FKs to
   // users/departments and the children's FKs to the request/type are ON DELETE
@@ -2318,6 +2445,13 @@ export async function cleanup(): Promise<void> {
 export async function countRemainingTestRows(): Promise<number> {
   const where = { institutionId: { startsWith: PREFIX } };
   const counters: Array<() => Promise<number>> = [
+    // Phase-9.7 Document Management tables (all six seeded + torn down here).
+    // Counted SEQUENTIALLY (session-pooler client cap).
+    () => adminClient.documentAccessLog.count({ where }),
+    () => adminClient.documentVersion.count({ where }),
+    () => adminClient.documentAccessGrant.count({ where }),
+    () => adminClient.document.count({ where }),
+    () => adminClient.documentRetentionPolicy.count({ where }),
     // Phase-9.4 Transport Management MUTABLE tables (NO append-only table this
     // phase, so all eight are seeded + torn down by the generic loop and counted
     // here). Counted SEQUENTIALLY (session-pooler client cap).
@@ -2633,6 +2767,18 @@ export const RLS_TABLES = [
   "service_requests",
   "service_request_activities",
   "service_request_feedback",
+  // Phase-9.7 Document Management tables (design §6/§13.g). The three
+  // mutable/guarded tables (document_retention_policies, documents,
+  // document_access_grants) carry the default modify pair — the
+  // document_status_guard column-guard trigger enforces lifecycle immutability at
+  // the row level, NOT via an append-only RLS policy, so documents still carries
+  // tenant_isolation_modify. The two ledgers (document_versions,
+  // document_access_logs) are STRICTLY append-only (EXPECTED_POLICIES below).
+  "document_retention_policies",
+  "documents",
+  "document_access_grants",
+  "document_versions",
+  "document_access_logs",
 ] as const;
 
 /**
@@ -2786,6 +2932,19 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   service_request_feedback: [
     "tenant_isolation_select",
     "service_request_feedback_tenant_insert",
+  ],
+  // Phase-9.7: the two document ledgers are STRICTLY append-only (design §13.g) —
+  // the SELECT + INSERT pair, NO modify policy. The three mutable/guarded
+  // document tables are deliberately ABSENT here so they fall through to
+  // DEFAULT_POLICIES (documents's lifecycle immutability is a column guard, not an
+  // append-only RLS policy — the service-requests / inventory precedent).
+  document_versions: [
+    "tenant_isolation_select",
+    "document_versions_tenant_insert",
+  ],
+  document_access_logs: [
+    "tenant_isolation_select",
+    "document_access_logs_tenant_insert",
   ],
 };
 
