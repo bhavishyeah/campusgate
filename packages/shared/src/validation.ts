@@ -1927,3 +1927,217 @@ export type TransportMaintenanceTransitionInput = z.infer<
   typeof transportMaintenanceTransitionSchema
 >;
 export type TransportListQueryInput = z.infer<typeof transportListQuerySchema>;
+
+// ─── Phase 9.5 Inventory & Assets Management ─────────────────────────────────
+// institutionId / userId (for /me/*) are NEVER accepted from the body — always
+// derived from the verified token. Enum members mirror the pg enums added by the
+// 20270117000000_phase9_inventory migration (design §B.1). acquisitionCost /
+// cost / proceeds are int minor units in the DB but cross the JSON boundary as a
+// decimal-digit STRING (money-as-string, design §B.9).
+
+export const inventoryAssetKindEnum = z.enum(["FIXED_ASSET", "CONSUMABLE"]);
+export const inventoryAssetStatusEnum = z.enum([
+  "IN_STORE",
+  "ASSIGNED",
+  "IN_MAINTENANCE",
+  "RETIRED",
+  "DISPOSED",
+]);
+export const inventoryMaintenanceStatusEnum = z.enum([
+  "OPEN",
+  "IN_PROGRESS",
+  "RESOLVED",
+  "CANCELLED",
+]);
+export const inventoryStockMovementKindEnum = z.enum(["RECEIPT", "ISSUE", "ADJUSTMENT"]);
+export const inventoryDisposalMethodEnum = z.enum([
+  "SOLD",
+  "SCRAPPED",
+  "DONATED",
+  "LOST",
+  "WRITTEN_OFF",
+  "OTHER",
+]);
+// Only the two terminal states a disposal may move an asset into.
+export const inventoryTerminalStatusEnum = z.enum(["RETIRED", "DISPOSED"]);
+// Only the reachable states a staff maintenance transition may target (never OPEN).
+export const inventoryMaintenanceTransitionTargetEnum = z.enum([
+  "IN_PROGRESS",
+  "RESOLVED",
+  "CANCELLED",
+]);
+
+const inventoryCuidLike = z.string().min(1).max(64);
+
+// acquisitionCost / cost / proceeds money-as-string boundary: a non-empty
+// decimal-digit string that parses to int minor units >= 0 (the DB stores Int).
+const inventoryMoneyString = z
+  .string()
+  .regex(/^\d+$/, "must be a non-negative integer number of minor units");
+
+// currency: optional uppercase ISO-4217-shaped 3-letter code (DB CHECK
+// char_length(currency) = 3).
+const inventoryCurrency = z.string().regex(/^[A-Z]{3}$/, "must be a 3-letter uppercase currency code");
+
+// 1. Categories. code / name non-empty. kind required. Depreciation metadata
+// optional (stored only — no engine).
+export const createInventoryCategorySchema = z.object({
+  name: z.string().min(1, "Name is required").max(128),
+  code: z.string().min(1, "Code is required").max(64),
+  kind: inventoryAssetKindEnum,
+  depreciationMethod: z.string().min(1).max(64).optional(),
+  usefulLifeMonths: z.coerce.number().int().min(0).optional(),
+});
+
+export const patchInventoryCategorySchema = z
+  .object({
+    name: z.string().min(1).max(128).optional(),
+    code: z.string().min(1).max(64).optional(),
+    kind: inventoryAssetKindEnum.optional(),
+    depreciationMethod: z.string().min(1).max(64).nullish(),
+    usefulLifeMonths: z.coerce.number().int().min(0).nullish(),
+  })
+  .strict();
+
+// 2. Assets. assetTag / name non-empty. acquisitionCost money-as-string +
+// currency 3-letter (both optional). custodyUserId / custodyDepartmentId optional
+// (composite FK same-tenant). status is NOT accepted — lifecycle is driven by
+// dedicated handlers (transfer/maintenance/dispose) through the DB guard.
+export const createInventoryAssetSchema = z.object({
+  assetTag: z.string().min(1, "Asset tag is required").max(128),
+  name: z.string().min(1, "Name is required").max(256),
+  categoryId: inventoryCuidLike,
+  acquisitionDate: z.coerce.date().optional(),
+  acquisitionCost: inventoryMoneyString.optional(),
+  currency: inventoryCurrency.optional(),
+  location: z.string().min(1).max(256).optional(),
+  custodyUserId: inventoryCuidLike.optional(),
+  custodyDepartmentId: inventoryCuidLike.optional(),
+});
+
+export const patchInventoryAssetSchema = z
+  .object({
+    assetTag: z.string().min(1).max(128).optional(),
+    name: z.string().min(1).max(256).optional(),
+    categoryId: inventoryCuidLike.optional(),
+    acquisitionDate: z.coerce.date().nullish(),
+    acquisitionCost: inventoryMoneyString.nullish(),
+    currency: inventoryCurrency.nullish(),
+    location: z.string().min(1).max(256).nullish(),
+  })
+  .strict();
+
+// 3. Custody transfer. At least one of toUserId / toDepartmentId. reason
+// optional. transferredAt optional (defaults to now in the handler).
+export const inventoryTransferSchema = z
+  .object({
+    toUserId: inventoryCuidLike.optional(),
+    toDepartmentId: inventoryCuidLike.optional(),
+    reason: z.string().min(1).max(512).optional(),
+    transferredAt: z.coerce.date().optional(),
+  })
+  .refine((v) => v.toUserId !== undefined || v.toDepartmentId !== undefined, {
+    message: "at least one of toUserId or toDepartmentId is required",
+    path: ["toUserId"],
+  });
+
+// 4. Stock movement. quantity is a non-zero signed int; its sign must match the
+// kind (RECEIPT > 0, ISSUE < 0, ADJUSTMENT != 0). reason optional.
+export const inventoryStockMovementSchema = z
+  .object({
+    kind: inventoryStockMovementKindEnum,
+    quantity: z.coerce.number().int(),
+    reason: z.string().min(1).max(512).optional(),
+  })
+  .refine((v) => v.quantity !== 0, {
+    message: "quantity must be non-zero",
+    path: ["quantity"],
+  })
+  .refine(
+    (v) =>
+      (v.kind === "RECEIPT" && v.quantity > 0) ||
+      (v.kind === "ISSUE" && v.quantity < 0) ||
+      v.kind === "ADJUSTMENT",
+    {
+      message: "quantity sign must match kind (RECEIPT > 0, ISSUE < 0, ADJUSTMENT != 0)",
+      path: ["quantity"],
+    },
+  );
+
+// 5. Maintenance. issue non-empty. assigneeUserId soft reference (no FK). cost
+// money-as-string (optional). transition target forward-only (never OPEN).
+export const createInventoryMaintenanceSchema = z.object({
+  issue: z.string().min(1, "Issue is required").max(512),
+  assigneeUserId: inventoryCuidLike.optional(),
+  cost: inventoryMoneyString.optional(),
+});
+
+export const inventoryMaintenanceTransitionSchema = z.object({
+  toStatus: inventoryMaintenanceTransitionTargetEnum,
+  cost: inventoryMoneyString.optional(),
+  resolutionNote: z.string().max(512).optional(),
+});
+
+// 6. Disposal. terminalStatus required ∈ {RETIRED, DISPOSED}; method required
+// enum. proceeds / currency / reason / disposedAt optional.
+export const inventoryDisposalSchema = z.object({
+  terminalStatus: inventoryTerminalStatusEnum,
+  method: inventoryDisposalMethodEnum,
+  proceeds: inventoryMoneyString.optional(),
+  currency: inventoryCurrency.optional(),
+  reason: z.string().min(1).max(512).optional(),
+  disposedAt: z.coerce.date().optional(),
+});
+
+// 7. Audit session + line. Session name non-empty. A line references EXACTLY one
+// of assetId / stockItemId. expected/found quantities optional ints.
+export const createInventoryAuditSessionSchema = z.object({
+  name: z.string().min(1, "Name is required").max(128),
+});
+
+export const inventoryAuditLineSchema = z
+  .object({
+    assetId: inventoryCuidLike.optional(),
+    stockItemId: inventoryCuidLike.optional(),
+    expectedQuantity: z.coerce.number().int().optional(),
+    foundQuantity: z.coerce.number().int().optional(),
+    note: z.string().min(1).max(512).optional(),
+  })
+  .refine((v) => (v.assetId !== undefined) !== (v.stockItemId !== undefined), {
+    message: "exactly one of assetId or stockItemId is required",
+    path: ["assetId"],
+  });
+
+// 8. List / report query (page >= 1 default 1; pageSize 1..100 default 20;
+// optional status / kind / categoryId filters).
+export const inventoryListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.string().max(40).optional(),
+  kind: z.string().max(40).optional(),
+  categoryId: inventoryCuidLike.optional(),
+});
+
+export type InventoryAssetKindValue = z.infer<typeof inventoryAssetKindEnum>;
+export type InventoryAssetStatusValue = z.infer<typeof inventoryAssetStatusEnum>;
+export type InventoryMaintenanceStatusValue = z.infer<typeof inventoryMaintenanceStatusEnum>;
+export type InventoryStockMovementKindValue = z.infer<typeof inventoryStockMovementKindEnum>;
+export type InventoryDisposalMethodValue = z.infer<typeof inventoryDisposalMethodEnum>;
+export type InventoryTerminalStatusValue = z.infer<typeof inventoryTerminalStatusEnum>;
+export type InventoryMaintenanceTransitionTargetValue = z.infer<
+  typeof inventoryMaintenanceTransitionTargetEnum
+>;
+export type CreateInventoryCategoryInput = z.infer<typeof createInventoryCategorySchema>;
+export type PatchInventoryCategoryInput = z.infer<typeof patchInventoryCategorySchema>;
+export type CreateInventoryAssetInput = z.infer<typeof createInventoryAssetSchema>;
+export type PatchInventoryAssetInput = z.infer<typeof patchInventoryAssetSchema>;
+export type InventoryTransferInput = z.infer<typeof inventoryTransferSchema>;
+export type InventoryStockMovementInput = z.infer<typeof inventoryStockMovementSchema>;
+export type CreateInventoryMaintenanceInput = z.infer<typeof createInventoryMaintenanceSchema>;
+export type InventoryMaintenanceTransitionInput = z.infer<
+  typeof inventoryMaintenanceTransitionSchema
+>;
+export type InventoryDisposalInput = z.infer<typeof inventoryDisposalSchema>;
+export type CreateInventoryAuditSessionInput = z.infer<typeof createInventoryAuditSessionSchema>;
+export type InventoryAuditLineInput = z.infer<typeof inventoryAuditLineSchema>;
+export type InventoryListQueryInput = z.infer<typeof inventoryListQuerySchema>;

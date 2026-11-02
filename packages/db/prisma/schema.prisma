@@ -339,6 +339,15 @@ model Institution {
   transportEnrollments              TransportEnrollment[]
   transportVehicleMaintenanceRequests TransportVehicleMaintenanceRequest[]
   transportRouteSchedules           TransportRouteSchedule[]
+  inventoryAssetCategories          InventoryAssetCategory[]
+  inventoryAssets                   InventoryAsset[]
+  inventoryStockItems               InventoryStockItem[]
+  inventoryMaintenanceRequests      InventoryMaintenanceRequest[]
+  inventoryAuditSessions            InventoryAuditSession[]
+  inventoryCustodyTransfers         InventoryCustodyTransfer[]
+  inventoryStockMovements           InventoryStockMovement[]
+  inventoryAuditLines               InventoryAuditLine[]
+  inventoryDisposals                InventoryDisposal[]
 
   @@map("institutions")
 }
@@ -360,6 +369,7 @@ model Department {
   academicCalendarDays AcademicCalendarDay[]
   facultyProfiles      FacultyProfile[]
   hrEmployees          HrEmployee[]
+  inventoryCustodyAssets InventoryAsset[] @relation("InventoryAssetCustodyDepartment")
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -407,6 +417,7 @@ model User {
   facultyProfile         FacultyProfile?
   applications           Application[]  @relation("ApplicationApplicant")
   hrEmployees            HrEmployee[]
+  inventoryCustodyAssets InventoryAsset[] @relation("InventoryAssetCustodyUser")
 
   @@unique([id, institutionId])
   @@map("users")
@@ -3802,4 +3813,309 @@ enum TransportDayOfWeek {
   FRI
   SAT
   SUN
+}
+
+// ─── PHASE 9.5 INVENTORY & ASSETS MANAGEMENT ─────────────────────────────────
+// Nine tenant-owned tables: five mutable/guarded (with updatedAt) +
+// four append-only (createdAt-only, NO updatedAt). Each table carries
+// institutionId + `institution Institution @relation(...)`, @@unique([id,
+// institutionId]) (anchors composite same-tenant FKs), an (institutionId) index,
+// and the design §B query indexes. The composite same-tenant FKs (incl.
+// institutionId), partial uniques, CHECKs, ENABLE+FORCE RLS, append-only
+// triggers, and the three column-guard triggers are ALL raw SQL in the migration
+// 20270117000000_phase9_inventory (Prisma's diff models none of them). Actor/
+// provenance ids (createdByUserId, actorUserId, reportedByUserId, assigneeUserId)
+// are recorded ids with NO FK (the transport/hostel createdByUserId precedent).
+// Money fields (acquisitionCost / cost / proceeds) are Int minor units.
+
+model InventoryAssetCategory {
+  id                 String            @id @default(cuid())
+  institutionId      String
+  institution        Institution       @relation(fields: [institutionId], references: [id])
+  name               String // CHECK char_length(name) >= 1 (raw SQL)
+  code               String // CHECK char_length(code) >= 1 (raw SQL)
+  kind               InventoryAssetKind
+  depreciationMethod String? // metadata only (no engine)
+  usefulLifeMonths   Int? // metadata only; CHECK >= 0 (raw SQL)
+  createdByUserId    String // recorded actor id, NO FK
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  assets InventoryAsset[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, code) + composite same-tenant FK anchor are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("inventory_asset_categories")
+}
+
+model InventoryAsset {
+  id                  String               @id @default(cuid())
+  institutionId       String
+  institution         Institution          @relation(fields: [institutionId], references: [id])
+  assetTag            String // CHECK char_length(assetTag) >= 1 (raw SQL)
+  name                String // CHECK char_length(name) >= 1 (raw SQL)
+  categoryId          String
+  category            InventoryAssetCategory @relation(fields: [categoryId], references: [id])
+  status              InventoryAssetStatus @default(IN_STORE)
+  acquisitionDate     DateTime?
+  acquisitionCost     Int? // int minor units; CHECK acquisitionCost >= 0 (raw SQL)
+  currency            String? // CHECK currency IS NULL OR char_length(currency) = 3 (raw SQL)
+  location            String?
+  custodyUserId       String?
+  custodyUser         User?                @relation("InventoryAssetCustodyUser", fields: [custodyUserId], references: [id])
+  custodyDepartmentId String?
+  custodyDepartment   Department?          @relation("InventoryAssetCustodyDepartment", fields: [custodyDepartmentId], references: [id])
+  createdByUserId     String // recorded actor id, NO FK
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  stockItem           InventoryStockItem?
+  maintenanceRequests InventoryMaintenanceRequest[]
+  custodyTransfers    InventoryCustodyTransfer[]
+  stockMovements      InventoryStockMovement[]
+  auditLines          InventoryAuditLine[]
+  disposals           InventoryDisposal[]
+
+  // Enumerated-transition terminal-enforcing lifecycle (IN_STORE<->ASSIGNED,
+  // IN_MAINTENANCE->IN_STORE|ASSIGNED; RETIRED/DISPOSED terminal). Standard RLS
+  // pair + column-guard trigger inventory_assets_guard (freezes identity cols +
+  // forbids DELETE) + composite same-tenant FKs ((institutionId, categoryId)->
+  // inventory_asset_categories; (institutionId, custodyUserId)->users;
+  // (institutionId, custodyDepartmentId)->departments, both MATCH SIMPLE so a
+  // NULL custody col is a no-op) + business unique (institutionId, assetTag) +
+  // CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@index([institutionId, categoryId])
+  @@index([institutionId, custodyUserId])
+  @@map("inventory_assets")
+}
+
+model InventoryStockItem {
+  id              String         @id @default(cuid())
+  institutionId   String
+  institution     Institution    @relation(fields: [institutionId], references: [id])
+  assetId         String         @unique
+  asset           InventoryAsset @relation(fields: [assetId], references: [id])
+  onHandQuantity  Int            @default(0) // STORED single source of truth; CHECK >= 0 (raw SQL)
+  reorderLevel    Int? // optional low-stock threshold
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  movements InventoryStockMovement[]
+  auditLines InventoryAuditLine[]
+
+  // Mutable-with-audit (no immutability trigger; onHandQuantity mutated ONLY
+  // under the per-item advisory lock alongside the movement ledger insert,
+  // design §B.6). Standard RLS pair + business unique (institutionId, assetId) +
+  // composite same-tenant FK (institutionId, assetId)->inventory_assets + CHECK
+  // onHandQuantity >= 0 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("inventory_stock_items")
+}
+
+model InventoryMaintenanceRequest {
+  id               String                      @id @default(cuid())
+  institutionId    String
+  institution      Institution                 @relation(fields: [institutionId], references: [id])
+  assetId          String
+  asset            InventoryAsset              @relation(fields: [assetId], references: [id])
+  issue            String // CHECK char_length(issue) >= 1 (raw SQL)
+  status           InventoryMaintenanceStatus  @default(OPEN)
+  assigneeUserId   String? // soft reference, NO FK (informational routing only)
+  priorAssetStatus InventoryAssetStatus // IN_STORE|ASSIGNED at open-time; CHECK + guard-frozen (raw SQL)
+  cost             Int? // int minor units; CHECK cost >= 0 (raw SQL)
+  reportedByUserId String // recorded actor id = creator (NO createdByUserId), NO FK
+  resolutionNote   String?
+  resolvedAt       DateTime? // set on RESOLVED
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  // Forward-only lifecycle (OPEN->IN_PROGRESS->RESOLVED, OPEN|IN_PROGRESS->
+  // CANCELLED). DELIBERATELY NO createdByUserId — reportedByUserId is the creator
+  // actor (the hostel/transport maintenance precedent). Standard RLS pair +
+  // column-guard trigger inventory_maintenance_requests_guard (freezes identity +
+  // priorAssetStatus, forbids DELETE) + composite same-tenant FK (institutionId,
+  // assetId)->inventory_assets + the partial unique one-OPEN/IN_PROGRESS-per-asset
+  // + CHECKs (issue non-empty, cost >= 0, priorAssetStatus IN
+  // ('IN_STORE','ASSIGNED')) are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, assetId])
+  @@index([institutionId, status])
+  @@map("inventory_maintenance_requests")
+}
+
+model InventoryAuditSession {
+  id              String                      @id @default(cuid())
+  institutionId   String
+  institution     Institution                 @relation(fields: [institutionId], references: [id])
+  name            String // CHECK char_length(name) >= 1 (raw SQL)
+  status          InventoryAuditSessionStatus @default(OPEN)
+  startedAt       DateTime                    @default(now())
+  closedAt        DateTime? // set on CLOSED
+  createdByUserId String // recorded actor id, NO FK
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+
+  lines InventoryAuditLine[]
+
+  // Two-state forward-only hardening (OPEN->CLOSED; a sealed stock-take is
+  // immutable; DELETE forbidden) — INTENTIONAL beyond the brief (design §B.1/A.5).
+  // Standard RLS pair + column-guard trigger inventory_audit_sessions_guard are
+  // raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("inventory_audit_sessions")
+}
+
+// ─── Append-only (createdAt-only, NO updatedAt) ──────────────────────────────
+
+model InventoryCustodyTransfer {
+  id               String         @id @default(cuid())
+  institutionId    String
+  institution      Institution    @relation(fields: [institutionId], references: [id])
+  assetId          String
+  asset            InventoryAsset @relation(fields: [assetId], references: [id])
+  fromUserId       String?
+  fromDepartmentId String?
+  toUserId         String?
+  toDepartmentId   String?
+  transferredAt    DateTime
+  reason           String?
+  actorUserId      String // recorded actor id, NO FK
+  createdAt        DateTime       @default(now())
+
+  // Append-only (INSERT-only RLS pair {tenant_isolation_select,
+  // <table>_tenant_insert} + unconditional-raise trigger + REVOKE UPDATE,DELETE).
+  // Composite same-tenant FK (institutionId, assetId)->inventory_assets + CHECK
+  // at least one to* custodian present are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, assetId])
+  @@map("inventory_custody_transfers")
+}
+
+model InventoryStockMovement {
+  id            String                      @id @default(cuid())
+  institutionId String
+  institution   Institution                 @relation(fields: [institutionId], references: [id])
+  stockItemId   String
+  stockItem     InventoryStockItem          @relation(fields: [stockItemId], references: [id])
+  assetId       String
+  asset         InventoryAsset              @relation(fields: [assetId], references: [id])
+  kind          InventoryStockMovementKind
+  quantity      Int // signed; CHECK quantity <> 0 (raw SQL)
+  reason        String?
+  balanceAfter  Int // on-hand snapshot immediately after; CHECK balanceAfter >= 0 (raw SQL)
+  actorUserId   String // recorded actor id, NO FK
+  createdAt     DateTime                    @default(now())
+
+  // Append-only (INSERT-only RLS pair + unconditional-raise trigger + REVOKE
+  // UPDATE,DELETE). Composite same-tenant FKs (institutionId, stockItemId)->
+  // inventory_stock_items and (institutionId, assetId)->inventory_assets + CHECKs
+  // are raw SQL. Written ONLY under the per-item advisory lock (design §B.4).
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, stockItemId])
+  @@map("inventory_stock_movements")
+}
+
+model InventoryAuditLine {
+  id               String                @id @default(cuid())
+  institutionId    String
+  institution      Institution           @relation(fields: [institutionId], references: [id])
+  sessionId        String
+  session          InventoryAuditSession @relation(fields: [sessionId], references: [id])
+  assetId          String?
+  asset            InventoryAsset?       @relation(fields: [assetId], references: [id])
+  stockItemId      String?
+  stockItem        InventoryStockItem?   @relation(fields: [stockItemId], references: [id])
+  expectedQuantity Int?
+  foundQuantity    Int?
+  discrepancy      Int? // foundQuantity - expectedQuantity when both present
+  note             String?
+  actorUserId      String // recorded actor id, NO FK
+  createdAt        DateTime              @default(now())
+
+  // Append-only (INSERT-only RLS pair + unconditional-raise trigger + REVOKE
+  // UPDATE,DELETE). Composite same-tenant FKs (institutionId, sessionId)->
+  // inventory_audit_sessions, optional (institutionId, assetId) and
+  // (institutionId, stockItemId) (MATCH SIMPLE, NULL no-op) + CHECK exactly one of
+  // asset/stock referenced are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, sessionId])
+  @@map("inventory_audit_lines")
+}
+
+model InventoryDisposal {
+  id             String               @id @default(cuid())
+  institutionId  String
+  institution    Institution          @relation(fields: [institutionId], references: [id])
+  assetId        String
+  asset          InventoryAsset       @relation(fields: [assetId], references: [id])
+  terminalStatus InventoryAssetStatus // the terminal state this disposal moved the asset into
+  method         InventoryDisposalMethod
+  disposedAt     DateTime
+  proceeds       Int? // int minor units; CHECK proceeds >= 0 (raw SQL)
+  currency       String? // CHECK currency IS NULL OR char_length(currency) = 3 (raw SQL)
+  reason         String?
+  actorUserId    String // recorded actor id, NO FK
+  createdAt      DateTime             @default(now())
+
+  // Append-only fact (INSERT-only RLS pair + unconditional-raise trigger + REVOKE
+  // UPDATE,DELETE). Composite same-tenant FK (institutionId, assetId)->
+  // inventory_assets + partial unique one-disposal-per-asset + CHECKs
+  // (terminalStatus IN ('RETIRED','DISPOSED'), proceeds >= 0, currency 3-char)
+  // are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, assetId])
+  @@map("inventory_disposals")
+}
+
+enum InventoryAssetKind {
+  FIXED_ASSET
+  CONSUMABLE
+}
+
+enum InventoryAssetStatus {
+  IN_STORE
+  ASSIGNED
+  IN_MAINTENANCE
+  RETIRED
+  DISPOSED
+}
+
+enum InventoryMaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+enum InventoryStockMovementKind {
+  RECEIPT
+  ISSUE
+  ADJUSTMENT
+}
+
+enum InventoryAuditSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum InventoryDisposalMethod {
+  SOLD
+  SCRAPPED
+  DONATED
+  LOST
+  WRITTEN_OFF
+  OTHER
 }

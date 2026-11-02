@@ -280,6 +280,26 @@ export const AUDIT_ACTIONS = [
   { key: "transport.maintenance.created", module: "transport", description: "Vehicle maintenance request created (OPEN)" },
   { key: "transport.maintenance.transitioned", module: "transport", description: "Vehicle maintenance request advanced ({from,to}) incl. CANCELLED/RESOLVED" },
   { key: "transport.roster.exported", module: "transport", description: "Transport roster exported (XLSX)" },
+  // inventory.* (15) — Phase 9.5 Inventory & Assets Management mutations
+  // (past-tense). No migration mirror (validated only in recordAuditEvent). The
+  // permission/audit KEY prefix and the module registry key are both `inventory`.
+  // DENIED decisions (terminal asset transfer/dispose, insufficient stock) reuse
+  // the corresponding mutation key with result DENIED.
+  { key: "inventory.category.created", module: "inventory", description: "Asset category created" },
+  { key: "inventory.category.updated", module: "inventory", description: "Asset category updated" },
+  { key: "inventory.asset.created", module: "inventory", description: "Asset created" },
+  { key: "inventory.asset.updated", module: "inventory", description: "Asset updated" },
+  { key: "inventory.custody.transferred", module: "inventory", description: "Asset custody transferred (DENIED if asset terminal)" },
+  { key: "inventory.maintenance.created", module: "inventory", description: "Asset maintenance request created (OPEN); asset -> IN_MAINTENANCE (DENIED if terminal/already open)" },
+  { key: "inventory.maintenance.transitioned", module: "inventory", description: "Maintenance request advanced ({from,to}); asset restored to priorAssetStatus or maintenance-only flip if asset terminal" },
+  { key: "inventory.asset.disposed", module: "inventory", description: "Asset disposed/retired (terminal) + disposal record (DENIED if already terminal)" },
+  { key: "inventory.stock.received", module: "inventory", description: "Consumable stock RECEIPT recorded" },
+  { key: "inventory.stock.issued", module: "inventory", description: "Consumable stock ISSUE recorded (DENIED on insufficient stock)" },
+  { key: "inventory.stock.adjusted", module: "inventory", description: "Consumable stock ADJUSTMENT recorded (DENIED on insufficient stock)" },
+  { key: "inventory.audit.created", module: "inventory", description: "Stock-take audit session created (OPEN)" },
+  { key: "inventory.audit.line_added", module: "inventory", description: "Stock-take audit line appended" },
+  { key: "inventory.audit.closed", module: "inventory", description: "Stock-take audit session closed (OPEN -> CLOSED)" },
+  { key: "inventory.register.exported", module: "inventory", description: "Asset register exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

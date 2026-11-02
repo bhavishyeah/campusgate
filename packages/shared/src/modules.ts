@@ -28,6 +28,7 @@ export const MODULES = [
   { key: "hr_management", name: "HR Management", description: "Employment records — employees, contracts, leave, employee attendance, shifts (Phase 9)" },
   { key: "hostel", name: "Hostel", description: "Hostel management — buildings, rooms, allocation, leave, maintenance (Phase 9.3)" },
   { key: "transport", name: "Transport", description: "Transport management — vehicles, drivers, routes, stops, assignments, capacity-safe enrollment, maintenance, schedules (Phase 9.4)" },
+  { key: "inventory", name: "Inventory & Assets", description: "Inventory & assets management — categories, asset registry, custody transfers, consumable stock, maintenance, disposal, stock-take audits, reports (Phase 9.5)" },
 ] as const satisfies readonly ModuleDef[];
 
 export type ModuleKey = (typeof MODULES)[number]["key"];
@@ -95,4 +96,12 @@ export const MODULE_DEPENDENCIES: Record<ModuleKey, readonly ModuleKey[]> = {
   // Those prerequisites are validated at operation time via composite FKs +
   // in-handler lookups, not by a gated-module activation edge.
   transport: [],
+  // inventory is foundational-not-gated (the attendance/fees/admissions/
+  // faculty_management/hostel/transport precedent): only its own row must be
+  // ENTITLED->ACTIVE. Its real prerequisites (User / Department) are FOUNDATIONAL
+  // data with NO ACTIVE InstitutionModule row - a gated-module edge would
+  // PERMANENTLY block activation. Those prerequisites are validated at operation
+  // time via composite FKs + in-handler lookups, not by a gated-module activation
+  // edge.
+  inventory: [],
 };

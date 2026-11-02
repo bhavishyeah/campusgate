@@ -3424,6 +3424,382 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     expect(aVisible.some((r: { id: string }) => r.id === A.transportEnrollmentId)).toBe(true);
   }, 60_000);
 
+  // ─── Phase-9.5 Inventory & Assets Management tables (design §B.1) ───────────
+  // The FIVE mutable/guarded tables (inventory_asset_categories,
+  // inventory_assets, inventory_stock_items, inventory_maintenance_requests,
+  // inventory_audit_sessions) are seeded in the shared setup and covered here
+  // with: cross-tenant read denied, spoofed/cross-tenant write denied,
+  // foreign-parent composite-FK violation, buggy-query backstop, and the
+  // three-GUC-state fail-closed case. The column guards on
+  // assets/maintenance/audit_sessions enforce lifecycle immutability at the row
+  // level (not an append-only RLS policy), so they carry the standard modify pair
+  // (asserted by the policy meta-test via DEFAULT_POLICIES). The FOUR ledgers
+  // (custody_transfers, stock_movements, audit_lines, disposals) are STRICTLY
+  // append-only and each gets a self-contained INSERT-ok/UPDATE+DELETE-denied case.
+
+  it("3i1. inventory read escape: tenant A cannot see tenant B's inventory rows", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Each findUnique for B's row under A's tenant returns null (RLS).
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryAssetCategory.findUnique({ where: { id: B.inventoryCategoryId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryAsset.findUnique({ where: { id: B.inventoryAssetId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryStockItem.findUnique({ where: { id: B.inventoryStockItemId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryMaintenanceRequest.findUnique({ where: { id: B.inventoryMaintenanceId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryAuditSession.findUnique({ where: { id: B.inventoryAuditSessionId } }))).toBeNull();
+
+    // A's own rows ARE visible under A (complementary direction).
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryAsset.findUnique({ where: { id: A.inventoryAssetId } }))).toBeTruthy();
+  }, 60_000);
+
+  it("3i2. inventory spoofed insert: A cannot insert a row carrying B's institutionId", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // WITH CHECK rejects a row whose institutionId != A's GUC.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryAssetCategory.create({
+          data: {
+            id: `${PREFIX}SPOOF_ICAT`,
+            institutionId: B.institutionId, // spoof
+            name: `${PREFIX}spoof`,
+            code: `${PREFIX}SPOOFCODE`,
+            kind: "FIXED_ASSET",
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryAsset.create({
+          data: {
+            id: `${PREFIX}SPOOF_IASSET`,
+            institutionId: B.institutionId, // spoof
+            assetTag: `${PREFIX}SPOOFTAG`,
+            name: `${PREFIX}spoof`,
+            categoryId: B.inventoryCategoryId,
+            status: "IN_STORE",
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3i3. inventory foreign-parent: A cannot reference B's category / asset / session", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // inventory_assets.(institutionId, categoryId) composite FK forbids an asset
+    // under B's category while in A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryAsset.create({
+          data: {
+            id: `${PREFIX}FOREIGN_IASSET`,
+            institutionId: A.institutionId,
+            assetTag: `${PREFIX}FOREIGNTAG`,
+            name: `${PREFIX}foreign asset`,
+            categoryId: B.inventoryCategoryId, // B's category under A's tenant
+            status: "IN_STORE",
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // inventory_stock_items.(institutionId, assetId) composite FK forbids a stock
+    // item under B's asset.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryStockItem.create({
+          data: {
+            id: `${PREFIX}FOREIGN_ISTOCK`,
+            institutionId: A.institutionId,
+            assetId: B.inventoryAssetId, // B's asset under A's tenant
+            onHandQuantity: 0,
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // inventory_maintenance_requests.(institutionId, assetId) composite FK.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryMaintenanceRequest.create({
+          data: {
+            id: `${PREFIX}FOREIGN_IMNT`,
+            institutionId: A.institutionId,
+            assetId: B.inventoryAssetId, // B's asset under A's tenant
+            issue: `${PREFIX}foreign`,
+            status: "OPEN",
+            priorAssetStatus: "IN_STORE",
+            reportedByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // inventory_audit_lines.(institutionId, sessionId) composite FK forbids a
+    // line under B's session.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryAuditLine.create({
+          data: {
+            id: `${PREFIX}FOREIGN_ILINE`,
+            institutionId: A.institutionId,
+            sessionId: B.inventoryAuditSessionId, // B's session under A's tenant
+            assetId: A.inventoryAssetId,
+            actorUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // inventory_disposals.(institutionId, assetId) composite FK forbids a
+    // disposal under B's asset.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.inventoryDisposal.create({
+          data: {
+            id: `${PREFIX}FOREIGN_IDISP`,
+            institutionId: A.institutionId,
+            assetId: B.inventoryAssetId, // B's asset under A's tenant
+            terminalStatus: "DISPOSED",
+            method: "SCRAPPED",
+            disposedAt: new Date(),
+            actorUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3i4. inventory spoofed update: A cannot flip B's asset status", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.inventoryAsset.updateMany({
+        where: { id: B.inventoryAssetId },
+        data: { status: "ASSIGNED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.inventoryAsset.findUnique({ where: { id: B.inventoryAssetId } });
+    expect(bRow!.status).toBe("IN_STORE");
+  }, 60_000);
+
+  it("3i5. inventory buggy-query backstop + fail-closed (unset / empty-string GUC)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // (i) unscoped findMany under A returns only A's rows.
+    const assets = await withTenant(A.institutionId, (tx) => tx.inventoryAsset.findMany({}));
+    for (const r of assets) expect(r.institutionId).toBe(A.institutionId);
+    expect(assets.some((r: { id: string }) => r.id === B.inventoryAssetId)).toBe(false);
+
+    const categories = await withTenant(A.institutionId, (tx) => tx.inventoryAssetCategory.findMany({}));
+    for (const r of categories) expect(r.institutionId).toBe(A.institutionId);
+    expect(categories.some((r: { id: string }) => r.id === B.inventoryCategoryId)).toBe(false);
+
+    const aCount = await adminClient.inventoryAsset.count({ where: { institutionId: A.institutionId } });
+    const aAssets = await withTenant(A.institutionId, (tx) => tx.inventoryAsset.findMany({}));
+    expect(aAssets.length).toBe(aCount);
+
+    // (ii) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.inventoryAsset.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (iii) empty-string GUC => nullif(...,'') => NULL => no rows (all nine tables).
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const c = await tx.inventoryAssetCategory.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const a = await tx.inventoryAsset.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const si = await tx.inventoryStockItem.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const mr = await tx.inventoryMaintenanceRequest.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const au = await tx.inventoryAuditSession.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const ct = await tx.inventoryCustodyTransfer.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const sm = await tx.inventoryStockMovement.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const al = await tx.inventoryAuditLine.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const dp = await tx.inventoryDisposal.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return c.length + a.length + si.length + mr.length + au.length + ct.length + sm.length + al.length + dp.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iv) A's own asset IS visible under A's GUC.
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.inventoryAsset.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.inventoryAssetId)).toBe(true);
+  }, 60_000);
+
+  it("3i6. inventory_custody_transfers APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}IXFER_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.inventoryCustodyTransfer.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          assetId: A.inventoryAssetId,
+          toDepartmentId: A.departmentId,
+          transferredAt: new Date("2027-02-01T00:00:00.000Z"),
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryCustodyTransfer.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.inventoryCustodyTransfer.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryCustodyTransfer.update({ where: { id: rowId }, data: { reason: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryCustodyTransfer.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.inventoryCustodyTransfer.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_custody_transfers" DISABLE TRIGGER "inventory_custody_transfers_no_update_delete"`);
+    try {
+      await adminClient.inventoryCustodyTransfer.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_custody_transfers" ENABLE TRIGGER "inventory_custody_transfers_no_update_delete"`);
+    }
+  }, 60_000);
+
+  it("3i7. inventory_stock_movements APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}IMOV_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.inventoryStockMovement.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          stockItemId: A.inventoryStockItemId,
+          assetId: A.inventoryAssetId,
+          kind: "RECEIPT",
+          quantity: 5,
+          balanceAfter: 15,
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryStockMovement.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.inventoryStockMovement.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryStockMovement.update({ where: { id: rowId }, data: { reason: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryStockMovement.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.inventoryStockMovement.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_stock_movements" DISABLE TRIGGER "inventory_stock_movements_no_update_delete"`);
+    try {
+      await adminClient.inventoryStockMovement.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_stock_movements" ENABLE TRIGGER "inventory_stock_movements_no_update_delete"`);
+    }
+  }, 60_000);
+
+  it("3i8. inventory_audit_lines APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}ILINE_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.inventoryAuditLine.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          sessionId: A.inventoryAuditSessionId,
+          assetId: A.inventoryAssetId,
+          expectedQuantity: 1,
+          foundQuantity: 1,
+          discrepancy: 0,
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryAuditLine.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.inventoryAuditLine.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryAuditLine.update({ where: { id: rowId }, data: { note: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryAuditLine.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.inventoryAuditLine.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_audit_lines" DISABLE TRIGGER "inventory_audit_lines_no_update_delete"`);
+    try {
+      await adminClient.inventoryAuditLine.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_audit_lines" ENABLE TRIGGER "inventory_audit_lines_no_update_delete"`);
+    }
+  }, 60_000);
+
+  it("3i9. inventory_disposals APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    // Use the SEEDED disposable asset — it already carries one disposal; the
+    // partial unique is one-per-asset, so insert the extra disposal fact on a
+    // THIRD fresh terminal asset created here via adminClient to avoid collision.
+    const freshAssetId = `${PREFIX}IDASSET3_A`;
+    const rowId = `${PREFIX}IDISP_A2`;
+    await adminClient.inventoryAsset.create({
+      data: {
+        id: freshAssetId,
+        institutionId: A.institutionId,
+        assetTag: `${PREFIX}ID3TAG_A`,
+        name: `${PREFIX}disp3`,
+        categoryId: A.inventoryCategoryId,
+        status: "DISPOSED",
+        createdByUserId: A.userId,
+      },
+    });
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.inventoryDisposal.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          assetId: freshAssetId,
+          terminalStatus: "DISPOSED",
+          method: "SOLD",
+          disposedAt: new Date("2027-02-02T00:00:00.000Z"),
+          actorUserId: A.userId,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.inventoryDisposal.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.inventoryDisposal.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryDisposal.update({ where: { id: rowId }, data: { reason: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.inventoryDisposal.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.inventoryDisposal.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    // Clean up the disposal (append-only) + the fresh asset (guard forbids DELETE)
+    // within a scoped trigger-disable.
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_disposals" DISABLE TRIGGER "inventory_disposals_no_update_delete"`);
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_assets" DISABLE TRIGGER "inventory_assets_guard"`);
+    try {
+      await adminClient.inventoryDisposal.deleteMany({ where: { id: rowId } });
+      await adminClient.inventoryAsset.deleteMany({ where: { id: freshAssetId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_disposals" ENABLE TRIGGER "inventory_disposals_no_update_delete"`);
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "inventory_assets" ENABLE TRIGGER "inventory_assets_guard"`);
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -3560,6 +3936,16 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       // examinations / marks_records precedent), asserted by the
       // EXPECTED_POLICIES/DEFAULT_POLICIES loop above.
       "hostel_check_events",
+      // Phase-9.5: the four inventory ledgers are STRICTLY append-only (design
+      // §B.3) — INSERT-only policy + REVOKE + trigger, NO modify policy. The five
+      // mutable/guarded inventory tables carry the standard modify pair (their
+      // lifecycle immutability is a column guard, not an RLS policy — the
+      // transport / examinations precedent), asserted by the
+      // EXPECTED_POLICIES/DEFAULT_POLICIES loop above.
+      "inventory_custody_transfers",
+      "inventory_stock_movements",
+      "inventory_audit_lines",
+      "inventory_disposals",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

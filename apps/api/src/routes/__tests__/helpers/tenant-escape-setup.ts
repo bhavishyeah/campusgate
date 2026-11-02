@@ -274,6 +274,33 @@ export interface SeededTenant {
   transportEnrollmentId: string;
   transportMaintenanceId: string;
   transportScheduleId: string;
+  // Phase-9.5 Inventory & Assets Management (design §B.1). The FIVE
+  // mutable/guarded tables (inventory_asset_categories, inventory_assets,
+  // inventory_stock_items, inventory_maintenance_requests,
+  // inventory_audit_sessions) are seeded here (standard RLS pair; assets /
+  // maintenance / audit_sessions additionally carry column-guard triggers) in
+  // child-safe order (category -> asset -> stock_item -> maintenance (OPEN, moves
+  // the asset to IN_MAINTENANCE) -> audit_session). The FOUR append-only tables
+  // (inventory_custody_transfers, inventory_stock_movements,
+  // inventory_audit_lines, inventory_disposals) ARE seeded here too — their
+  // BEFORE UPDATE OR DELETE trigger only blocks UPDATE/DELETE, so adminClient can
+  // still INSERT and (with the trigger disabled in teardown) DELETE them. A
+  // custody transfer / stock movement / audit line is seeded on the live asset;
+  // a disposal is seeded on a SECOND disposable asset so the disposals fixture
+  // does not drive the live asset terminal. The three column-guard tables
+  // (assets/maintenance/audit_sessions) forbid DELETE unconditionally, and the
+  // four append-only tables forbid UPDATE/DELETE, so teardown deletes them all
+  // within a scoped trigger-disable (the examinations/marks_records dance).
+  inventoryCategoryId: string;
+  inventoryAssetId: string;
+  inventoryStockItemId: string;
+  inventoryMaintenanceId: string;
+  inventoryAuditSessionId: string;
+  inventoryCustodyTransferId: string;
+  inventoryStockMovementId: string;
+  inventoryAuditLineId: string;
+  inventoryDisposableAssetId: string;
+  inventoryDisposalId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -411,6 +438,18 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const transportEnrollmentId = id(`tenr_${key}`);
   const transportMaintenanceId = id(`tmnt_${key}`);
   const transportScheduleId = id(`tsch_${key}`);
+  // Phase-9.5 inventory IDs (deterministic so cleanup is exact). All nine tables
+  // are seeded; the disposal is on a SECOND disposable asset.
+  const inventoryCategoryId = id(`icat_${key}`);
+  const inventoryAssetId = id(`iasset_${key}`);
+  const inventoryStockItemId = id(`istock_${key}`);
+  const inventoryMaintenanceId = id(`imnt_${key}`);
+  const inventoryAuditSessionId = id(`iaud_${key}`);
+  const inventoryCustodyTransferId = id(`ixfer_${key}`);
+  const inventoryStockMovementId = id(`imov_${key}`);
+  const inventoryAuditLineId = id(`iline_${key}`);
+  const inventoryDisposableAssetId = id(`idasset_${key}`);
+  const inventoryDisposalId = id(`idisp_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1461,6 +1500,138 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.5 Inventory & Assets Management tables (design §B.1). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: category (CONSUMABLE) -> asset (live) + stock_item; a custody
+  // transfer, a stock movement (RECEIPT, balanceAfter 10), and an audit
+  // session+line on that asset; a maintenance request on the live asset (OPEN,
+  // priorAssetStatus IN_STORE — the asset stays IN_STORE in the fixture so the
+  // foreign-parent tests have a clean non-terminal parent; we do NOT flip it to
+  // IN_MAINTENANCE here since the handler coupling is proven by the behavioral
+  // suite); and a SECOND disposable asset with one disposal row (so the disposals
+  // fixture does not drive the live asset terminal). The four append-only tables
+  // (custody_transfers, stock_movements, audit_lines, disposals) only block
+  // UPDATE/DELETE, so adminClient can INSERT them here and delete them in
+  // teardown within a scoped trigger-disable.
+  await adminClient.inventoryAssetCategory.create({
+    data: {
+      id: inventoryCategoryId,
+      institutionId,
+      name: `${PREFIX}Category ${key}`,
+      code: id(`ICODE_${key}`),
+      kind: "CONSUMABLE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryAsset.create({
+    data: {
+      id: inventoryAssetId,
+      institutionId,
+      assetTag: id(`ITAG_${key}`),
+      name: `${PREFIX}Asset ${key}`,
+      categoryId: inventoryCategoryId,
+      status: "IN_STORE",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryStockItem.create({
+    data: {
+      id: inventoryStockItemId,
+      institutionId,
+      assetId: inventoryAssetId,
+      onHandQuantity: 10,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryCustodyTransfer.create({
+    data: {
+      id: inventoryCustodyTransferId,
+      institutionId,
+      assetId: inventoryAssetId,
+      toUserId: userId,
+      transferredAt: new Date("2027-01-15T00:00:00.000Z"),
+      reason: `${PREFIX}handover ${key}`,
+      actorUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryStockMovement.create({
+    data: {
+      id: inventoryStockMovementId,
+      institutionId,
+      stockItemId: inventoryStockItemId,
+      assetId: inventoryAssetId,
+      kind: "RECEIPT",
+      quantity: 10,
+      balanceAfter: 10,
+      actorUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryMaintenanceRequest.create({
+    data: {
+      id: inventoryMaintenanceId,
+      institutionId,
+      assetId: inventoryAssetId,
+      issue: `${PREFIX}service ${key}`,
+      status: "OPEN",
+      priorAssetStatus: "IN_STORE",
+      reportedByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryAuditSession.create({
+    data: {
+      id: inventoryAuditSessionId,
+      institutionId,
+      name: `${PREFIX}Stock-take ${key}`,
+      status: "OPEN",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryAuditLine.create({
+    data: {
+      id: inventoryAuditLineId,
+      institutionId,
+      sessionId: inventoryAuditSessionId,
+      stockItemId: inventoryStockItemId,
+      expectedQuantity: 10,
+      foundQuantity: 10,
+      discrepancy: 0,
+      actorUserId: userId,
+    },
+  });
+
+  // A SECOND disposable asset (same category) carrying the one disposal row, so
+  // the disposals fixture does not touch the live asset's status.
+  await adminClient.inventoryAsset.create({
+    data: {
+      id: inventoryDisposableAssetId,
+      institutionId,
+      assetTag: id(`IDTAG_${key}`),
+      name: `${PREFIX}Disposable Asset ${key}`,
+      categoryId: inventoryCategoryId,
+      status: "DISPOSED",
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.inventoryDisposal.create({
+    data: {
+      id: inventoryDisposalId,
+      institutionId,
+      assetId: inventoryDisposableAssetId,
+      terminalStatus: "DISPOSED",
+      method: "SCRAPPED",
+      disposedAt: new Date("2027-01-20T00:00:00.000Z"),
+      actorUserId: userId,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1539,6 +1710,16 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     transportEnrollmentId,
     transportMaintenanceId,
     transportScheduleId,
+    inventoryCategoryId,
+    inventoryAssetId,
+    inventoryStockItemId,
+    inventoryMaintenanceId,
+    inventoryAuditSessionId,
+    inventoryCustodyTransferId,
+    inventoryStockMovementId,
+    inventoryAuditLineId,
+    inventoryDisposableAssetId,
+    inventoryDisposalId,
   };
 }
 
@@ -1552,6 +1733,47 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.5 Inventory & Assets Management tables FIRST (child -> parent),
+  // BEFORE the transport / users / departments / institution deletes below (the
+  // assets' composite FKs to users/departments and the children's FKs to assets
+  // are ON DELETE RESTRICT). The four append-only tables (custody_transfers,
+  // stock_movements, audit_lines, disposals) forbid UPDATE/DELETE and the three
+  // column-guard tables (assets, maintenance_requests, audit_sessions) forbid
+  // DELETE unconditionally, so delete them all with those triggers disabled (the
+  // examinations/marks_records dance). Order: audit_lines + stock_movements +
+  // custody_transfers + disposals + maintenance_requests (children) ->
+  // stock_items -> audit_sessions -> assets -> categories.
+  const inventoryGuardedTables = [
+    { table: "inventory_custody_transfers", trigger: "inventory_custody_transfers_no_update_delete" },
+    { table: "inventory_stock_movements", trigger: "inventory_stock_movements_no_update_delete" },
+    { table: "inventory_audit_lines", trigger: "inventory_audit_lines_no_update_delete" },
+    { table: "inventory_disposals", trigger: "inventory_disposals_no_update_delete" },
+    { table: "inventory_maintenance_requests", trigger: "inventory_maintenance_requests_guard" },
+    { table: "inventory_assets", trigger: "inventory_assets_guard" },
+    { table: "inventory_audit_sessions", trigger: "inventory_audit_sessions_guard" },
+  ];
+  for (const { table, trigger } of inventoryGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.inventoryAuditLine.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryStockMovement.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryCustodyTransfer.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryDisposal.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryMaintenanceRequest.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryStockItem.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryAuditSession.deleteMany({ where }));
+    await withRetry(() => adminClient.inventoryAsset.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of inventoryGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.inventoryAssetCategory.deleteMany({ where }));
   // Phase-9.4 Transport Management tables FIRST (child -> parent), BEFORE the
   // student_profiles / users / institution deletes below (the enrollment's
   // composite FKs to student_profiles/routes/stops and the tenant-root FKs are ON
@@ -2251,6 +2473,24 @@ export const RLS_TABLES = [
   "transport_enrollments",
   "transport_vehicle_maintenance_requests",
   "transport_route_schedules",
+  // Phase-9.5 Inventory & Assets Management tables (design §B.1). The five
+  // mutable/guarded tables (inventory_asset_categories, inventory_assets,
+  // inventory_stock_items, inventory_maintenance_requests,
+  // inventory_audit_sessions) use the default modify pair — the column-guard
+  // triggers on assets/maintenance/audit_sessions enforce lifecycle immutability
+  // at the row level, NOT via an append-only RLS policy, so they still carry
+  // tenant_isolation_modify. The four ledgers (inventory_custody_transfers,
+  // inventory_stock_movements, inventory_audit_lines, inventory_disposals) are
+  // STRICTLY append-only (EXPECTED_POLICIES below).
+  "inventory_asset_categories",
+  "inventory_assets",
+  "inventory_stock_items",
+  "inventory_maintenance_requests",
+  "inventory_audit_sessions",
+  "inventory_custody_transfers",
+  "inventory_stock_movements",
+  "inventory_audit_lines",
+  "inventory_disposals",
 ] as const;
 
 /**
@@ -2370,6 +2610,27 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   hostel_check_events: [
     "tenant_isolation_select",
     "hostel_check_events_tenant_insert",
+  ],
+  // Phase-9.5: the four inventory ledgers are STRICTLY append-only (design §B.3)
+  // — the SELECT + INSERT pair, NO modify policy. The five mutable/guarded
+  // inventory tables are deliberately ABSENT here so they fall through to
+  // DEFAULT_POLICIES (their lifecycle immutability is a column guard, not an
+  // append-only RLS policy — the examinations / transport precedent).
+  inventory_custody_transfers: [
+    "tenant_isolation_select",
+    "inventory_custody_transfers_tenant_insert",
+  ],
+  inventory_stock_movements: [
+    "tenant_isolation_select",
+    "inventory_stock_movements_tenant_insert",
+  ],
+  inventory_audit_lines: [
+    "tenant_isolation_select",
+    "inventory_audit_lines_tenant_insert",
+  ],
+  inventory_disposals: [
+    "tenant_isolation_select",
+    "inventory_disposals_tenant_insert",
   ],
 };
 

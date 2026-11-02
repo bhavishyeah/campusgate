@@ -34,4 +34,5 @@ export const LIVE_DB_SUITES = [
   'src/**/hr-behavioral.integration.test.ts',
   'src/**/hostel.behavioral.integration.test.ts',
   'src/**/transport.behavioral.integration.test.ts',
+  'src/**/inventory.behavioral.integration.test.ts',
 ];

@@ -661,6 +661,59 @@ export const PERMISSIONS = [
     description: "Student self-service read of OWN transport enrollment + route/stop/schedule",
   },
 
+  // inventory.* — Phase 9.5 Inventory & Assets Management: asset categories,
+  // asset registry (forward-only + terminal lifecycle), custody transfers,
+  // consumable stock (concurrency-safe on-hand + movement ledger), maintenance,
+  // disposal, stock-take audits, reports/export, and custodian self-service.
+  // Gated module (requireModuleActive("inventory")) in addition to permission.
+  // The module registry key and the permission/audit KEY prefix are both
+  // `inventory`. Separation of duties (design §B.9): STUDENT never gets any
+  // inventory key; inventory.view_own binds ONLY to INVENTORY_MANAGER (a
+  // DELIBERATE deviation — inventory has no non-staff self role, so /me/assets
+  // self-scopes by custodyUserId == token.userId and must be reachable by a
+  // seeded role; ADMIN is excluded, matching the module-era precedent that ADMIN
+  // holds no module-gated *.view_own key).
+  {
+    key: "inventory.categories.manage",
+    module: "inventory",
+    description: "Create/update asset categories (staff)",
+  },
+  {
+    key: "inventory.assets.manage",
+    module: "inventory",
+    description: "Create/update assets + custody transfer/assign (staff)",
+  },
+  {
+    key: "inventory.stock.manage",
+    module: "inventory",
+    description: "Record stock receipts/issues/adjustments (staff)",
+  },
+  {
+    key: "inventory.maintenance.manage",
+    module: "inventory",
+    description: "Open/advance/resolve asset maintenance requests (staff)",
+  },
+  {
+    key: "inventory.disposals.manage",
+    module: "inventory",
+    description: "Dispose/retire assets (staff)",
+  },
+  {
+    key: "inventory.audits.manage",
+    module: "inventory",
+    description: "Create stock-take audit sessions + append audit lines (staff)",
+  },
+  {
+    key: "inventory.view",
+    module: "inventory",
+    description: "Staff read of categories/assets/stock/maintenance/disposals/audits + reports/export",
+  },
+  {
+    key: "inventory.view_own",
+    module: "inventory",
+    description: "Custodian self-service read of assets currently in OWN custody",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -800,6 +853,25 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "transport.maintenance.manage",
     "transport.view",
   ],
+  // INVENTORY_MANAGER — additive platform template role (WARDEN/HR_MANAGER/
+  // TRANSPORT_MANAGER precedent); inventory-scoped ONLY. An inventory manager
+  // runs inventory end to end within a tenant (categories, assets, custody,
+  // stock, maintenance, disposal, audits, reports) without inheriting
+  // institution-wide admin rights. DELIBERATE DEVIATION (design §B.9/NIT-B):
+  // unlike every other module where *.view_own binds to a NON-staff self role,
+  // inventory.view_own binds to this staff manager role because inventory has no
+  // non-staff self role — custodians are staff users and /me/assets self-scopes
+  // by custodyUserId == token.userId, read-only. Kept on purpose.
+  INVENTORY_MANAGER: [
+    "inventory.categories.manage",
+    "inventory.assets.manage",
+    "inventory.stock.manage",
+    "inventory.maintenance.manage",
+    "inventory.disposals.manage",
+    "inventory.audits.manage",
+    "inventory.view",
+    "inventory.view_own",
+  ],
   GUARD: [
     "campus_movement.gate.verify",
     "campus_movement.gate.mark_exit",
@@ -930,6 +1002,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "transport.enrollments.manage",
     "transport.maintenance.manage",
     "transport.view",
+    "inventory.categories.manage",
+    "inventory.assets.manage",
+    "inventory.stock.manage",
+    "inventory.maintenance.manage",
+    "inventory.disposals.manage",
+    "inventory.audits.manage",
+    "inventory.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",
