@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
+import { landingRoute } from "@/lib/landing";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -26,24 +27,8 @@ export default function LoginPage() {
 
       setAuth(data.token, data.user);
 
-      // Route based on role
-      switch (data.user.role) {
-        case "STUDENT":
-          router.push("/student");
-          break;
-        case "HOD":
-          router.push("/hod");
-          break;
-        case "GUARD":
-          router.push("/guard");
-          break;
-        case "ADMIN":
-          router.push("/admin");
-          break;
-        case "SUPER_ADMIN":
-          router.push("/platform");
-          break;
-      }
+      const { roles, permissions } = useAuthStore.getState();
+      router.push(landingRoute(roles, permissions));
     } catch (err: any) {
       setError(err.message || "Login failed");
     } finally {

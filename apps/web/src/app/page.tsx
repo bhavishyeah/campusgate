@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
+import { landingRoute } from "@/lib/landing";
 
 export default function Home() {
   const router = useRouter();
@@ -16,26 +17,8 @@ export default function Home() {
       return;
     }
 
-    // Route based on role
-    switch (user.role) {
-      case "STUDENT":
-        router.replace("/student");
-        break;
-      case "HOD":
-        router.replace("/hod");
-        break;
-      case "GUARD":
-        router.replace("/guard");
-        break;
-      case "ADMIN":
-        router.replace("/admin");
-        break;
-      case "SUPER_ADMIN":
-        router.replace("/platform");
-        break;
-      default:
-        router.replace("/login");
-    }
+    const { roles, permissions } = useAuthStore.getState();
+    router.replace(landingRoute(roles, permissions));
   }, [token, user, router, hydrated]);
 
   return (
