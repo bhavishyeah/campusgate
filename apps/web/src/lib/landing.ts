@@ -22,8 +22,8 @@ export function landingRoute(roles: string[], permissions: string[]): string {
     "fees.structures.manage",
     "fees.collect",
   ];
-  if (STAFF_FEES.some((p) => permissions.includes(p))) return "/app/fees";
-  if (permissions.includes("fees.view_own")) return "/app/fees/me";
+  if (STAFF_FEES.some((p) => permissions.includes(p))) return "/fees";
+  if (permissions.includes("fees.view_own")) return "/fees/me";
 
   // 4. Authenticated but no known landing.
   return "/app";

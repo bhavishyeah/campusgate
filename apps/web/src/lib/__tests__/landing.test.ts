@@ -16,12 +16,12 @@ describe("landingRoute", () => {
     ).toBe("/admin");
   });
 
-  it("sends a pure ACCOUNTANT with fees.view to /app/fees", () => {
-    expect(landingRoute(["ACCOUNTANT"], ["fees.view"])).toBe("/app/fees");
+  it("sends a pure ACCOUNTANT with fees.view to /fees", () => {
+    expect(landingRoute(["ACCOUNTANT"], ["fees.view"])).toBe("/fees");
   });
 
-  it("sends a non-legacy fees.view_own-only holder to /app/fees/me", () => {
-    expect(landingRoute(["PARENT"], ["fees.view_own"])).toBe("/app/fees/me");
+  it("sends a non-legacy fees.view_own-only holder to /fees/me", () => {
+    expect(landingRoute(["PARENT"], ["fees.view_own"])).toBe("/fees/me");
   });
 
   it("falls back to /app for an authenticated user with no known landing", () => {

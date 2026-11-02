@@ -22,14 +22,14 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   {
-    href: "/app/fees",
+    href: "/fees",
     label: "Fees",
     icon: Wallet,
     anyOf: ["fees.view", "fees.charges.manage", "fees.structures.manage", "fees.collect"],
     module: "fees",
   },
   {
-    href: "/app/fees/me",
+    href: "/fees/me",
     label: "My Fees",
     icon: Wallet,
     anyOf: ["fees.view_own"],
