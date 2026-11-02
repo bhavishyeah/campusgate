@@ -524,7 +524,14 @@ remains deferred (see the deferred-frontend scope list above).
 
 ---
 
-## Phase 9 — Institutional operations
+## Phase 9 — Institutional operations — COMPLETE (backend only)
+
+> **Status: COMPLETE (backend only, Option A).** All seven modules shipped in order:
+> Faculty Management → HR → Hostel → Transport → Inventory & Assets → Service Requests →
+> **Document Management** (the seventh and final, object-storage-backed). With Document
+> Management shipped, **Phase 9 is COMPLETE** and — since Phases 0–8 already completed —
+> **the entire backend (Phases 0–9) is COMPLETE**. The frontend (`apps/web`) remains the
+> single dedicated pass still to come (see the deferred-frontend scope list above).
 
 **Objective.** Add operational modules as institutional demand requires, each on the shared
 foundation.
@@ -793,6 +800,73 @@ the first attempt** (no free-tier pooler transient on this run). The frontend re
 (see the deferred-frontend scope list above). **Phase 9 is NOT complete** — it completes only
 after Document Management (the final module) ships. Modules shipped so far: Faculty Management,
 HR, Hostel, Transport, Inventory & Assets, Service Requests (6 of 7).
+
+**Document Management — SHIPPED (backend only) → PHASE 9 COMPLETE → BACKEND (PHASES 0–9) COMPLETE.**
+The **seventh and final** Phase-9 module, built **sequentially** on `main`. Gated booster via
+the hand-authored migration `20270131000000_phase9_documents` (the 23rd dir, next timestamp
+after service requests — strictly additive, **no DROP**; the 22 prior frozen dirs
+byte-untouched; `prisma migrate status` up to date at **23** migrations; `prisma migrate diff`
+shows only the long-standing composite-vs-single-FK cosmetic diff — zero `DropTable`, zero
+dropped columns on existing tables). This is the one module whose large file **BLOBS live in
+OBJECT STORAGE (Supabase Storage), NOT the relational DB** — the DB holds only metadata
+(filename, content type, size, sha256 checksum, ownership, the version chain, access grants,
+retention state, and the tenant-prefixed storage key `<institutionId>/<documentId>/<versionId>`).
+New module key `documents`, `deps = []` (foundational-not-gated, the service-requests/inventory
+precedent); every route gated by `requireModuleActive("documents")` **plus** a permission gate
+(`requirePermission` on write/admin routes; the three read routes use an inline OR of coarse
+keys via `can()`). **Object-storage seam:** all blob access sits behind a small injectable
+`ObjectStore` interface (`apps/api/src/services/documents/storage.ts`) with a concrete
+`SupabaseStorageAdapter` (raw Storage REST over the built-in `fetch`, **no SDK**), an
+`InMemoryObjectStore` stub, and a `getObjectStore`/`setObjectStore(x|null)` singleton that
+**mirrors the Razorpay gateway seam exactly** — a future R2/S3 swap is one new class. The
+**service-role key is SERVER-ONLY**: read from `SUPABASE_SERVICE_ROLE_KEY`, held private on the
+adapter, used only as the `apikey`/`Authorization` header, **never** returned to a client,
+embedded in a storage key, or logged; the constructor's `isProd()` guard throws only in
+production when a required var is unset (dev/test tolerate absent/mocked), and the three
+`SUPABASE_*` vars are documented server-only in `.env.example`. Six tenant-owned tables
+(`document_retention_policies`, `documents`, `document_versions`, `document_access_grants`,
+`document_access_logs`) + three enums, institutionId-scoped with `(id, institutionId)` composite
+uniques + composite same-tenant FKs + ENABLE+FORCE RLS with nullif-guarded fail-closed policies.
+**Documents are NOT public by default:** `canAccessDocument` is the sole record-level visibility
+gate (admin/`DOCUMENT_MANAGER` via `admin.view_all` → owner → live grant matching granteeUser or
+granteeDepartment with `accessLevel >= requested` → else deny); **download authorization
+(permission + tenant + ownership-or-grant) runs BEFORE a short-lived (120s) signed URL is minted**
+— a non-owner/non-grantee/non-admin gets 404 (existence-hiding), a `PURGE_PENDING`/`PURGED` doc
+gets 403, and no URL is ever minted for an unauthorized requester. Upload is **store-object-first**
+(bytes written via `putObject` before the metadata tx commits, with a compensating `deleteObject`
+on tx failure). `document_versions` and `document_access_logs` are strictly **append-only**
+(INSERT-only RLS pair + unconditional-raise BEFORE UPDATE OR DELETE trigger + REVOKE UPDATE,DELETE
+from `campass_app`); `documents` carries a **forward-only lifecycle column guard** (ACTIVE→ARCHIVED,
+ACTIVE→PURGE_PENDING, ARCHIVED→ACTIVE, ARCHIVED→PURGE_PENDING, PURGE_PENDING→PURGED + self no-op;
+PURGED terminal; identity columns frozen; DELETE forbidden). Grant/revoke is audited and **revoke
+blocks all future download authorization**; **purge deletes every version blob via
+`adapter.deleteObject` first** (first failure aborts, stays `PURGE_PENDING`, 502) then flips to the
+terminal `PURGED`, retaining the metadata tombstone. RBAC: additive `DOCUMENT_MANAGER` template
+role + seven `documents.*` permissions (`upload_own`, `view_own`, `download`, `grants.manage`,
+`admin.view_all`, `retention.manage`, `audit.view`); **ADMIN + DOCUMENT_MANAGER each bind exactly
+the five admin/grants/retention/audit/download keys** (no owner self-keys — separation of duties),
+FACULTY holds the two owner self-keys, and `documents.download` is the baseline-reachability key on
+**every non-applicant role** (APPLICANT excluded); 12 `documents.*` audit keys; catalogue-sync
+set-equality is the self-enforcing backstop. `StudentDocument` (SIS) and `ApplicationDocument`
+(admissions) are **SEPARATE and NOT touched**. Verification (fresh + serial on `main`): clean
+`npm ci` (796 packages) + `turbo build` **3/3 successful**; fast suite **678/678** (was 651 before
+the slice, +27 — no regression); `documents.behavioral` **13/13** in isolation (fake `ObjectStore`
+injected, no real blob I/O — upload v1/v2, mint-after-authz + append-only access-log row,
+owner/user-grantee/Finance-department-grantee all mint, no-grant→404, applicant→403, revoke→404,
+archive, full purge lifecycle calling `adapter.deleteObject`, append-only UPDATE/DELETE rejection,
+not-public→404, illegal-transition block, report shape); extended `tenant-escape` **129/129** in
+isolation covering all six new document tables (read/write escape + spoofed-tenant insert +
+composite-FK foreign-parent rejection + buggy-query backstop + three-GUC fail-closed, the
+append-only INSERT-ok/UPDATE+DELETE-denied ledger cases, and the RLS meta-test asserting RLS
+enabled+forced with both policies on every new table — no real blob I/O in the escape suite); the
+gated **real-Supabase-Storage smoke check SKIPPED cleanly** (both `SUPABASE_*` env vars absent — it
+round-trips a real object only when both are present). Documented transient: the first
+`tenant-escape` attempt failed on leftover `ESCAPE_TEST_` fixture rows from an interrupted prior
+run (a stale-data/congestion artifact, not a code defect) — after clearing the stale rows it passed
+**129/129** on a rested-DB retry. The frontend remains deferred (see the deferred-frontend scope
+list above). **With this module, Phase 9 is COMPLETE (7 of 7: Faculty Management, HR, Hostel,
+Transport, Inventory & Assets, Service Requests, Document Management) and the ENTIRE BACKEND
+(Phases 0–9) is COMPLETE.**
 
 ---
 
