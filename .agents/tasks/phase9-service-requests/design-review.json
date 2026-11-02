@@ -1,0 +1,20 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "NIT-1",
+      "severity": "NIT",
+      "location": "FR-1, §8 table-1, §10 createTypeSchema",
+      "problem": "defaultAssigneeRole is 'enum of known role keys OR free string ≤64' — an ambiguous two-interpretation rule; the design never settles whether SERVICE_AGENT is accepted or whether an unknown role string is rejected or stored verbatim. Advisory-only (Assumption 3), so it does not block.",
+      "fix": "Pick one rule in §10. Recommended: accept a free string ≤64 matching [A-Z0-9_]{1,64} with no cross-table validation (matches the advisory/no-FK decision); or validate against Object.keys(ROLE_PERMISSIONS) plus SERVICE_AGENT. State that SERVICE_AGENT is a legal value either way."
+    },
+    {
+      "id": "NIT-2",
+      "severity": "NIT",
+      "location": "§10 statusPatchSchema, §5 table, FR-10, AC-9",
+      "problem": "AC-9's wording ('IN_PROGRESS → RESOLVED is legal') reads as if RESOLVED is reachable through PATCH /:id/status, but RESOLVED is only reachable via POST /:id/resolve and statusPatchSchema.toStatus is {IN_PROGRESS, PENDING_APPROVAL}. A coder could mis-read AC-9 as requiring RESOLVED in the PATCH enum.",
+      "fix": "Clarify AC-9: 'PATCH /:id/status IN_PROGRESS → PENDING_APPROVAL → 409 (approval-mismatch) for a non-approval type; IN_PROGRESS → RESOLVED is performed via POST /:id/resolve, not PATCH /:id/status.' Keep statusPatchSchema.toStatus as {IN_PROGRESS, PENDING_APPROVAL}."
+    }
+  ],
+  "reviewDoc": "c:\\campusgate\\.agents\\tasks\\phase9-service-requests\\design-review.md"
+}
