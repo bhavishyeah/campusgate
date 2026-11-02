@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -34,6 +34,34 @@ const NAV: NavItem[] = [
     icon: Wallet,
     anyOf: ["fees.view_own"],
     module: "fees",
+  },
+  // ── Academics (NEW) — foundational/permission-only, NOT module-gated.
+  // anyOf uses academics.sessions.manage, academics.programs.manage,
+  // academics.calendar.manage only. academics.view is intentionally excluded
+  // (MUST-FIX 1): the API grants academics.view for Sessions read but Programs
+  // and Calendar are gated by their respective .manage keys, so including
+  // academics.view here would show the nav but 403 HOD users on those routes.
+  {
+    href: "/academics/sessions",
+    label: "Academics",
+    icon: GraduationCap,
+    anyOf: [
+      "academics.sessions.manage",
+      "academics.programs.manage",
+      "academics.calendar.manage",
+    ],
+  },
+  // ── Students (NEW) — foundational/permission-only, NOT module-gated.
+  {
+    href: "/sis/students",
+    label: "Students",
+    icon: Users,
+    anyOf: [
+      "students.view",
+      "students.create",
+      "students.update",
+      "students.deactivate",
+    ],
   },
 ];
 
