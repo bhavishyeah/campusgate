@@ -696,6 +696,54 @@ guarded-table convention); `prisma migrate status` up to date.
 > `3t1`–`3t4` and the transport behavioral suite. The single transaction-timeout flake is the
 > documented shared free-tier limitation, not a transport defect.
 
+**Inventory & Assets — SHIPPED (backend only).** The fifth and final Phase-9 module, built
+**sequentially** on `main`. Gated booster via the hand-authored migration
+`20270117000000_phase9_inventory` (strictly additive — **no DROP**, the 20 prior frozen dirs
+byte-untouched; `prisma migrate status` up to date at **21** migrations; `prisma migrate diff`
+shows only the long-standing composite-vs-single-FK cosmetic diff across all tables). New
+module key `inventory`, `deps = []` (foundational-not-gated, the attendance/transport
+precedent); routes gated by `requireModuleActive("inventory")` + `requirePermission` on every
+route. Nine tenant-owned tables (asset categories, asset registry, custody transfers,
+consumable stock items, stock movements, maintenance requests, disposals, stock-take audit
+sessions, audit lines), institutionId-scoped with `(id, institutionId)` composite uniques +
+composite same-tenant FKs + ENABLE+FORCE RLS with nullif-guarded fail-closed policies. The
+asset lifecycle guard is an **enumerated-transition, terminal-enforcing** column guard
+(lateral/back edges among IN_STORE/ASSIGNED/IN_MAINTENANCE legal; RETIRED/DISPOSED terminal —
+never a legal source; DELETE raised; identity columns frozen), distinct from the
+**genuinely-linear forward-only** maintenance guard (OPEN→IN_PROGRESS→RESOLVED/CANCELLED). The
+four ledgers (custody transfers, stock movements, audit lines, disposals) are strictly
+**append-only** (INSERT-only RLS pair + unconditional-raise BEFORE UPDATE OR DELETE trigger +
+REVOKE UPDATE,DELETE from `campass_app`). Consumable on-hand is a **STORED, concurrency-safe,
+non-negative** `onHandQuantity` mutated under a per-item transaction advisory lock by **every**
+movement kind (RECEIPT/ISSUE/ADJUSTMENT) with an under-lock conditional check rejecting any
+movement that would drive it below zero (409 + DENIED audit, no mutation) — backed by a tested
+two-part reconciliation invariant (stored == signed-sum of movements == last movement's
+`balanceAfter`). The advisory-lock key is a JS string passed as a Prisma tagged-template
+**bound parameter** into `hashtextextended` (the six-prior-module idiom, never in-SQL
+interpolation). The asset↔maintenance coupling is in-handler; the disposed-mid-maintenance
+close is a maintenance-only status flip with **no asset write** when the asset is already
+terminal (keeps CANCELLED/RESOLVED reachable, frees the partial-unique open slot). Acquisition
+cost and disposal proceeds are integer-minor-unit **money metadata only** (money-as-string on
+the JSON boundary); **no** coupling to fees (a test asserts a disposal with proceeds writes no
+`student_charges` row) and **no** library coupling. RBAC: additive `INVENTORY_MANAGER` template
+role + eight `inventory.*` permissions; ADMIN + INVENTORY_MANAGER bind the seven
+management/view keys, `inventory.view_own` binds to **INVENTORY_MANAGER only** (ADMIN
+excluded — the module-era `*.view_own` precedent), STUDENT binds nothing; 15 `inventory.*`
+audit keys; catalogue-sync set-equality is the self-enforcing backstop. Verification (fresh +
+serial on `main`): clean `npm ci` + `turbo build` **3/3 successful**; fast suite
+**616/616** (was 596 before the slice); `inventory-behavioral` **14/14** in isolation (incl.
+the mixed-sequence reconciliation invariant, the two-concurrent-ISSUE one-seat race — one 201
++ one 409, on-hand never negative — the enumerated lateral + terminal asset edges, the four
+append-only ledger rejections, disposed-cannot-transfer, the disposed-mid-maintenance close,
+and the no-fees-coupling assertion); extended `tenant-escape` **116/116** in isolation
+(read/write escape + spoofed-tenant insert + composite-FK foreign-parent rejection +
+buggy-query backstop + three-GUC fail-closed for all nine new tables, plus the RLS meta-test
+asserting RLS enabled+forced with both policies on every new table); both new/extended live-DB
+suites passed **in isolation on the first attempt** (no free-tier pooler transient on this
+run). The frontend remains deferred (see the deferred-frontend scope list above). **Phase 9
+Institutional operations is COMPLETE (backend only)** — all five modules (Faculty Management,
+HR, Hostel, Transport, Inventory & Assets) shipped.
+
 ---
 
 ## Phase 10 — Advanced ERP
