@@ -301,6 +301,16 @@ export interface SeededTenant {
   inventoryAuditLineId: string;
   inventoryDisposableAssetId: string;
   inventoryDisposalId: string;
+  // Phase-9.6 Service Requests Management (5 tables). The three mutable/guarded
+  // (types/field_definitions/requests) + the two append-only ledgers
+  // (activities/feedback). service_requests forbids DELETE unconditionally and
+  // the two ledgers forbid UPDATE/DELETE, so teardown deletes them within a
+  // scoped trigger-disable (the inventory dance).
+  serviceRequestTypeId: string;
+  serviceRequestFieldId: string;
+  serviceRequestId: string;
+  serviceRequestActivityId: string;
+  serviceRequestFeedbackId: string;
 }
 
 export const seeded: { A?: SeededTenant; B?: SeededTenant } = {};
@@ -450,6 +460,17 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
   const inventoryAuditLineId = id(`iline_${key}`);
   const inventoryDisposableAssetId = id(`idasset_${key}`);
   const inventoryDisposalId = id(`idisp_${key}`);
+  // Phase-9.6 service-requests IDs (deterministic so cleanup is exact). All five
+  // tables are seeded: a type, one field definition, a request (status OPEN so
+  // the foreign-parent tests have a clean non-terminal parent), an activity row,
+  // and a feedback row (the request is left OPEN but feedback only forbids
+  // UPDATE/DELETE, not its state, so the fixture row is still insertable via
+  // adminClient).
+  const serviceRequestTypeId = id(`srtype_${key}`);
+  const serviceRequestFieldId = id(`srfield_${key}`);
+  const serviceRequestId = id(`srreq_${key}`);
+  const serviceRequestActivityId = id(`sract_${key}`);
+  const serviceRequestFeedbackId = id(`srfb_${key}`);
 
   await adminClient.institution.create({
     data: {
@@ -1632,6 +1653,80 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     },
   });
 
+  // Phase-9.6 Service Requests Management tables (design §8). Seeded via the
+  // RLS-bypassing adminClient in child-safe order so the RESTRICT composite FKs
+  // are satisfied: type -> field definition + request (status OPEN, dueAt set
+  // deterministically) -> activity + feedback. The request stays OPEN so the
+  // foreign-parent composite-FK tests have a clean non-terminal parent. The two
+  // append-only tables (activities, feedback) only block UPDATE/DELETE, so
+  // adminClient can INSERT them here and delete them in teardown within a scoped
+  // trigger-disable.
+  await adminClient.serviceRequestType.create({
+    data: {
+      id: serviceRequestTypeId,
+      institutionId,
+      name: `${PREFIX}Request Type ${key}`,
+      code: id(`SRCODE_${key}`),
+      category: "facilities",
+      slaTargetHours: 24,
+      requiresApproval: false,
+      isActive: true,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.serviceRequestFieldDefinition.create({
+    data: {
+      id: serviceRequestFieldId,
+      institutionId,
+      serviceRequestTypeId: serviceRequestTypeId,
+      fieldKey: "summary",
+      label: `${PREFIX}Summary ${key}`,
+      dataType: "TEXT",
+      required: true,
+      options: [],
+      sortOrder: 0,
+      createdByUserId: userId,
+    },
+  });
+
+  await adminClient.serviceRequest.create({
+    data: {
+      id: serviceRequestId,
+      institutionId,
+      requestTypeId: serviceRequestTypeId,
+      requesterUserId: userId,
+      title: `${PREFIX}Request ${key}`,
+      priority: "NORMAL",
+      fieldValues: { summary: "seeded" },
+      status: "OPEN",
+      dueAt: new Date("2027-01-25T00:00:00.000Z"),
+      raisedAt: new Date("2027-01-24T00:00:00.000Z"),
+    },
+  });
+
+  await adminClient.serviceRequestActivity.create({
+    data: {
+      id: serviceRequestActivityId,
+      institutionId,
+      serviceRequestId: serviceRequestId,
+      kind: "STATUS_CHANGE",
+      actorUserId: userId,
+      toStatus: "OPEN",
+    },
+  });
+
+  await adminClient.serviceRequestFeedback.create({
+    data: {
+      id: serviceRequestFeedbackId,
+      institutionId,
+      serviceRequestId: serviceRequestId,
+      requesterUserId: userId,
+      rating: 5,
+      comment: `${PREFIX}thanks ${key}`,
+    },
+  });
+
   return {
     institutionId,
     departmentId,
@@ -1720,6 +1815,11 @@ async function seedTenant(key: "A" | "B"): Promise<SeededTenant> {
     inventoryAuditLineId,
     inventoryDisposableAssetId,
     inventoryDisposalId,
+    serviceRequestTypeId,
+    serviceRequestFieldId,
+    serviceRequestId,
+    serviceRequestActivityId,
+    serviceRequestFeedbackId,
   };
 }
 
@@ -1733,6 +1833,36 @@ export async function seedBothTenants(): Promise<void> {
 /** Delete exactly the ESCAPE_TEST_ rows, child-first to respect FKs. */
 export async function cleanup(): Promise<void> {
   const where = { institutionId: { startsWith: PREFIX } };
+  // Phase-9.6 Service Requests Management tables FIRST (child -> parent), BEFORE
+  // the users / departments / institution deletes below (the composite FKs to
+  // users/departments and the children's FKs to the request/type are ON DELETE
+  // RESTRICT). The two append-only tables (activities, feedback) forbid
+  // UPDATE/DELETE and service_requests forbids DELETE unconditionally, so delete
+  // them with those triggers disabled (the inventory dance). Order: activities +
+  // feedback (children of request) -> requests -> field_definitions -> types.
+  const serviceRequestGuardedTables = [
+    { table: "service_request_activities", trigger: "service_request_activities_no_update_delete" },
+    { table: "service_request_feedback", trigger: "service_request_feedback_no_update_delete" },
+    { table: "service_requests", trigger: "service_request_status_guard" },
+  ];
+  for (const { table, trigger } of serviceRequestGuardedTables) {
+    await withRetry(() =>
+      adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`),
+    );
+  }
+  try {
+    await withRetry(() => adminClient.serviceRequestActivity.deleteMany({ where }));
+    await withRetry(() => adminClient.serviceRequestFeedback.deleteMany({ where }));
+    await withRetry(() => adminClient.serviceRequest.deleteMany({ where }));
+  } finally {
+    for (const { table, trigger } of serviceRequestGuardedTables) {
+      await withRetry(() =>
+        adminClient.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`),
+      );
+    }
+  }
+  await withRetry(() => adminClient.serviceRequestFieldDefinition.deleteMany({ where }));
+  await withRetry(() => adminClient.serviceRequestType.deleteMany({ where }));
   // Phase-9.5 Inventory & Assets Management tables FIRST (child -> parent),
   // BEFORE the transport / users / departments / institution deletes below (the
   // assets' composite FKs to users/departments and the children's FKs to assets
@@ -2491,6 +2621,18 @@ export const RLS_TABLES = [
   "inventory_stock_movements",
   "inventory_audit_lines",
   "inventory_disposals",
+  // Phase-9.6 Service Requests Management tables (design §8.4). The three
+  // mutable/guarded tables (service_request_types, service_request_field_definitions,
+  // service_requests) carry the default modify pair — the service_request_status_guard
+  // column-guard trigger enforces lifecycle immutability at the row level, NOT via
+  // an append-only RLS policy, so it still carries tenant_isolation_modify. The two
+  // ledgers (service_request_activities, service_request_feedback) are STRICTLY
+  // append-only (EXPECTED_POLICIES below).
+  "service_request_types",
+  "service_request_field_definitions",
+  "service_requests",
+  "service_request_activities",
+  "service_request_feedback",
 ] as const;
 
 /**
@@ -2631,6 +2773,19 @@ export const EXPECTED_POLICIES: Record<string, readonly string[]> = {
   inventory_disposals: [
     "tenant_isolation_select",
     "inventory_disposals_tenant_insert",
+  ],
+  // Phase-9.6: the two service-requests ledgers are STRICTLY append-only (design
+  // §8.4) — the SELECT + INSERT pair, NO modify policy. The three mutable/guarded
+  // service-requests tables are deliberately ABSENT here so they fall through to
+  // DEFAULT_POLICIES (their lifecycle immutability is a column guard, not an
+  // append-only RLS policy — the inventory / transport precedent).
+  service_request_activities: [
+    "tenant_isolation_select",
+    "service_request_activities_tenant_insert",
+  ],
+  service_request_feedback: [
+    "tenant_isolation_select",
+    "service_request_feedback_tenant_insert",
   ],
 };
 

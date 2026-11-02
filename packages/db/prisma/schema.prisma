@@ -348,6 +348,11 @@ model Institution {
   inventoryStockMovements           InventoryStockMovement[]
   inventoryAuditLines               InventoryAuditLine[]
   inventoryDisposals                InventoryDisposal[]
+  serviceRequestTypes               ServiceRequestType[]
+  serviceRequestFieldDefinitions    ServiceRequestFieldDefinition[]
+  serviceRequests                   ServiceRequest[]
+  serviceRequestActivities          ServiceRequestActivity[]
+  serviceRequestFeedback            ServiceRequestFeedback[]
 
   @@map("institutions")
 }
@@ -370,6 +375,7 @@ model Department {
   facultyProfiles      FacultyProfile[]
   hrEmployees          HrEmployee[]
   inventoryCustodyAssets InventoryAsset[] @relation("InventoryAssetCustodyDepartment")
+  serviceRequestTypes    ServiceRequestType[] @relation("ServiceRequestTypeDefaultDepartment")
 
   @@unique([institutionId, code])
   @@unique([id, institutionId])
@@ -418,6 +424,9 @@ model User {
   applications           Application[]  @relation("ApplicationApplicant")
   hrEmployees            HrEmployee[]
   inventoryCustodyAssets InventoryAsset[] @relation("InventoryAssetCustodyUser")
+  serviceRequestsRequested ServiceRequest[] @relation("ServiceRequestRequester")
+  serviceRequestsAssigned  ServiceRequest[] @relation("ServiceRequestAssignee")
+  serviceRequestFeedback   ServiceRequestFeedback[] @relation("ServiceRequestFeedbackRequester")
 
   @@unique([id, institutionId])
   @@map("users")
@@ -4118,4 +4127,191 @@ enum InventoryDisposalMethod {
   LOST
   WRITTEN_OFF
   OTHER
+}
+
+// ─── SERVICE REQUESTS (Phase 9.6) ────────────────────────────────────────────
+// Predefined request types + data-driven form field definitions, a FIXED
+// enumerated request lifecycle (NOT a generic workflow engine), assignment, an
+// approval gate, derived SLA (dueAt stored at raise, breach derived at read),
+// an append-only comments/activity ledger, one-per-request feedback. Composite
+// same-tenant FKs / CHECKs / RLS / triggers live ONLY in raw SQL (migration
+// 20270124000000_phase9_service_requests), mirroring the inventory block.
+
+model ServiceRequestType {
+  id                          String                 @id @default(cuid())
+  institutionId               String
+  institution                 Institution            @relation(fields: [institutionId], references: [id])
+  name                        String // CHECK char_length(name) >= 1 (raw SQL)
+  code                        String // CHECK char_length(code) >= 1 (raw SQL); business unique (institutionId, code)
+  category                    String // CHECK char_length(category) >= 1 (raw SQL)
+  description                 String?
+  defaultAssigneeRole         String? // advisory routing hint (free string); NO cross-table validation
+  defaultAssigneeDepartmentId String?
+  defaultAssigneeDepartment   Department?            @relation("ServiceRequestTypeDefaultDepartment", fields: [defaultAssigneeDepartmentId], references: [id])
+  slaTargetHours              Int // CHECK slaTargetHours >= 1 (raw SQL)
+  requiresApproval            Boolean                @default(false)
+  isActive                    Boolean                @default(true)
+  createdByUserId             String // recorded actor id, NO FK
+  createdAt                   DateTime               @default(now())
+  updatedAt                   DateTime               @updatedAt
+
+  fieldDefinitions ServiceRequestFieldDefinition[]
+  requests         ServiceRequest[]
+
+  // Mutable-with-audit (no immutability trigger). Standard RLS pair; business
+  // unique (institutionId, code) + composite same-tenant FK (institutionId,
+  // defaultAssigneeDepartmentId)->departments (MATCH SIMPLE, nullable no-op) +
+  // CHECKs are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("service_request_types")
+}
+
+model ServiceRequestFieldDefinition {
+  id                   String                  @id @default(cuid())
+  institutionId        String
+  institution          Institution             @relation(fields: [institutionId], references: [id])
+  serviceRequestTypeId String
+  serviceRequestType   ServiceRequestType      @relation(fields: [serviceRequestTypeId], references: [id])
+  fieldKey             String // CHECK char_length(fieldKey) >= 1 (raw SQL)
+  label                String // CHECK char_length(label) >= 1 (raw SQL)
+  dataType             ServiceRequestFieldType
+  required             Boolean                 @default(false)
+  options              String[] // text[]; non-empty for SELECT, null/empty otherwise (CHECK raw SQL)
+  sortOrder            Int                     @default(0) // CHECK sortOrder >= 0 (raw SQL)
+  createdByUserId      String // recorded actor id, NO FK
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+
+  // Mutable-with-audit (handler enforces the frozen-once-requests-exist rule; no
+  // trigger). Standard RLS pair; business unique (institutionId,
+  // serviceRequestTypeId, fieldKey) + composite same-tenant FK (institutionId,
+  // serviceRequestTypeId)->service_request_types + the option-shape CHECK are raw
+  // SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, serviceRequestTypeId])
+  @@map("service_request_field_definitions")
+}
+
+model ServiceRequest {
+  id             String                 @id @default(cuid())
+  institutionId  String
+  institution    Institution            @relation(fields: [institutionId], references: [id])
+  requestTypeId  String
+  requestType    ServiceRequestType     @relation(fields: [requestTypeId], references: [id])
+  requesterUserId String
+  requesterUser  User                   @relation("ServiceRequestRequester", fields: [requesterUserId], references: [id])
+  title          String // CHECK char_length(title) >= 1 (raw SQL); frozen at raise
+  description    String? // frozen at raise (§5/§8.5)
+  priority       ServiceRequestPriority @default(NORMAL) // frozen at raise
+  fieldValues    Json // jsonb flat object keyed by fieldKey; frozen at raise
+  status         ServiceRequestStatus   @default(OPEN)
+  assigneeUserId String?
+  assigneeUser   User?                  @relation("ServiceRequestAssignee", fields: [assigneeUserId], references: [id])
+  dueAt          DateTime // NOT NULL; = raisedAt + slaTargetHours, computed at raise
+  resolutionNote String?
+  raisedAt       DateTime               @default(now()) // frozen at raise
+  resolvedAt     DateTime?
+  closedAt       DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  activities ServiceRequestActivity[]
+  feedback   ServiceRequestFeedback?
+
+  // Enumerated-transition terminal-enforcing lifecycle (§5). Standard RLS pair +
+  // column-guard trigger service_request_status_guard (freezes identity cols +
+  // forbids DELETE + enforces the legal transition set; terminal {CLOSED,
+  // REJECTED, CANCELLED} have no outgoing edge) + composite same-tenant FKs
+  // ((institutionId, requestTypeId)->service_request_types; (institutionId,
+  // requesterUserId)->users; (institutionId, assigneeUserId)->users MATCH SIMPLE
+  // nullable no-op) + CHECK title non-empty are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, status])
+  @@index([institutionId, requesterUserId])
+  @@index([institutionId, assigneeUserId])
+  @@index([institutionId, requestTypeId])
+  @@index([institutionId, dueAt])
+  @@map("service_requests")
+}
+
+// ─── Append-only (createdAt-only, NO updatedAt) ──────────────────────────────
+
+model ServiceRequestActivity {
+  id               String                     @id @default(cuid())
+  institutionId    String
+  institution      Institution                @relation(fields: [institutionId], references: [id])
+  serviceRequestId String
+  serviceRequest   ServiceRequest             @relation(fields: [serviceRequestId], references: [id])
+  kind             ServiceRequestActivityKind
+  actorUserId      String // recorded actor id, NO FK
+  fromStatus       ServiceRequestStatus?
+  toStatus         ServiceRequestStatus?
+  body             String?
+  createdAt        DateTime                   @default(now())
+
+  // Append-only (INSERT-only RLS pair {tenant_isolation_select,
+  // <table>_tenant_insert} + unconditional-raise trigger + REVOKE UPDATE,DELETE).
+  // Composite same-tenant FK (institutionId, serviceRequestId)->service_requests
+  // is raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@index([institutionId, serviceRequestId])
+  @@map("service_request_activities")
+}
+
+model ServiceRequestFeedback {
+  id               String         @id @default(cuid())
+  institutionId    String
+  institution      Institution    @relation(fields: [institutionId], references: [id])
+  serviceRequestId String         @unique
+  serviceRequest   ServiceRequest @relation(fields: [serviceRequestId], references: [id])
+  requesterUserId  String
+  requesterUser    User           @relation("ServiceRequestFeedbackRequester", fields: [requesterUserId], references: [id])
+  rating           Int // CHECK rating BETWEEN 1 AND 5 (raw SQL)
+  comment          String?
+  createdAt        DateTime       @default(now())
+
+  // Append-only, one-per-request (INSERT-only RLS pair + unconditional-raise
+  // trigger + REVOKE UPDATE,DELETE). Composite same-tenant FKs (institutionId,
+  // serviceRequestId)->service_requests and (institutionId, requesterUserId)->
+  // users + business unique (institutionId, serviceRequestId) + CHECK rating
+  // 1..5 are raw SQL.
+  @@unique([id, institutionId]) // anchors composite same-tenant FKs
+  @@index([institutionId])
+  @@map("service_request_feedback")
+}
+
+enum ServiceRequestFieldType {
+  TEXT
+  NUMBER
+  DATE
+  SELECT
+}
+
+enum ServiceRequestPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum ServiceRequestStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  PENDING_APPROVAL
+  RESOLVED
+  CLOSED
+  REJECTED
+  CANCELLED
+}
+
+enum ServiceRequestActivityKind {
+  STATUS_CHANGE
+  COMMENT
+  ASSIGNMENT
+  APPROVAL
 }

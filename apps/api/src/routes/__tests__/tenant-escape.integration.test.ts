@@ -3800,6 +3800,266 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
     }
   }, 60_000);
 
+  // ─── Phase-9.6 Service Requests Management escape cases (design §8.4) ────────
+
+  it("3s1. service-requests cross-tenant read denied: A cannot see B's rows (RLS)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestType.findUnique({ where: { id: B.serviceRequestTypeId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestFieldDefinition.findUnique({ where: { id: B.serviceRequestFieldId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequest.findUnique({ where: { id: B.serviceRequestId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestActivity.findUnique({ where: { id: B.serviceRequestActivityId } }))).toBeNull();
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestFeedback.findUnique({ where: { id: B.serviceRequestFeedbackId } }))).toBeNull();
+
+    // A's own rows ARE visible under A (complementary direction).
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequest.findUnique({ where: { id: A.serviceRequestId } }))).toBeTruthy();
+  }, 60_000);
+
+  it("3s2. service-requests spoofed insert: A cannot insert a row carrying B's institutionId", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.serviceRequestType.create({
+          data: {
+            id: `${PREFIX}SPOOF_SRTYPE`,
+            institutionId: B.institutionId, // spoof
+            name: `${PREFIX}spoof`,
+            code: `${PREFIX}SPOOFSRCODE`,
+            category: "facilities",
+            slaTargetHours: 24,
+            createdByUserId: B.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.serviceRequest.create({
+          data: {
+            id: `${PREFIX}SPOOF_SRREQ`,
+            institutionId: B.institutionId, // spoof
+            requestTypeId: B.serviceRequestTypeId,
+            requesterUserId: B.userId,
+            title: `${PREFIX}spoof`,
+            priority: "NORMAL",
+            fieldValues: {},
+            status: "OPEN",
+            dueAt: new Date("2027-02-01T00:00:00.000Z"),
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3s3. service-requests foreign-parent: A cannot reference B's type / request / user", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // field_definitions.(institutionId, serviceRequestTypeId) composite FK forbids
+    // a field under B's type while in A's tenant.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.serviceRequestFieldDefinition.create({
+          data: {
+            id: `${PREFIX}FOREIGN_SRFIELD`,
+            institutionId: A.institutionId,
+            serviceRequestTypeId: B.serviceRequestTypeId, // B's type under A's tenant
+            fieldKey: "foreign",
+            label: `${PREFIX}foreign`,
+            dataType: "TEXT",
+            required: false,
+            options: [],
+            sortOrder: 0,
+            createdByUserId: A.userId,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // service_requests.(institutionId, requestTypeId) composite FK forbids a
+    // request under B's type.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.serviceRequest.create({
+          data: {
+            id: `${PREFIX}FOREIGN_SRREQ`,
+            institutionId: A.institutionId,
+            requestTypeId: B.serviceRequestTypeId, // B's type under A's tenant
+            requesterUserId: A.userId,
+            title: `${PREFIX}foreign`,
+            priority: "NORMAL",
+            fieldValues: {},
+            status: "OPEN",
+            dueAt: new Date("2027-02-01T00:00:00.000Z"),
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    // service_request_activities.(institutionId, serviceRequestId) composite FK
+    // forbids an activity under B's request.
+    await expect(
+      withTenant(A.institutionId, (tx) =>
+        tx.serviceRequestActivity.create({
+          data: {
+            id: `${PREFIX}FOREIGN_SRACT`,
+            institutionId: A.institutionId,
+            serviceRequestId: B.serviceRequestId, // B's request under A's tenant
+            kind: "COMMENT",
+            actorUserId: A.userId,
+            body: `${PREFIX}foreign`,
+          },
+        }),
+      ),
+    ).rejects.toBeTruthy();
+  }, 60_000);
+
+  it("3s4. service-requests spoofed update: A cannot flip B's request status", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // Updating B's row under A's context: RLS makes B's row invisible to A, so
+    // the update matches zero rows, never mutates B.
+    const result = await withTenant(A.institutionId, (tx) =>
+      tx.serviceRequest.updateMany({
+        where: { id: B.serviceRequestId },
+        data: { status: "CANCELLED" },
+      }),
+    );
+    expect(result.count).toBe(0);
+
+    const bRow = await adminClient.serviceRequest.findUnique({ where: { id: B.serviceRequestId } });
+    expect(bRow!.status).toBe("OPEN");
+  }, 60_000);
+
+  it("3s5. service-requests buggy-query backstop + fail-closed (unset / empty-string GUC)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+
+    // (i) unscoped findMany under A returns only A's rows.
+    const reqs = await withTenant(A.institutionId, (tx) => tx.serviceRequest.findMany({}));
+    for (const r of reqs) expect(r.institutionId).toBe(A.institutionId);
+    expect(reqs.some((r: { id: string }) => r.id === B.serviceRequestId)).toBe(false);
+
+    const types = await withTenant(A.institutionId, (tx) => tx.serviceRequestType.findMany({}));
+    for (const r of types) expect(r.institutionId).toBe(A.institutionId);
+    expect(types.some((r: { id: string }) => r.id === B.serviceRequestTypeId)).toBe(false);
+
+    // (ii) no tenant context => GUC unset => NULL => no rows.
+    const unset = await appClient.serviceRequest.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+    expect(unset.length).toBe(0);
+
+    // (iii) empty-string GUC => nullif(...,'') => NULL => no rows (all five tables).
+    const empty = await appClient.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.current_institution_id', '', true)`);
+      const t = await tx.serviceRequestType.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const f = await tx.serviceRequestFieldDefinition.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const r = await tx.serviceRequest.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const ac = await tx.serviceRequestActivity.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      const fb = await tx.serviceRequestFeedback.findMany({ where: { institutionId: { startsWith: PREFIX } } });
+      return t.length + f.length + r.length + ac.length + fb.length;
+    });
+    expect(empty).toBe(0);
+
+    // (iv) A's own request IS visible under A's GUC.
+    const aVisible = await withTenant(A.institutionId, (tx) => tx.serviceRequest.findMany({}));
+    expect(aVisible.some((r: { id: string }) => r.id === A.serviceRequestId)).toBe(true);
+  }, 60_000);
+
+  it("3s6. service_request_activities APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    const rowId = `${PREFIX}SRACT_A2`;
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.serviceRequestActivity.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          serviceRequestId: A.serviceRequestId,
+          kind: "COMMENT",
+          actorUserId: A.userId,
+          body: `${PREFIX}note`,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestActivity.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.serviceRequestActivity.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.serviceRequestActivity.update({ where: { id: rowId }, data: { body: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.serviceRequestActivity.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.serviceRequestActivity.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "service_request_activities" DISABLE TRIGGER "service_request_activities_no_update_delete"`);
+    try {
+      await adminClient.serviceRequestActivity.deleteMany({ where: { id: rowId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "service_request_activities" ENABLE TRIGGER "service_request_activities_no_update_delete"`);
+    }
+  }, 60_000);
+
+  it("3s7. service_request_feedback APPEND-ONLY (self-contained)", async () => {
+    const A = seeded.A!;
+    const B = seeded.B!;
+    // The seeded request already carries one feedback (one-per-request unique);
+    // create a fresh RESOLVED-shaped request via adminClient for the extra row.
+    const freshReqId = `${PREFIX}SRREQ2_A`;
+    const rowId = `${PREFIX}SRFB_A2`;
+    await adminClient.serviceRequest.create({
+      data: {
+        id: freshReqId,
+        institutionId: A.institutionId,
+        requestTypeId: A.serviceRequestTypeId,
+        requesterUserId: A.userId,
+        title: `${PREFIX}fb2`,
+        priority: "NORMAL",
+        fieldValues: {},
+        status: "OPEN",
+        dueAt: new Date("2027-02-03T00:00:00.000Z"),
+        raisedAt: new Date("2027-02-02T00:00:00.000Z"),
+      },
+    });
+
+    await withTenant(A.institutionId, (tx) =>
+      tx.serviceRequestFeedback.create({
+        data: {
+          id: rowId,
+          institutionId: A.institutionId,
+          serviceRequestId: freshReqId,
+          requesterUserId: A.userId,
+          rating: 4,
+          comment: `${PREFIX}ok`,
+        },
+      }),
+    );
+
+    expect(await withTenant(A.institutionId, (tx) => tx.serviceRequestFeedback.findUnique({ where: { id: rowId } }))).toBeTruthy();
+    expect(await withTenant(B.institutionId, (tx) => tx.serviceRequestFeedback.findUnique({ where: { id: rowId } }))).toBeNull();
+
+    await expect(withTenant(A.institutionId, (tx) => tx.serviceRequestFeedback.update({ where: { id: rowId }, data: { comment: "x" } }))).rejects.toBeTruthy();
+    await expect(withTenant(A.institutionId, (tx) => tx.serviceRequestFeedback.delete({ where: { id: rowId } }))).rejects.toBeTruthy();
+
+    expect(await adminClient.serviceRequestFeedback.findUnique({ where: { id: rowId } })).toBeTruthy();
+
+    // Clean up the feedback (append-only) + the fresh request (guard forbids
+    // DELETE) within a scoped trigger-disable.
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "service_request_feedback" DISABLE TRIGGER "service_request_feedback_no_update_delete"`);
+    await adminClient.$executeRawUnsafe(`ALTER TABLE "service_requests" DISABLE TRIGGER "service_request_status_guard"`);
+    try {
+      await adminClient.serviceRequestFeedback.deleteMany({ where: { id: rowId } });
+      await adminClient.serviceRequest.deleteMany({ where: { id: freshReqId } });
+    } finally {
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "service_request_feedback" ENABLE TRIGGER "service_request_feedback_no_update_delete"`);
+      await adminClient.$executeRawUnsafe(`ALTER TABLE "service_requests" ENABLE TRIGGER "service_request_status_guard"`);
+    }
+  }, 60_000);
+
   it("4. HEADLINE: a deliberately buggy query that forgets the tenant filter still returns only A's rows", async () => {
     const A = seeded.A!;
     const B = seeded.B!;
@@ -3946,6 +4206,14 @@ describe("Cross-tenant escape suite (real DB, RLS enforced)", () => {
       "inventory_stock_movements",
       "inventory_audit_lines",
       "inventory_disposals",
+      // Phase-9.6: the two service-requests ledgers are STRICTLY append-only
+      // (design §8.4) — INSERT-only policy + REVOKE + trigger, NO modify policy.
+      // The three mutable/guarded service-requests tables carry the standard
+      // modify pair (the status-guard trigger enforces immutability at the row
+      // level, not via RLS), asserted by the EXPECTED_POLICIES/DEFAULT_POLICIES
+      // loop above.
+      "service_request_activities",
+      "service_request_feedback",
     ]) {
       const names = policies.filter((p) => p.tablename === table).map((p) => p.policyname);
       expect(names, `${table} must NOT have a modify policy`).not.toContain(

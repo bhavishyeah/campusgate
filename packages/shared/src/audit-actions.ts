@@ -300,6 +300,27 @@ export const AUDIT_ACTIONS = [
   { key: "inventory.audit.line_added", module: "inventory", description: "Stock-take audit line appended" },
   { key: "inventory.audit.closed", module: "inventory", description: "Stock-take audit session closed (OPEN -> CLOSED)" },
   { key: "inventory.register.exported", module: "inventory", description: "Asset register exported (XLSX)" },
+  // service_requests.* (15) — Phase 9.6 Service Requests Management mutations
+  // (past-tense). No migration mirror (validated only in recordAuditEvent). The
+  // permission/audit KEY prefix and the module registry key are both
+  // `service_requests`. DENIED decisions (illegal transition, frozen field defs,
+  // approval-type mismatch, owner/state checks, feedback dup) reuse the
+  // corresponding mutation key with result DENIED.
+  { key: "service_requests.type.created", module: "service_requests", description: "Service request type created" },
+  { key: "service_requests.type.updated", module: "service_requests", description: "Service request type updated" },
+  { key: "service_requests.field.created", module: "service_requests", description: "Request type field definition created (DENIED if type has requests)" },
+  { key: "service_requests.field.updated", module: "service_requests", description: "Request type field definition updated (DENIED if type has requests)" },
+  { key: "service_requests.request.raised", module: "service_requests", description: "Service request raised (OPEN); dueAt = raisedAt + slaTargetHours" },
+  { key: "service_requests.request.assigned", module: "service_requests", description: "Service request assigned/reassigned to an agent (DENIED on illegal transition)" },
+  { key: "service_requests.request.transitioned", module: "service_requests", description: "Service request lifecycle advanced ({from,to}) (DENIED on illegal/approval-mismatch)" },
+  { key: "service_requests.request.resolved", module: "service_requests", description: "Service request resolved (-> RESOLVED) with resolution note" },
+  { key: "service_requests.request.approved", module: "service_requests", description: "PENDING_APPROVAL request approved (-> RESOLVED) (DENIED if not pending/approver)" },
+  { key: "service_requests.request.rejected", module: "service_requests", description: "PENDING_APPROVAL request rejected (-> REJECTED) (DENIED if not pending/approver)" },
+  { key: "service_requests.request.closed", module: "service_requests", description: "RESOLVED request closed (-> CLOSED) (DENIED if not RESOLVED/own)" },
+  { key: "service_requests.request.cancelled", module: "service_requests", description: "Service request cancelled (-> CANCELLED) (DENIED on illegal transition/not own OPEN)" },
+  { key: "service_requests.comment.added", module: "service_requests", description: "Comment appended to a request activity ledger (DENIED if not own/CLOSED)" },
+  { key: "service_requests.feedback.submitted", module: "service_requests", description: "Feedback submitted on own RESOLVED/CLOSED request (DENIED if not terminal/own/dup)" },
+  { key: "service_requests.register.exported", module: "service_requests", description: "Service request register exported (XLSX)" },
 ] as const satisfies readonly AuditActionDef[];
 
 export type AuditActionKey = (typeof AUDIT_ACTIONS)[number]["key"];

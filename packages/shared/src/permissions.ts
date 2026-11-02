@@ -714,6 +714,47 @@ export const PERMISSIONS = [
     description: "Custodian self-service read of assets currently in OWN custody",
   },
 
+  // service_requests.* — Phase 9.6 Service Requests Management: predefined
+  // request types + data-driven form field definitions, a FIXED enumerated
+  // request lifecycle (not a generic workflow engine), assignment, an approval
+  // gate, derived SLA, an append-only comments/activity ledger, one-per-request
+  // feedback, and staff reports/export, plus the requester self-service surface.
+  // Gated module (requireModuleActive("service_requests")) in addition to
+  // permission. The module registry key and the permission/audit KEY prefix are
+  // both `service_requests`. Separation of duties (design §7): STUDENT holds ONLY
+  // the self key service_requests.request_own; staff roles (ADMIN, SERVICE_AGENT)
+  // never get the self key and STUDENT never gets a staff key.
+  {
+    key: "service_requests.types.manage",
+    module: "service_requests",
+    description: "Create/update request types + field definitions + SLA config (staff)",
+  },
+  {
+    key: "service_requests.assign.manage",
+    module: "service_requests",
+    description: "Assign/reassign a request to an agent (staff)",
+  },
+  {
+    key: "service_requests.requests.handle",
+    module: "service_requests",
+    description: "Drive lifecycle (IN_PROGRESS/PENDING_APPROVAL/RESOLVED), resolve, comment, close/cancel any (staff)",
+  },
+  {
+    key: "service_requests.requests.approve",
+    module: "service_requests",
+    description: "Approve/reject a PENDING_APPROVAL request (staff)",
+  },
+  {
+    key: "service_requests.view",
+    module: "service_requests",
+    description: "Staff read of all requests/types/activity/feedback + reports/export",
+  },
+  {
+    key: "service_requests.request_own",
+    module: "service_requests",
+    description: "Self-service: raise, list/view OWN, comment OWN, cancel OWN OPEN, close/feedback OWN",
+  },
+
   // platform.* — SUPER_ADMIN only; NOT tenant permissions
   {
     key: "platform.institutions.manage",
@@ -775,6 +816,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "exams.reeval.request_own",
     "hostel.view_own",
     "transport.view_own",
+    "service_requests.request_own",
   ],
   FACULTY: [
     "classes.view_own",
@@ -871,6 +913,20 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "inventory.audits.manage",
     "inventory.view",
     "inventory.view_own",
+  ],
+  // SERVICE_AGENT — additive platform template role (WARDEN/HR_MANAGER/
+  // TRANSPORT_MANAGER/INVENTORY_MANAGER precedent); service-requests-scoped ONLY.
+  // A service agent runs service requests end to end within a tenant (configure
+  // types/fields/SLA, assign, handle, approve/reject, resolve, read + export)
+  // without inheriting institution-wide admin rights. Separation of duties
+  // (design §7): SERVICE_AGENT never gets the STUDENT-only
+  // service_requests.request_own self key.
+  SERVICE_AGENT: [
+    "service_requests.types.manage",
+    "service_requests.assign.manage",
+    "service_requests.requests.handle",
+    "service_requests.requests.approve",
+    "service_requests.view",
   ],
   GUARD: [
     "campus_movement.gate.verify",
@@ -1009,6 +1065,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
     "inventory.disposals.manage",
     "inventory.audits.manage",
     "inventory.view",
+    "service_requests.types.manage",
+    "service_requests.assign.manage",
+    "service_requests.requests.handle",
+    "service_requests.requests.approve",
+    "service_requests.view",
     "campus_movement.pass.revoke",
     "campus_movement.pass.override",
     "campus_movement.emergency.declare",

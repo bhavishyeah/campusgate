@@ -2141,3 +2141,156 @@ export type InventoryDisposalInput = z.infer<typeof inventoryDisposalSchema>;
 export type CreateInventoryAuditSessionInput = z.infer<typeof createInventoryAuditSessionSchema>;
 export type InventoryAuditLineInput = z.infer<typeof inventoryAuditLineSchema>;
 export type InventoryListQueryInput = z.infer<typeof inventoryListQuerySchema>;
+
+// ─── Phase 9.6 Service Requests Management ───────────────────────────────────
+// institutionId / requesterUserId are NEVER accepted from the body — always
+// derived from the verified token. Enum members mirror the pg enums added by the
+// 20270124000000_phase9_service_requests migration (design §8). There are no
+// money fields in this module. The per-field typing of fieldValues against a
+// type's dynamic field definitions is the HANDLER step (validateFieldValues,
+// design §6); the Zod schema here only validates the request envelope.
+
+export const serviceRequestFieldTypeEnum = z.enum(["TEXT", "NUMBER", "DATE", "SELECT"]);
+export const serviceRequestPriorityEnum = z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]);
+// Only the two reachable states a staff status PATCH may target. RESOLVED is
+// reached via POST /:id/resolve, never PATCH /:id/status (plan NIT-2).
+export const serviceRequestStatusPatchTargetEnum = z.enum(["IN_PROGRESS", "PENDING_APPROVAL"]);
+
+const serviceRequestsCuidLike = z.string().min(1).max(64);
+
+// 1. Request type. name / code / category non-empty. code is [A-Z0-9_].
+// defaultAssigneeRole is a FREE uppercase string (advisory routing hint, NO
+// cross-table validation — plan NIT-1; SERVICE_AGENT is a legal value).
+// slaTargetHours 1..8760 (DB CHECK >= 1). requiresApproval / isActive optional.
+export const createServiceRequestTypeSchema = z.object({
+  name: z.string().min(1, "Name is required").max(200),
+  code: z.string().min(1, "Code is required").max(64).regex(/^[A-Z0-9_]+$/, "Code must be [A-Z0-9_]"),
+  category: z.string().min(1, "Category is required").max(64),
+  description: z.string().max(2000).optional(),
+  defaultAssigneeRole: z.string().regex(/^[A-Z0-9_]{1,64}$/).optional(),
+  defaultAssigneeDepartmentId: serviceRequestsCuidLike.optional(),
+  slaTargetHours: z.coerce.number().int().min(1).max(8760),
+  requiresApproval: z.coerce.boolean().optional(),
+  isActive: z.coerce.boolean().optional(),
+});
+
+export const patchServiceRequestTypeSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    code: z.string().min(1).max(64).regex(/^[A-Z0-9_]+$/).optional(),
+    category: z.string().min(1).max(64).optional(),
+    description: z.string().max(2000).nullish(),
+    defaultAssigneeRole: z.string().regex(/^[A-Z0-9_]{1,64}$/).nullish(),
+    defaultAssigneeDepartmentId: serviceRequestsCuidLike.nullish(),
+    slaTargetHours: z.coerce.number().int().min(1).max(8760).optional(),
+    requiresApproval: z.coerce.boolean().optional(),
+    isActive: z.coerce.boolean().optional(),
+  })
+  .strict();
+
+// 2. Field definition. fieldKey [a-zA-Z0-9_]. label non-empty. dataType enum.
+// Refinement: SELECT => options non-empty; non-SELECT => options absent.
+const serviceRequestFieldBase = {
+  fieldKey: z.string().min(1, "Field key is required").max(64).regex(/^[a-zA-Z0-9_]+$/, "Field key must be [a-zA-Z0-9_]"),
+  label: z.string().min(1, "Label is required").max(200),
+  dataType: serviceRequestFieldTypeEnum,
+  required: z.coerce.boolean().optional(),
+  options: z.array(z.string().min(1).max(200)).max(50).optional(),
+  sortOrder: z.coerce.number().int().min(0).optional(),
+};
+
+const selectOptionsRefine = (v: { dataType: string; options?: string[] }) =>
+  v.dataType === "SELECT"
+    ? Array.isArray(v.options) && v.options.length >= 1
+    : v.options === undefined || v.options.length === 0;
+
+export const createServiceRequestFieldSchema = z
+  .object(serviceRequestFieldBase)
+  .refine(selectOptionsRefine, {
+    message: "SELECT fields require non-empty options; non-SELECT fields must omit options",
+    path: ["options"],
+  });
+
+export const patchServiceRequestFieldSchema = z
+  .object({
+    fieldKey: serviceRequestFieldBase.fieldKey.optional(),
+    label: z.string().min(1).max(200).optional(),
+    dataType: serviceRequestFieldTypeEnum.optional(),
+    required: z.coerce.boolean().optional(),
+    options: z.array(z.string().min(1).max(200)).max(50).nullish(),
+    sortOrder: z.coerce.number().int().min(0).optional(),
+  })
+  .strict();
+
+// 3. Raise a request. requestTypeId + title required; description / priority
+// optional (priority defaults NORMAL). fieldValues is a record; the per-field
+// typing against the type's field definitions is the handler step (§6).
+export const raiseServiceRequestSchema = z.object({
+  requestTypeId: serviceRequestsCuidLike,
+  title: z.string().min(1, "Title is required").max(200),
+  description: z.string().max(4000).optional(),
+  priority: serviceRequestPriorityEnum.default("NORMAL"),
+  fieldValues: z.record(z.string(), z.unknown()).default({}),
+});
+
+// 4. Assign. assigneeUserId required.
+export const assignServiceRequestSchema = z.object({
+  assigneeUserId: serviceRequestsCuidLike,
+});
+
+// 5. Status PATCH. toStatus ∈ {IN_PROGRESS, PENDING_APPROVAL} only (NIT-2).
+export const serviceRequestStatusPatchSchema = z.object({
+  toStatus: serviceRequestStatusPatchTargetEnum,
+});
+
+// 6. Resolve. resolutionNote required.
+export const resolveServiceRequestSchema = z.object({
+  resolutionNote: z.string().min(1, "Resolution note is required").max(4000),
+});
+
+// 7. Reject (approver). reason optional.
+export const rejectServiceRequestSchema = z.object({
+  reason: z.string().max(2000).optional(),
+});
+
+// 8. Comment. body required.
+export const serviceRequestCommentSchema = z.object({
+  body: z.string().min(1, "Comment body is required").max(4000),
+});
+
+// 9. Feedback. rating 1..5 int; comment optional.
+export const serviceRequestFeedbackSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5),
+  comment: z.string().max(2000).optional(),
+});
+
+// 10. List / report query. page >= 1 default 1; pageSize 1..100 default 20;
+// optional status / requestTypeId / assigneeUserId / overdue filters;
+// atRiskHours SLA look-ahead default 24.
+export const serviceRequestListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.string().max(40).optional(),
+  requestTypeId: serviceRequestsCuidLike.optional(),
+  assigneeUserId: serviceRequestsCuidLike.optional(),
+  overdue: z.coerce.boolean().optional(),
+  atRiskHours: z.coerce.number().int().min(1).max(8760).default(24),
+});
+
+export type ServiceRequestFieldTypeValue = z.infer<typeof serviceRequestFieldTypeEnum>;
+export type ServiceRequestPriorityValue = z.infer<typeof serviceRequestPriorityEnum>;
+export type ServiceRequestStatusPatchTargetValue = z.infer<
+  typeof serviceRequestStatusPatchTargetEnum
+>;
+export type CreateServiceRequestTypeInput = z.infer<typeof createServiceRequestTypeSchema>;
+export type PatchServiceRequestTypeInput = z.infer<typeof patchServiceRequestTypeSchema>;
+export type CreateServiceRequestFieldInput = z.infer<typeof createServiceRequestFieldSchema>;
+export type PatchServiceRequestFieldInput = z.infer<typeof patchServiceRequestFieldSchema>;
+export type RaiseServiceRequestInput = z.infer<typeof raiseServiceRequestSchema>;
+export type AssignServiceRequestInput = z.infer<typeof assignServiceRequestSchema>;
+export type ServiceRequestStatusPatchInput = z.infer<typeof serviceRequestStatusPatchSchema>;
+export type ResolveServiceRequestInput = z.infer<typeof resolveServiceRequestSchema>;
+export type RejectServiceRequestInput = z.infer<typeof rejectServiceRequestSchema>;
+export type ServiceRequestCommentInput = z.infer<typeof serviceRequestCommentSchema>;
+export type ServiceRequestFeedbackInput = z.infer<typeof serviceRequestFeedbackSchema>;
+export type ServiceRequestListQueryInput = z.infer<typeof serviceRequestListQuerySchema>;
