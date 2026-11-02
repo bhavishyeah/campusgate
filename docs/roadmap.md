@@ -696,7 +696,7 @@ guarded-table convention); `prisma migrate status` up to date.
 > `3t1`–`3t4` and the transport behavioral suite. The single transaction-timeout flake is the
 > documented shared free-tier limitation, not a transport defect.
 
-**Inventory & Assets — SHIPPED (backend only).** The fifth and final Phase-9 module, built
+**Inventory & Assets — SHIPPED (backend only).** The fifth Phase-9 module, built
 **sequentially** on `main`. Gated booster via the hand-authored migration
 `20270117000000_phase9_inventory` (strictly additive — **no DROP**, the 20 prior frozen dirs
 byte-untouched; `prisma migrate status` up to date at **21** migrations; `prisma migrate diff`
@@ -740,9 +740,59 @@ and the no-fees-coupling assertion); extended `tenant-escape` **116/116** in iso
 buggy-query backstop + three-GUC fail-closed for all nine new tables, plus the RLS meta-test
 asserting RLS enabled+forced with both policies on every new table); both new/extended live-DB
 suites passed **in isolation on the first attempt** (no free-tier pooler transient on this
-run). The frontend remains deferred (see the deferred-frontend scope list above). **Phase 9
-Institutional operations is COMPLETE (backend only)** — all five modules (Faculty Management,
-HR, Hostel, Transport, Inventory & Assets) shipped.
+run). The frontend remains deferred (see the deferred-frontend scope list above). Phase 9 is **not**
+yet complete: Service Requests and Document Management (the final module) still remain at this
+point.
+
+**Service Requests — SHIPPED (backend only).** The sixth Phase-9 module, built **sequentially**
+on `main`. Gated booster via the hand-authored migration
+`20270124000000_phase9_service_requests` (the 22nd dir, next timestamp after inventory —
+strictly additive, **no DROP**; the 21 prior frozen dirs byte-untouched; `prisma migrate
+status` up to date at **22** migrations; `prisma migrate diff` shows only the long-standing
+composite-vs-single-FK cosmetic diff across all tables — 183 removed-FK + 13 removed-unique
+representation lines, zero table/column/enum drops). New module key `service_requests`,
+`deps = []` (foundational-not-gated, the inventory/transport precedent); every one of the 28
+routes gated by `requireModuleActive("service_requests")` + `requirePermission` on the route.
+Five tenant-owned tables (request types, field definitions, service requests, activities,
+feedback), institutionId-scoped with `(id, institutionId)` composite uniques + composite
+same-tenant FKs + ENABLE+FORCE RLS with nullif-guarded fail-closed policies. The request
+lifecycle is a **fixed, enumerated-transition, terminal-enforcing** column guard (OPEN→ASSIGNED/
+CANCELLED, ASSIGNED→IN_PROGRESS/ASSIGNED/CANCELLED, IN_PROGRESS→PENDING_APPROVAL/RESOLVED/
+CANCELLED, PENDING_APPROVAL→RESOLVED/REJECTED, RESOLVED→CLOSED, plus the self no-op; CLOSED/
+REJECTED/CANCELLED terminal — never a legal source; DELETE raised; nine identity columns
+frozen via `IS DISTINCT FROM`) — **not** a generic workflow engine (no state/rule table; the
+in-handler `STATUS_TRANSITIONS` map mirrors the same edges for a clean 409, the DB guard is the
+backstop) and **no** cross-module coupling. Form-field values are **data-driven** and validated
+against the type's definitions at raise time by the pure `validateFieldValues` (required/type
+coercion for TEXT/NUMBER/DATE/SELECT-range/unknown-key → 422, nothing persisted); field
+definitions freeze once the type has any request. SLA breach is **DERIVED** at read time
+(`now > dueAt AND status ∉ terminal`), never a stored/drifting flag; `dueAt = raisedAt +
+slaTargetHours` is computed once at raise. The approval gate restricts APPROVE/REJECT to the
+`requests.approve` permission and only from PENDING_APPROVAL (non-approver → 403). Feedback is
+**one-per-request**, owner-only, and only after RESOLVED/CLOSED (backed by the
+`(institutionId, serviceRequestId)` unique index). The activity and feedback ledgers are
+strictly **append-only** (INSERT-only RLS pair + unconditional-raise BEFORE UPDATE OR DELETE
+trigger + REVOKE UPDATE,DELETE from `campass_app`). A requester sees **only their own** requests
+via the `/me/requests` surface hard-scoped by `requesterUserId == token.userId` (foreign ids →
+owner-scoped 404); cross-tenant reads/writes blocked by RLS. RBAC: additive `SERVICE_AGENT`
+template role + six `service_requests.*` permissions; ADMIN + SERVICE_AGENT bind the five
+handling/config/view keys, `service_requests.request_own` binds to **STUDENT only** (the self
+raise/track-own key); 15 `service_requests.*` audit keys; catalogue-sync set-equality is the
+self-enforcing backstop. Verification (fresh + serial on `main`): clean `npm ci` + `turbo
+build` **3/3 successful**; fast suite **651/651** (was 616 before the slice); `service-
+requests.behavioral` **23/23** in isolation (type create + duplicate-code 409, field-freeze
+409, raise 201 + 422 validation matrix, assign + requester-403, DB column-guard rejection of
+OPEN→RESOLVED and of DELETE, approval gate + non-approver 403, derived overdue report in/out,
+one-per-request feedback 409, `/me` owner-only + staff-list requester-403, append-only UPDATE/
+DELETE rejection, `.xlsx` export, in-tx audit counts); extended `tenant-escape` **123/123** in
+isolation (read/write escape + spoofed-tenant insert + composite-FK foreign-parent rejection +
+buggy-query backstop + three-GUC fail-closed for all five new tables, plus the append-only
+INSERT-ok/UPDATE+DELETE-denied cases and the RLS meta-test asserting RLS enabled+forced with
+both policies on every new table); both new/extended live-DB suites passed **in isolation on
+the first attempt** (no free-tier pooler transient on this run). The frontend remains deferred
+(see the deferred-frontend scope list above). **Phase 9 is NOT complete** — it completes only
+after Document Management (the final module) ships. Modules shipped so far: Faculty Management,
+HR, Hostel, Transport, Inventory & Assets, Service Requests (6 of 7).
 
 ---
 
