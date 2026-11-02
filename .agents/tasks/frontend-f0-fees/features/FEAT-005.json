@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-005",
+  "type": "test",
+  "description": "Testing + final verification: add Vitest (jsdom) to apps/web with focused unit tests for the pure modules (money, authz, jwt, landing), then run the full gate — strict tsc lint, next build, the money-rule grep, and the shared-dist guard — and confirm the GatePass screens and the MFA modal are untouched. Depends on FEAT-001..004.",
+  "status": "completed",
+  "steps": [
+    "Add apps/web/vitest.config.ts: test environment 'jsdom', plugins [react()] (@vitejs/plugin-react), resolve alias '@' -> ./src so @/ imports resolve in tests. Add a 'test' script to apps/web/package.json: \"test\": \"vitest run\".",
+    "Add apps/web/src/lib/__tests__/money.test.ts: formatPaise — '0'->'₹0.00', '1'->'₹0.01', '100'->'₹1.00', '123456789'->'₹12,34,567.89' (Indian grouping), negative '-100'->'-₹1.00', leading-zero input; rupeesToPaiseString — '1234'->'123400', '1,234.50'->'123450', '0.99'->'99', rejects '0', '', '1.234', 'abc'. Assert no precision loss on a large value near Number.MAX_SAFE_INTEGER.",
+    "Add apps/web/src/lib/__tests__/authz.test.ts: can/canAny true/false; hasRole/hasAnyRole true/false over sample arrays.",
+    "Add apps/web/src/lib/__tests__/jwt.test.ts: decodeAuthClaims on a hand-built valid JWT (header.payload.signature with a base64url JSON payload) returns the claims; on a malformed token returns {}; on empty string returns {}.",
+    "Add apps/web/src/lib/__tests__/landing.test.ts: landingRoute(['SUPER_ADMIN'], [...]) -> '/platform'; a GatePass STUDENT (roles ['STUDENT'], permissions including 'fees.view_own') -> '/student' (NOT '/app/fees/me' — proves the ordering fix); ADMIN -> '/admin' even with the fees staff perms; a pure ACCOUNTANT (roles ['ACCOUNTANT'], permissions with 'fees.view') -> '/app/fees'; a non-legacy fees.view_own-only holder -> '/app/fees/me'; empty -> '/app'.",
+    "Run the full verification gate: npm run lint -w @campusgate/web; npm run build -w @campusgate/web; cd apps/web && npx vitest run; the money grep over apps/web/src/features/fees/** and apps/web/src/lib/money.ts (only the annotated Razorpay SDK-boundary line may match Number(); confirm packages/shared/dist/index.js exists.",
+    "Confirm the five GatePass role-group layouts (admin/guard/hod/student/platform) and components/MfaEnrollment.tsx are unchanged by this task (git diff shows no edits beyond the widened auth-store type they consume), and clean up any temp files. Do NOT commit secrets."
+  ],
+  "acceptance_criteria": [
+    "apps/web/vitest.config.ts and a 'test' script exist; apps/web/src/lib/__tests__/{money,authz,jwt,landing}.test.ts exist.",
+    "npx vitest run passes all new unit tests.",
+    "npm run lint -w @campusgate/web passes and npm run build -w @campusgate/web succeeds.",
+    "The money grep finds no disallowed float money ops except the single annotated Razorpay SDK-boundary line; packages/shared/dist/index.js exists.",
+    "The GatePass layouts and MfaEnrollment.tsx are functionally untouched; no secrets committed."
+  ],
+  "verification": [
+    "cd apps/web; npx vitest run   (all new unit tests pass)",
+    "npm run lint -w @campusgate/web   (strict tsc — passes)",
+    "npm run build -w @campusgate/web   (next build — succeeds)",
+    "Grep apps/web/src/features/fees + apps/web/src/lib/money.ts for Number(|parseFloat(|* 100 (only the annotated SDK-boundary line matches); confirm packages/shared/dist/index.js present."
+  ],
+  "blocked_reason": null,
+  "findings": "Vitest (jsdom) wired into apps/web; all test deps (vitest, jsdom, @testing-library/react, @vitejs/plugin-react) were already in devDependencies and installed. Added apps/web/vitest.config.ts (environment jsdom, plugins [react()], resolve alias '@' -> ./src via fileURLToPath so @/ imports resolve in tests) and a 'test': 'vitest run' script in apps/web/package.json. Added apps/web/src/lib/__tests__/{money,authz,jwt,landing}.test.ts — 32 tests, all pass (npx vitest run exit 0).\n\nFull gate GREEN on this commit: npm run lint -w @campusgate/web (strict tsc, exit 0); npm run build -w @campusgate/web (next build, 35 static pages generated, exit 0); npx vitest run (4 files, 32 tests pass); money-rule grep over apps/web/src/features/fees/** + apps/web/src/lib/money.ts finds NO disallowed float ops (money.ts hits are the documentation comment only; the single annotated Razorpay SDK-boundary Number(res.amountPaise) lives in apps/web/src/app/(app)/fees/me/page.tsx with the required comment); packages/shared/dist/index.js confirmed present.\n\nBUILD-ORDER GOTCHA for later steps: `next build` type-checks root .ts config files via the app's own tsconfig.json (include **/*.ts), and the workspace carries two Vite installs (apps/web/node_modules/vite vs vitest/node_modules/vite) whose Plugin/UserConfig types are nominally distinct, so type-checking vitest.config.ts under next build fails with a cross-install 'not assignable' error. Resolved by adding 'vitest.config.ts' to tsconfig.json \"exclude\" (does NOT affect vitest, which reads the config at runtime, nor the lint which uses tsconfig.lint.json's src-only include). Do not remove that exclude.\n\nThe money test's large-value case asserts formatPaise('9007199254740993') === '₹9,00,71,99,25,47,409.93' (Indian grouping of the 14-digit rupee head), proving no float precision loss. landing.test.ts covers the ordering fix: a GatePass STUDENT holding fees.view_own still lands on /student, and ADMIN with fees staff perms still lands on /admin; a non-legacy fees.view_own-only holder lands on /app/fees/me and a pure ACCOUNTANT on /app/fees.\n\nGatePass layouts (admin/guard/hod/student/platform) and components/MfaEnrollment.tsx are untouched (git status shows no edits). Only apps/web/package.json, apps/web/tsconfig.json, apps/web/vitest.config.ts, and the four test files changed. No secrets committed."
+}
