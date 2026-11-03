@@ -54,7 +54,8 @@ import {
   useCreateAttendanceSession,
   type CreateAttendanceSessionBody,
 } from "@/features/attendance/hooks";
-import { useSections } from "@/features/classes/hooks";
+import { useAllScheduledClasses } from "@/features/classes/hooks";
+import { minuteToLabel } from "@/features/classes/utils";
 import type { AttendanceSession, SessionStatus } from "@/features/attendance/types";
 import {
   createSessionSchema,
@@ -234,9 +235,10 @@ function SessionRow({ session }: { session: AttendanceSession }) {
 }
 
 /**
- * MF8: CreateSessionDialog with complete implementation.
- * Fields: sectionId (select from sections), date (date input), startTime (time input), endTime (time input).
- * Error handling per MF8 spec.
+ * MF8: CreateSessionDialog — uses a ScheduledClass dropdown (Option A).
+ * Fields: scheduledClassId (select from scheduled classes), date (date input).
+ * startTime/endTime come from the selected ScheduledClass record, not free inputs.
+ * Error handling per MF8 spec: 409 → form-level error, 403/404 → toast.
  */
 function CreateSessionDialog({
   open,
@@ -246,27 +248,20 @@ function CreateSessionDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const createMutation = useCreateAttendanceSession();
-  const { data: sectionsData } = useSections();
+  const { scheduledClasses, isLoading: scLoading } = useAllScheduledClasses();
 
   const form = useForm<CreateSessionInput>({
     resolver: zodResolver(createSessionSchema),
     defaultValues: {
-      sectionId: "",
+      scheduledClassId: "",
       date: "",
-      startTime: "",
-      endTime: "",
     },
   });
 
   const onSubmit = form.handleSubmit((values) => {
-    // Build scheduledClassId from sectionId + date + startTime for the API.
-    // The actual API body uses scheduledClassId, date, submissionDeadline.
-    // Here we pass sectionId as scheduledClassId since that maps to a scheduled class.
     const body: CreateAttendanceSessionBody = {
-      scheduledClassId: values.sectionId,
+      scheduledClassId: values.scheduledClassId,
       date: values.date,
-      // Combine startTime/endTime into submissionDeadline field as ISO datetime if needed.
-      // The API schema uses scheduledClassId + date only; startTime/endTime are for UX.
     };
     createMutation.mutate(body, {
       onSuccess: () => {
@@ -301,20 +296,25 @@ function CreateSessionDialog({
           <form onSubmit={onSubmit} className="space-y-4">
             <FormField
               control={form.control}
-              name="sectionId"
+              name="scheduledClassId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Section</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
+                  <FormLabel>Scheduled class</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange} disabled={scLoading}>
                     <FormControl>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a section" />
+                        <SelectValue placeholder={scLoading ? "Loading…" : "Select a scheduled class"} />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {(sectionsData?.sections ?? []).map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.label ?? s.id}
+                      {scheduledClasses.map((sc) => (
+                        <SelectItem key={sc.id} value={sc.id}>
+                          {[
+                            sc.classSectionId,
+                            sc.subjectId,
+                            sc.dayOfWeek ?? sc.date ?? "—",
+                            `${minuteToLabel(sc.startTime)}–${minuteToLabel(sc.endTime)}`,
+                          ].join(" · ")}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -331,32 +331,6 @@ function CreateSessionDialog({
                   <FormLabel>Date</FormLabel>
                   <FormControl>
                     <Input type="date" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="startTime"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Start Time</FormLabel>
-                  <FormControl>
-                    <Input type="time" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="endTime"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>End Time</FormLabel>
-                  <FormControl>
-                    <Input type="time" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

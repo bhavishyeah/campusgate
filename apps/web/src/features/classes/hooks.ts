@@ -2,7 +2,7 @@
 // NIT-9: No "use client" directive — hooks files are plain TS modules, not page/component files.
 // This matches features/academics/hooks.ts.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
@@ -193,4 +193,44 @@ export function usePublishTimetable(id: string) {
     },
     // onError NOT called here — Screen 4 handles 409 discrimination inline.
   });
+}
+
+/**
+ * Fetch ALL timetables with their scheduledClasses in one logical call.
+ * Used by CreateSessionDialog so faculty can pick a ScheduledClass.
+ * Pattern: fetch timetables list → useQueries for each detail row.
+ * Each detail row is already cached by useTimetable(id) so re-use is free.
+ */
+export function useAllScheduledClasses() {
+  const perms = currentPermissions();
+  // NOTE: GET /api/classes/timetables requires classes.view.
+  // Faculty (attendance.mark only, no classes.view) will receive an empty list
+  // from this hook — the server will 403 on the timetables fetch.
+  // That is an API gap (no faculty-scoped scheduled-class listing endpoint yet);
+  // the dialog falls back to an empty dropdown gracefully.
+  const canView = can("classes.view", perms) || can("classes.timetable.manage", perms);
+
+  const timetablesQuery = useQuery<TimetablesResponse>({
+    queryKey: classesKeys.timetables(),
+    queryFn: () => api.get("/api/classes/timetables"),
+    enabled: canView,
+  });
+
+  const timetableIds = timetablesQuery.data?.timetables.map((t) => t.id) ?? [];
+
+  const detailQueries = useQueries({
+    queries: timetableIds.map((id) => ({
+      queryKey: classesKeys.timetable(id),
+      queryFn: () => api.get<Timetable>(`/api/classes/timetables/${id}`),
+      enabled: canView,
+    })),
+  });
+
+  const scheduledClasses = detailQueries
+    .flatMap((q) => (q.data as Timetable | undefined)?.scheduledClasses ?? [])
+    .filter((sc) => sc.status === "SCHEDULED");
+
+  const isLoading = timetablesQuery.isLoading || detailQueries.some((q) => q.isLoading);
+
+  return { scheduledClasses, isLoading };
 }

@@ -3,17 +3,17 @@ import { z } from "zod";
 import { todayISO } from "./utils";
 
 // ─── Session creation (MF8 spec) ──────────────────────────────────────────────
-// Fields: sectionId (select), date (date input), startTime (time input), endTime (time input)
+// Fields: scheduledClassId (select from scheduled classes), date (date input)
+// startTime/endTime come from the selected ScheduledClass record, not separate inputs.
 // Validation: all required; date must not be in the past (UTC).
+// Cross-field: endTime > startTime is enforced on the ScheduledClass itself by the API.
 
 export const createSessionSchema = z.object({
-  sectionId:  z.string().min(1, "Section is required"),
-  date:       z
+  scheduledClassId: z.string().min(1, "Scheduled class is required"),
+  date:             z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
     .refine((d) => d >= todayISO(), { message: "Date cannot be in the past" }),
-  startTime:  z.string().min(1, "Start time is required"),
-  endTime:    z.string().min(1, "End time is required"),
 });
 export type CreateSessionInput = z.infer<typeof createSessionSchema>;
 

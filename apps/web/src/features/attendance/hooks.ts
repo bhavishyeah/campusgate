@@ -75,14 +75,17 @@ interface SessionsResponse { sessions: AttendanceSession[]; }
  *   - HOD holds both `attendance.view` and `attendance.correct`
  *   - ADMIN holds `attendance.view` but NOT `attendance.mark`
  * Therefore roles holding `attendance.mark` do NOT necessarily hold `attendance.view`.
- * Gate strictly on `attendance.view` only.
+ * However, FACULTY must be able to reach their own sessions — the server enforces
+ * record-level scope via resolveMarkingFaculty + assertFacultyAssigned, so a faculty
+ * caller with `attendance.mark` only gets back their own assigned sessions.
+ * Gate: `attendance.view` (staff read) || `attendance.mark` (faculty self-scoped).
  */
 export function useAttendanceSessions() {
   const perms = currentPermissions();
   return useQuery<SessionsResponse>({
     queryKey: attendanceKeys.sessions(),
     queryFn: () => api.get("/api/attendance/sessions"),
-    enabled: can("attendance.view", perms),
+    enabled: can("attendance.view", perms) || can("attendance.mark", perms),
   });
 }
 
@@ -91,7 +94,7 @@ export function useAttendanceSession(id: string) {
   return useQuery<AttendanceSession>({
     queryKey: attendanceKeys.session(id),
     queryFn: () => api.get(`/api/attendance/sessions/${id}`),
-    enabled: Boolean(id) && can("attendance.view", perms),
+    enabled: Boolean(id) && (can("attendance.view", perms) || can("attendance.mark", perms)),
   });
 }
 
@@ -183,7 +186,7 @@ export function useSubmitCorrection() {
   return useMutation<AttendanceCorrection, ApiError, SubmitCorrectionBody>({
     mutationFn: (body) => api.post("/api/attendance/corrections", body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
+      qc.invalidateQueries({ queryKey: attendanceKeys.corrections() });
     },
     onError: toastError,
   });
@@ -196,7 +199,7 @@ export function useApproveCorrection(correctionId: string) {
   return useMutation<AttendanceCorrection, ApiError, ReviewCorrectionBody>({
     mutationFn: (body) => api.post(`/api/attendance/corrections/${correctionId}/approve`, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
+      qc.invalidateQueries({ queryKey: attendanceKeys.corrections() });
     },
     onError: toastError,
   });
@@ -207,7 +210,7 @@ export function useRejectCorrection(correctionId: string) {
   return useMutation<AttendanceCorrection, ApiError, ReviewCorrectionBody>({
     mutationFn: (body) => api.post(`/api/attendance/corrections/${correctionId}/reject`, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
+      qc.invalidateQueries({ queryKey: attendanceKeys.corrections() });
     },
     onError: toastError,
   });
