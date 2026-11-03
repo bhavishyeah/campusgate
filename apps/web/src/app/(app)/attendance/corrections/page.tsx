@@ -78,7 +78,7 @@ function AttendanceCorrectionsInner() {
         <EmptyState
           icon={Info}
           label="View not available"
-          description="Corrections are submitted from the Mark Attendance screen. Your submitted corrections are reviewed by your HOD or administrator."
+          description="To request a correction, open a submitted or finalized session from the Attendance Sessions screen and use the 'Request correction' button next to the student's record."
         />
       </div>
     );

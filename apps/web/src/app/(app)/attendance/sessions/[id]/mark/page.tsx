@@ -2,11 +2,36 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { ClipboardList } from "lucide-react";
 import { RouteGuard } from "@/components/auth/RouteGuard";
 import { Can } from "@/components/auth/Can";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -25,9 +50,14 @@ import {
   useAttendanceSession,
   useMarkAttendance,
   useSubmitSession,
+  useSubmitCorrection,
 } from "@/features/attendance/hooks";
 import { attendanceKeys } from "@/features/attendance/keys";
-import type { AttendanceStatus } from "@/features/attendance/types";
+import type { AttendanceRecord, AttendanceStatus } from "@/features/attendance/types";
+import {
+  submitCorrectionSchema,
+  type SubmitCorrectionInput,
+} from "@/features/attendance/formSchemas";
 
 const STATUSES: AttendanceStatus[] = ["PRESENT", "ABSENT", "LATE", "EXCUSED"];
 
@@ -51,6 +81,7 @@ function MarkAttendanceInner() {
 
   const [marks, setMarks] = useState<Record<string, string>>({});
   const [isDirty, setIsDirty] = useState(false);
+  const [correctionTarget, setCorrectionTarget] = useState<AttendanceRecord | null>(null);
 
   // Initialise marks from server records on first load
   useEffect(() => {
@@ -150,6 +181,12 @@ function MarkAttendanceInner() {
                 <Can permission="attendance.mark" fallback={<TableHead>Status</TableHead>}>
                   <TableHead>Mark</TableHead>
                 </Can>
+                {/* Correction column — only shown when session is no longer OPEN */}
+                {session.status !== "OPEN" && (
+                  <Can permission="attendance.mark">
+                    <TableHead>Correction</TableHead>
+                  </Can>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -171,6 +208,7 @@ function MarkAttendanceInner() {
                             key={status}
                             variant="outline"
                             size="sm"
+                            disabled={session.status !== "OPEN"}
                             className={marks[record.studentId] === status ? "bg-primary-100 border-primary-400 font-semibold" : ""}
                             onClick={() => handleToggle(record.studentId, status)}
                           >
@@ -180,6 +218,20 @@ function MarkAttendanceInner() {
                       </div>
                     </TableCell>
                   </Can>
+                  {/* Request correction — available on SUBMITTED or FINALIZED sessions */}
+                  {session.status !== "OPEN" && (
+                    <Can permission="attendance.mark">
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setCorrectionTarget(record)}
+                        >
+                          Request correction
+                        </Button>
+                      </TableCell>
+                    </Can>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -216,6 +268,129 @@ function MarkAttendanceInner() {
           </Can>
         )}
       </div>
+
+      {correctionTarget && (
+        <SubmitCorrectionDialog
+          record={correctionTarget}
+          open={correctionTarget !== null}
+          onOpenChange={(v) => { if (!v) setCorrectionTarget(null); }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Dialog for faculty to submit an attendance correction request.
+ * Gated on attendance.mark; visible per-row for SUBMITTED and FINALIZED sessions.
+ */
+function SubmitCorrectionDialog({
+  record,
+  open,
+  onOpenChange,
+}: {
+  record: AttendanceRecord;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const submitMutation = useSubmitCorrection();
+
+  const form = useForm<SubmitCorrectionInput>({
+    resolver: zodResolver(submitCorrectionSchema),
+    defaultValues: {
+      attendanceRecordId: record.id,
+      requestedStatus: "PRESENT",
+      reason: "",
+    },
+  });
+
+  const onSubmit = form.handleSubmit((values) => {
+    submitMutation.mutate(
+      {
+        attendanceRecordId: values.attendanceRecordId,
+        requestedStatus: values.requestedStatus,
+        reason: values.reason,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Correction request submitted.");
+          form.reset();
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError) {
+            if (err.status === 409) {
+              toast.error("A pending correction already exists for this record.");
+            } else {
+              toast.error(err.message);
+            }
+          }
+        },
+      },
+    );
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Request attendance correction</DialogTitle>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={onSubmit} className="space-y-4">
+            <div className="text-sm text-gray-500">
+              Student: <span className="font-mono">{record.studentId}</span>
+              {" "}— Current status: <Badge variant="outline">{record.status}</Badge>
+            </div>
+            <FormField
+              control={form.control}
+              name="requestedStatus"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Requested status</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select status" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {(["PRESENT", "ABSENT", "LATE", "EXCUSED"] as const).map((s) => (
+                        <SelectItem key={s} value={s}>{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="reason"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Reason</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="Explain why the attendance record needs correction…"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <DialogFooter>
+              <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={submitMutation.isPending}>
+                {submitMutation.isPending ? "Submitting…" : "Submit request"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
   );
 }

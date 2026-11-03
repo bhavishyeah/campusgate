@@ -319,6 +319,13 @@ function CreateSessionDialog({
                       ))}
                     </SelectContent>
                   </Select>
+                  {!scLoading && scheduledClasses.length === 0 && (
+                    <p className="text-xs text-amber-600">
+                      No scheduled classes available. This may be because your account does not
+                      have access to the timetable data. Ask your administrator to schedule
+                      classes before creating a session.
+                    </p>
+                  )}
                   <FormMessage />
                 </FormItem>
               )}
