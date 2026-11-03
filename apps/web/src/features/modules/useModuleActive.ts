@@ -15,11 +15,17 @@ export type ModuleActiveStatus = "active" | "inactive" | "forbidden" | "unknown"
 export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
   const permissions = useAuthStore((s) => s.permissions);
 
-  // Choose a probe matching a permission the user holds (fees only for now).
+  // Choose a probe matching a permission the user holds.
   let probePath: string | null = null;
   if (moduleKey === "fees") {
     if (can("fees.view", permissions)) probePath = "/api/fees/structures";
     else if (can("fees.view_own", permissions)) probePath = "/api/fees/me/outstanding";
+  }
+  if (moduleKey === "attendance") {
+    if (can("attendance.view", permissions))         probePath = "/api/attendance/sessions";
+    else if (can("attendance.mark", permissions))    probePath = "/api/attendance/sessions";
+    else if (can("attendance.correct", permissions)) probePath = "/api/attendance/corrections";
+    // attendance.view_own (student) is NOT included in the Attendance staff nav item.
   }
 
   const query = useQuery<ModuleActiveStatus, never>({

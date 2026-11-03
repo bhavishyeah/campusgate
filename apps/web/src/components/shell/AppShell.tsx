@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -62,6 +62,25 @@ const NAV: NavItem[] = [
       "students.update",
       "students.deactivate",
     ],
+  },
+  // ── Classes — foundational/permission-only, NOT module-gated.
+  // The API does not call requireModuleActive for classes.* routes.
+  // Following the academics precedent: omitting module means
+  // useNavItemVisible skips the "item.module && inactive" branch entirely.
+  {
+    href: "/classes/sections",
+    label: "Classes",
+    icon: BookOpen,
+    anyOf: ["classes.sections.manage", "classes.faculty.assign", "classes.timetable.manage", "classes.view"],
+    // No module field — classes API is permission-gated only, never module-gated.
+  },
+  // ── Attendance — module-gated: attendance API calls requireModuleActive("attendance").
+  {
+    href: "/attendance/sessions",
+    label: "Attendance",
+    icon: ClipboardList,
+    anyOf: ["attendance.view", "attendance.mark", "attendance.correct"],
+    module: "attendance",
   },
 ];
 
