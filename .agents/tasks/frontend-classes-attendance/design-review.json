@@ -1,0 +1,93 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "HIGH",
+      "title": "Duplicate mutationFn in useMarkAttendance is a compile error",
+      "where": "features/attendance/hooks.ts — useMarkAttendance function (§9)",
+      "summary": "Two mutationFn keys in the same object literal: first calls api.post (wrong method), second calls apiPatch (correct). TypeScript strict mode emits TS2300 duplicate identifier. Fix: remove the first mutationFn line entirely."
+    },
+    {
+      "id": 2,
+      "severity": "HIGH",
+      "title": "<Textarea> component does not exist — Screen 7 review dialog will fail to compile",
+      "where": "Screen 7 (Attendance Corrections), review dialog (§10/Screen 7)",
+      "summary": "components/ui/textarea.tsx does not exist (verified by directory listing). The design defers the choice to the coder. Design must commit: either add the shadcn textarea component or specify the exact native <textarea> fallback with className."
+    },
+    {
+      "id": 3,
+      "severity": "HIGH",
+      "title": "apiPatch declared after the hooks that call it in features/attendance/hooks.ts",
+      "where": "features/attendance/hooks.ts (§9) — apiPatch const at ~line 180, called by useMarkAttendance at ~line 130",
+      "summary": "apiPatch is a const declaration placed after the hook functions that call it, diverging from the features/classes/hooks.ts and features/academics/hooks.ts pattern. Move apiPatch + API_BASE to the top of the file, immediately after imports."
+    },
+    {
+      "id": 4,
+      "severity": "MEDIUM",
+      "title": "todayISO() documented as 'local time' but uses toISOString() which returns UTC",
+      "where": "§12 (Utility Helpers) and Screen 5 client-side faculty filter",
+      "summary": "new Date().toISOString().slice(0,10) returns UTC date, not local date. Comment says 'local time'. For users in UTC+ timezones, sessions disappear early. Design must state a definitive choice: keep UTC (and fix the comment to say UTC, matching server storage) or use local date construction."
+    },
+    {
+      "id": 5,
+      "severity": "MEDIUM",
+      "title": "Screen 2 assign button uses non-existent permission key classes.assignments.manage",
+      "where": "Screen 2 (Section Detail), Faculty tab assign button (§10/Screen 2)",
+      "summary": "Design shows <Can permission=\"classes.assignments.manage\" anyOf={[\"classes.faculty.assign\"]}> then immediately notes the key does not exist. Since Can checks permission first and ignores anyOf, the button never renders. Remove the invalid snippet; show only <Can permission=\"classes.faculty.assign\">."
+    },
+    {
+      "id": 6,
+      "severity": "MEDIUM",
+      "title": "Sessions hooks enabled gate includes attendance.mark but GET /sessions requires attendance.view",
+      "where": "features/attendance/hooks.ts — useAttendanceSessions and useAttendanceSession (§9)",
+      "summary": "API contract confirms GET /api/attendance/sessions and GET /api/attendance/sessions/:id require attendance.view (not attendance.mark). Enabling the query for attendance.mark-only users triggers a 403. Design must either document that mark-only roles also hold view, or add explicit 403 handling, or restrict enabled to attendance.view only."
+    },
+    {
+      "id": 7,
+      "severity": "MEDIUM",
+      "title": "No timetable list/index page — useCreateTimetable hook has no callsite",
+      "where": "File inventory (§14), Screen 4 design, features/classes/hooks.ts",
+      "summary": "Only a timetable detail page [id]/page.tsx is specified; no timetable list/index page. useCreateTimetable() is exported but never called by any screen. Design must either add a list page with CreateTimetableDialog, add the dialog to Section Detail's Timetable tab, or explicitly mark useCreateTimetable as forward-declared dead code."
+    },
+    {
+      "id": 8,
+      "severity": "MEDIUM",
+      "title": "CreateSessionDialog in Screen 5 is mentioned but never specified",
+      "where": "Screen 5 (Attendance Sessions List), Open Session row action (§10/Screen 5)",
+      "summary": "The design says 'Opens a CreateSessionDialog' but provides no dialog spec: no field list, no error mapping for 403/404/409 responses, no success handler. Equivalent gap to prior F10 (Screen 2 AssignFacultyDialog error mapping, originally HIGH). Needs a complete dialog specification."
+    },
+    {
+      "id": 9,
+      "severity": "NIT",
+      "title": "hooks.ts includes 'use client' directive then contradictory comment saying it is not required",
+      "where": "features/classes/hooks.ts, first lines (§8)",
+      "summary": "The directive and comment contradict each other. Remove the \"use client\"; line from hooks.ts files (matching features/academics/hooks.ts which does not have it)."
+    },
+    {
+      "id": 10,
+      "severity": "NIT",
+      "title": "FacultyAssignment.updatedAt declared required but comment says it may be absent",
+      "where": "features/classes/types.ts §2, FacultyAssignment interface",
+      "summary": "updatedAt: string with comment 'may not be present in all API responses'. API contract does not list updatedAt on FacultyAssignment. Either type as updatedAt?: string or remove the field. Do not declare required and comment optional."
+    }
+  ],
+  "priorFindingsStatus": {
+    "F1": "Closed",
+    "F2": "Closed",
+    "F3": "Closed",
+    "F4": "Closed",
+    "F5": "Closed",
+    "F6": "Closed",
+    "F7": "Closed",
+    "F8": "Closed",
+    "F9": "Closed",
+    "F10": "Closed",
+    "F11": "Closed",
+    "F12": "Closed",
+    "F13": "Closed",
+    "F14": "Closed",
+    "F15": "Closed"
+  },
+  "reviewDoc": "c:/campusgate/.agents/tasks/frontend-classes-attendance/design-review.md"
+}

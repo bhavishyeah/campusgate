@@ -1,0 +1,9 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    "Faculty 403 on Sessions list — FACULTY (attendance.mark only) fires useAttendanceSessions but GET /api/attendance/sessions requires attendance.view; the 403 renders as <InlineError>. Add a 403-specific branch showing a role-appropriate empty state or a direct session URL prompt. Severity: medium.",
+    "Finalize gated on attendance.mark — Faculty can finalize their own sessions (one-way lock to FINALIZED with no supervisory sign-off). Confirm intended workflow, or introduce an attendance.finalize permission for HOD/ADMIN. Severity: low / design question.",
+    "useAllScheduledClasses N+1 fan-out — fetches timetable list then one detail request per timetable on first CreateSessionDialog open; cached on repeat opens. Worth revisiting for institutions with many timetables. Severity: possible / low."
+  ],
+  "reviewDoc": "c:/campusgate/.agents/tasks/frontend-classes-attendance/code-review.md"
+}

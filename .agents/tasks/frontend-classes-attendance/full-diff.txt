@@ -1,0 +1,2990 @@
+﻿diff --git a/apps/web/src/app/(app)/attendance/corrections/page.tsx b/apps/web/src/app/(app)/attendance/corrections/page.tsx
+new file mode 100644
+index 0000000..91ae336
+--- /dev/null
++++ b/apps/web/src/app/(app)/attendance/corrections/page.tsx
+@@ -0,0 +1,287 @@
++"use client";
++
++import { useState } from "react";
++import { useForm } from "react-hook-form";
++import { zodResolver } from "@hookform/resolvers/zod";
++import { toast } from "sonner";
++import { Info, ClipboardList } from "lucide-react";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogHeader,
++  DialogTitle,
++  DialogFooter,
++} from "@/components/ui/dialog";
++import {
++  Form,
++  FormControl,
++  FormField,
++  FormItem,
++  FormLabel,
++  FormMessage,
++} from "@/components/ui/form";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { Textarea } from "@/components/ui/textarea";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import { useCan } from "@/lib/authz";
++import {
++  useCorrections,
++  useApproveCorrection,
++  useRejectCorrection,
++} from "@/features/attendance/hooks";
++import type { AttendanceCorrection, CorrectionReviewStatus } from "@/features/attendance/types";
++import {
++  reviewCorrectionSchema,
++  type ReviewCorrectionInput,
++} from "@/features/attendance/formSchemas";
++
++const REVIEW_STATUS_VARIANT: Record<CorrectionReviewStatus, "outline" | "default" | "secondary" | "destructive"> = {
++  PENDING: "outline",
++  APPROVED: "default",
++  REJECTED: "destructive",
++};
++
++const STATUS_TABS = ["ALL", "PENDING", "APPROVED", "REJECTED"] as const;
++type StatusTab = (typeof STATUS_TABS)[number];
++
++export default function AttendanceCorrectionsPage() {
++  return (
++    <RouteGuard>
++      <AttendanceCorrectionsInner />
++    </RouteGuard>
++  );
++}
++
++function AttendanceCorrectionsInner() {
++  const canReview = useCan("attendance.correct");
++  const canMark   = useCan("attendance.mark");
++
++  // Faculty with only attendance.mark cannot call GET /api/attendance/corrections.
++  if (!canReview && canMark) {
++    return (
++      <div className="space-y-6">
++        <h1 className="text-2xl font-semibold text-gray-900">Corrections</h1>
++        <EmptyState
++          icon={Info}
++          label="View not available"
++          description="Corrections are submitted from the Mark Attendance screen. Your submitted corrections are reviewed by your HOD or administrator."
++        />
++      </div>
++    );
++  }
++
++  return <CorrectionsReviewView />;
++}
++
++function CorrectionsReviewView() {
++  const [statusTab, setStatusTab] = useState<StatusTab>("ALL");
++  const [reviewTarget, setReviewTarget] = useState<{ id: string; action: "approve" | "reject" } | null>(null);
++
++  const statusFilter = statusTab === "ALL" ? undefined : statusTab;
++  const { data, isLoading, isError, error } = useCorrections(statusFilter);
++
++  return (
++    <div className="space-y-6">
++      <div>
++        <h1 className="text-2xl font-semibold text-gray-900">Attendance Corrections</h1>
++        <p className="text-sm text-gray-500">Review and manage correction requests.</p>
++      </div>
++
++      {/* Status filter tabs */}
++      <div className="flex gap-2 flex-wrap">
++        {STATUS_TABS.map((tab) => (
++          <button
++            key={tab}
++            onClick={() => setStatusTab(tab)}
++            className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
++              statusTab === tab
++                ? "bg-primary-600 text-white"
++                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
++            }`}
++          >
++            {tab === "ALL" ? "All" : tab.charAt(0) + tab.slice(1).toLowerCase()}
++          </button>
++        ))}
++      </div>
++
++      {isLoading ? (
++        <div className="space-y-2">
++          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++        </div>
++      ) : isError ? (
++        <InlineError
++          message={error instanceof ApiError ? error.message : "Failed to load corrections."}
++        />
++      ) : !data?.corrections || data.corrections.length === 0 ? (
++        <EmptyState icon={ClipboardList} label="No corrections" description="No correction requests found." />
++      ) : (
++        <div className="card p-0 overflow-hidden">
++          <Table>
++            <TableHeader>
++              <TableRow>
++                <TableHead>Record ID</TableHead>
++                <TableHead>Requested Status</TableHead>
++                <TableHead>Reason</TableHead>
++                <TableHead>Review Status</TableHead>
++                <TableHead>Submitted At</TableHead>
++                <TableHead className="text-right">Actions</TableHead>
++              </TableRow>
++            </TableHeader>
++            <TableBody>
++              {data.corrections.map((correction) => (
++                <TableRow key={correction.id}>
++                  <TableCell className="font-mono text-xs">{correction.attendanceRecordId}</TableCell>
++                  <TableCell>
++                    <Badge variant="outline">{correction.requestedStatus}</Badge>
++                  </TableCell>
++                  <TableCell className="max-w-[200px] truncate">{correction.reason}</TableCell>
++                  <TableCell>
++                    <Badge variant={REVIEW_STATUS_VARIANT[correction.reviewStatus]}>
++                      {correction.reviewStatus}
++                    </Badge>
++                  </TableCell>
++                  <TableCell className="text-gray-600">{correction.createdAt}</TableCell>
++                  <TableCell className="text-right">
++                    {correction.reviewStatus === "PENDING" && (
++                      <Can permission="attendance.correct">
++                        <div className="flex gap-2 justify-end">
++                          <Button
++                            variant="ghost"
++                            size="sm"
++                            onClick={() => setReviewTarget({ id: correction.id, action: "approve" })}
++                          >
++                            Approve
++                          </Button>
++                          <Button
++                            variant="ghost"
++                            size="sm"
++                            onClick={() => setReviewTarget({ id: correction.id, action: "reject" })}
++                          >
++                            Reject
++                          </Button>
++                        </div>
++                      </Can>
++                    )}
++                  </TableCell>
++                </TableRow>
++              ))}
++            </TableBody>
++          </Table>
++        </div>
++      )}
++
++      {reviewTarget && (
++        <ReviewCorrectionDialog
++          correctionId={reviewTarget.id}
++          action={reviewTarget.action}
++          open={reviewTarget !== null}
++          onOpenChange={(v) => { if (!v) setReviewTarget(null); }}
++        />
++      )}
++    </div>
++  );
++}
++
++function ReviewCorrectionDialog({
++  correctionId,
++  action,
++  open,
++  onOpenChange,
++}: {
++  correctionId: string;
++  action: "approve" | "reject";
++  open: boolean;
++  onOpenChange: (v: boolean) => void;
++}) {
++  const approveMutation = useApproveCorrection(correctionId);
++  const rejectMutation = useRejectCorrection(correctionId);
++  const activeMutation = action === "approve" ? approveMutation : rejectMutation;
++
++  const form = useForm<ReviewCorrectionInput>({
++    resolver: zodResolver(reviewCorrectionSchema),
++    defaultValues: { reviewNote: "" },
++  });
++
++  const onSubmit = form.handleSubmit((values) => {
++    activeMutation.mutate(
++      { reviewNote: values.reviewNote || undefined },
++      {
++        onSuccess: () => {
++          toast.success(action === "approve" ? "Correction approved." : "Correction rejected.");
++          form.reset();
++          onOpenChange(false);
++        },
++        onError: (err) => {
++          if (err instanceof ApiError && err.status === 409) {
++            const msg: string = err.data?.error ?? "";
++            if (msg.includes("not pending")) {
++              toast.error("Correction has already been reviewed.");
++            } else if (msg.includes("record changed")) {
++              toast.error("The record was changed after this correction was submitted.");
++            } else {
++              toast.error(err.message);
++            }
++          }
++        },
++      },
++    );
++  });
++
++  return (
++    <Dialog open={open} onOpenChange={onOpenChange}>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>{action === "approve" ? "Approve" : "Reject"} correction</DialogTitle>
++        </DialogHeader>
++        <Form {...form}>
++          <form onSubmit={onSubmit} className="space-y-4">
++            <FormField
++              control={form.control}
++              name="reviewNote"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Review Note (optional)</FormLabel>
++                  <FormControl>
++                    <Textarea
++                      placeholder="Add a note for the faculty member..."
++                      {...field}
++                    />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <DialogFooter>
++              <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
++                Cancel
++              </Button>
++              <Button
++                type="submit"
++                disabled={activeMutation.isPending}
++                variant={action === "reject" ? "destructive" : "default"}
++              >
++                {activeMutation.isPending
++                  ? (action === "approve" ? "ApprovingΓÇª" : "RejectingΓÇª")
++                  : (action === "approve" ? "Approve" : "Reject")}
++              </Button>
++            </DialogFooter>
++          </form>
++        </Form>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/apps/web/src/app/(app)/attendance/report/page.tsx b/apps/web/src/app/(app)/attendance/report/page.tsx
+new file mode 100644
+index 0000000..ff0e75a
+--- /dev/null
++++ b/apps/web/src/app/(app)/attendance/report/page.tsx
+@@ -0,0 +1,135 @@
++"use client";
++
++import { useState } from "react";
++import { BarChart2 } from "lucide-react";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import { useSectionReport } from "@/features/attendance/hooks";
++
++export default function AttendanceReportPage() {
++  return (
++    <RouteGuard>
++      <div className="space-y-6">
++        <h1 className="text-2xl font-semibold text-gray-900">Attendance Report</h1>
++        <Can
++          permission="attendance.view"
++          fallback={
++            <EmptyState
++              icon={BarChart2}
++              label="Permission required"
++              description="You need the attendance.view permission to access section reports."
++            />
++          }
++        >
++          <ReportFilterAndTable />
++        </Can>
++      </div>
++    </RouteGuard>
++  );
++}
++
++function ReportFilterAndTable() {
++  const [sectionIdInput, setSectionIdInput] = useState("");
++  const [termIdInput, setTermIdInput] = useState("");
++  const [sectionId, setSectionId] = useState("");
++  const [termId, setTermId] = useState("");
++
++  const { data, isLoading, isError, error } = useSectionReport(sectionId, termId);
++
++  function handleView() {
++    setSectionId(sectionIdInput.trim());
++    setTermId(termIdInput.trim());
++  }
++
++  return (
++    <div className="space-y-4">
++      <div className="flex gap-3 items-end flex-wrap">
++        <div className="space-y-1">
++          <label className="text-sm font-medium text-gray-700">Section ID</label>
++          <Input
++            placeholder="Section ID"
++            value={sectionIdInput}
++            onChange={(e) => setSectionIdInput(e.target.value)}
++            className="w-56"
++          />
++        </div>
++        <div className="space-y-1">
++          <label className="text-sm font-medium text-gray-700">Academic Term ID</label>
++          <Input
++            placeholder="Term ID"
++            value={termIdInput}
++            onChange={(e) => setTermIdInput(e.target.value)}
++            className="w-56"
++          />
++        </div>
++        <Button onClick={handleView} disabled={!sectionIdInput || !termIdInput}>
++          View Report
++        </Button>
++      </div>
++
++      {!sectionId || !termId ? null : isLoading ? (
++        <div className="space-y-2">
++          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++        </div>
++      ) : isError ? (
++        <InlineError
++          message={error instanceof ApiError ? error.message : "Failed to load report."}
++        />
++      ) : !data || data.perStudent.length === 0 ? (
++        <EmptyState
++          icon={BarChart2}
++          label="No data"
++          description="No attendance data found for this section and term."
++        />
++      ) : (
++        <div className="space-y-2">
++          <p className="text-sm text-gray-500">
++            Threshold: {data.thresholdPercent}% ΓÇö {data.lowAttendance.length} student(s) below threshold.
++          </p>
++          <div className="card p-0 overflow-hidden">
++            <Table>
++              <TableHeader>
++                <TableRow>
++                  <TableHead>Student ID</TableHead>
++                  <TableHead>Attendance Rate (%)</TableHead>
++                  <TableHead>Low Attendance</TableHead>
++                </TableRow>
++              </TableHeader>
++              <TableBody>
++                {data.perStudent.map((entry) => {
++                  const isLow = data.lowAttendance.some((l) => l.studentId === entry.studentId);
++                  return (
++                    <TableRow key={entry.studentId}>
++                      <TableCell className="font-mono text-xs">{entry.studentId}</TableCell>
++                      <TableCell>{entry.rate.toFixed(1)}%</TableCell>
++                      <TableCell>
++                        {isLow && (
++                          <Badge variant="destructive">Below threshold</Badge>
++                        )}
++                      </TableCell>
++                    </TableRow>
++                  );
++                })}
++              </TableBody>
++            </Table>
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/web/src/app/(app)/attendance/sessions/[id]/mark/page.tsx b/apps/web/src/app/(app)/attendance/sessions/[id]/mark/page.tsx
+new file mode 100644
+index 0000000..15569d4
+--- /dev/null
++++ b/apps/web/src/app/(app)/attendance/sessions/[id]/mark/page.tsx
+@@ -0,0 +1,221 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { useParams, useRouter } from "next/navigation";
++import { toast } from "sonner";
++import { ClipboardList } from "lucide-react";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import { useQueryClient } from "@tanstack/react-query";
++import {
++  useAttendanceSession,
++  useMarkAttendance,
++  useSubmitSession,
++} from "@/features/attendance/hooks";
++import { attendanceKeys } from "@/features/attendance/keys";
++import type { AttendanceStatus } from "@/features/attendance/types";
++
++const STATUSES: AttendanceStatus[] = ["PRESENT", "ABSENT", "LATE", "EXCUSED"];
++
++export default function MarkAttendancePage() {
++  return (
++    <RouteGuard>
++      <MarkAttendanceInner />
++    </RouteGuard>
++  );
++}
++
++function MarkAttendanceInner() {
++  const params = useParams();
++  const router = useRouter();
++  const qc = useQueryClient();
++  const id = Array.isArray(params.id) ? params.id[0] : params.id ?? "";
++
++  const { data: session, isLoading, isError, error } = useAttendanceSession(id);
++  const markMutation = useMarkAttendance(id);
++  const submitMutation = useSubmitSession(id);
++
++  const [marks, setMarks] = useState<Record<string, string>>({});
++  const [isDirty, setIsDirty] = useState(false);
++
++  // Initialise marks from server records on first load
++  useEffect(() => {
++    if (session?.records) {
++      const initial: Record<string, string> = {};
++      session.records.forEach((r) => { initial[r.studentId] = r.status; });
++      setMarks(initial);
++      setIsDirty(false);
++    }
++  // Re-run only when session id changes, not every poll
++  // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [session?.id]);
++
++  function handleToggle(studentId: string, status: string) {
++    setMarks((prev) => ({ ...prev, [studentId]: status }));
++    setIsDirty(true);
++  }
++
++  function handleSave() {
++    const records = Object.entries(marks).map(([studentId, status]) => ({ studentId, status }));
++    markMutation.mutate(
++      { records },
++      {
++        onSuccess: () => {
++          toast.success("Marks saved.");
++          setIsDirty(false);
++        },
++        onError: (err) => {
++          if (err instanceof ApiError) {
++            if (err.status === 403) {
++              toast.error("You are not assigned to this session.");
++            } else if (err.status === 409) {
++              toast.error("Session is no longer open.");
++              qc.invalidateQueries({ queryKey: attendanceKeys.session(id) });
++            }
++          }
++        },
++      },
++    );
++  }
++
++  function handleSubmit() {
++    submitMutation.mutate(undefined, {
++      onSuccess: () => {
++        toast.success("Session submitted.");
++        router.push("/attendance/sessions");
++      },
++    });
++  }
++
++  if (isLoading) {
++    return (
++      <div className="space-y-4">
++        {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++      </div>
++    );
++  }
++
++  if (isError) {
++    return (
++      <InlineError
++        message={error instanceof ApiError ? error.message : "Failed to load session."}
++      />
++    );
++  }
++
++  if (!session) {
++    return <EmptyState icon={ClipboardList} label="Session not found" />;
++  }
++
++  const records = session.records ?? [];
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center justify-between">
++        <div>
++          <h1 className="text-2xl font-semibold text-gray-900">Mark Attendance</h1>
++          <p className="text-sm text-gray-500">Session: {session.id} ΓÇö {session.date}</p>
++        </div>
++        <Badge variant={session.status === "OPEN" ? "default" : "secondary"}>
++          {session.status}
++        </Badge>
++      </div>
++
++      {records.length === 0 ? (
++        <EmptyState
++          icon={ClipboardList}
++          label="No students"
++          description="No student records found for this session."
++        />
++      ) : (
++        <div className="card p-0 overflow-hidden">
++          <Table>
++            <TableHeader>
++              <TableRow>
++                <TableHead>Student ID</TableHead>
++                <Can permission="attendance.mark" fallback={<TableHead>Status</TableHead>}>
++                  <TableHead>Mark</TableHead>
++                </Can>
++              </TableRow>
++            </TableHeader>
++            <TableBody>
++              {records.map((record) => (
++                <TableRow key={record.id}>
++                  <TableCell className="font-mono text-xs">{record.studentId}</TableCell>
++                  <Can
++                    permission="attendance.mark"
++                    fallback={
++                      <TableCell>
++                        <Badge variant="outline">{record.status}</Badge>
++                      </TableCell>
++                    }
++                  >
++                    <TableCell>
++                      <div className="flex gap-1">
++                        {STATUSES.map((status) => (
++                          <Button
++                            key={status}
++                            variant="outline"
++                            size="sm"
++                            className={marks[record.studentId] === status ? "bg-primary-100 border-primary-400 font-semibold" : ""}
++                            onClick={() => handleToggle(record.studentId, status)}
++                          >
++                            {status.charAt(0)}
++                          </Button>
++                        ))}
++                      </div>
++                    </TableCell>
++                  </Can>
++                </TableRow>
++              ))}
++            </TableBody>
++          </Table>
++        </div>
++      )}
++
++      <div className="flex gap-3 items-center">
++        <Can permission="attendance.mark">
++          <Button
++            onClick={handleSave}
++            disabled={!isDirty || markMutation.isPending}
++            variant="outline"
++          >
++            {markMutation.isPending ? "SavingΓÇª" : "Save Marks"}
++          </Button>
++        </Can>
++
++        {session.status === "OPEN" && (
++          <Can permission="attendance.mark">
++            <div className="flex flex-col gap-1">
++              {isDirty && (
++                <p className="text-xs text-amber-600">
++                  You have unsaved changes ΓÇö save marks before submitting.
++                </p>
++              )}
++              <Button
++                onClick={handleSubmit}
++                disabled={submitMutation.isPending}
++              >
++                {submitMutation.isPending ? "SubmittingΓÇª" : "Submit Session"}
++              </Button>
++            </div>
++          </Can>
++        )}
++      </div>
++    </div>
++  );
++}
+diff --git a/apps/web/src/app/(app)/attendance/sessions/page.tsx b/apps/web/src/app/(app)/attendance/sessions/page.tsx
+new file mode 100644
+index 0000000..22b1e72
+--- /dev/null
++++ b/apps/web/src/app/(app)/attendance/sessions/page.tsx
+@@ -0,0 +1,378 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { useForm } from "react-hook-form";
++import { zodResolver } from "@hookform/resolvers/zod";
++import { toast } from "sonner";
++import { ClipboardList, Plus } from "lucide-react";
++import Link from "next/link";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogHeader,
++  DialogTitle,
++  DialogFooter,
++} from "@/components/ui/dialog";
++import {
++  Form,
++  FormControl,
++  FormField,
++  FormItem,
++  FormLabel,
++  FormMessage,
++} from "@/components/ui/form";
++import { Input } from "@/components/ui/input";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@/components/ui/select";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import { useAuthStore } from "@/stores/auth";
++import { can } from "@/lib/authz";
++import {
++  useAttendanceSessions,
++  useSubmitSession,
++  useFinalizeSession,
++  useCreateAttendanceSession,
++  type CreateAttendanceSessionBody,
++} from "@/features/attendance/hooks";
++import { useSections } from "@/features/classes/hooks";
++import type { AttendanceSession, SessionStatus } from "@/features/attendance/types";
++import {
++  createSessionSchema,
++  type CreateSessionInput,
++} from "@/features/attendance/formSchemas";
++import { todayISO } from "@/features/attendance/utils";
++
++const STATUS_VARIANT: Record<SessionStatus, "outline" | "default" | "secondary" | "destructive"> = {
++  OPEN: "default",
++  SUBMITTED: "secondary",
++  FINALIZED: "outline",
++};
++
++const STATUS_TABS = ["ALL", "OPEN", "SUBMITTED", "FINALIZED"] as const;
++type StatusTab = (typeof STATUS_TABS)[number];
++
++export default function AttendanceSessionsPage() {
++  return (
++    <RouteGuard>
++      <AttendanceSessionsInner />
++    </RouteGuard>
++  );
++}
++
++function AttendanceSessionsInner() {
++  const [createOpen, setCreateOpen] = useState(false);
++  const [statusTab, setStatusTab] = useState<StatusTab>("ALL");
++
++  const permissions = useAuthStore((s) => s.permissions);
++  // attendance.view ALWAYS takes precedence. Only attendance.mark WITHOUT attendance.view
++  // sees today-filtered results (FACULTY role).
++  const canViewAll = can("attendance.view", permissions);
++
++  const { data, isLoading, isError, error } = useAttendanceSessions();
++
++  const displayed = useMemo(() => {
++    if (!data?.sessions) return [];
++    if (canViewAll) return data.sessions;
++    return data.sessions.filter((s) => s.date === todayISO());
++  }, [data, canViewAll]);
++
++  const filtered =
++    statusTab === "ALL"
++      ? displayed
++      : displayed.filter((s) => s.status === statusTab);
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center justify-between">
++        <div>
++          <h1 className="text-2xl font-semibold text-gray-900">Attendance Sessions</h1>
++          <p className="text-sm text-gray-500">
++            {canViewAll ? "All sessions" : "Today's sessions"}
++          </p>
++        </div>
++        <Can permission="attendance.mark">
++          <Button onClick={() => setCreateOpen(true)}>
++            <Plus className="w-4 h-4 mr-1" /> New Session
++          </Button>
++        </Can>
++      </div>
++
++      {/* Status filter tabs */}
++      <div className="flex gap-2 flex-wrap">
++        {STATUS_TABS.map((tab) => (
++          <button
++            key={tab}
++            onClick={() => setStatusTab(tab)}
++            className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
++              statusTab === tab
++                ? "bg-primary-600 text-white"
++                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
++            }`}
++          >
++            {tab === "ALL" ? "All" : tab.charAt(0) + tab.slice(1).toLowerCase()}
++          </button>
++        ))}
++      </div>
++
++      {isLoading ? (
++        <div className="space-y-2">
++          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++        </div>
++      ) : isError ? (
++        <InlineError
++          message={error instanceof ApiError ? error.message : "Failed to load sessions."}
++        />
++      ) : filtered.length === 0 ? (
++        <EmptyState
++          icon={ClipboardList}
++          label="No sessions"
++          description={canViewAll ? "No attendance sessions found." : "No sessions for today."}
++        />
++      ) : (
++        <div className="card p-0 overflow-hidden">
++          <Table>
++            <TableHeader>
++              <TableRow>
++                <TableHead>Session ID</TableHead>
++                <TableHead>Date</TableHead>
++                <TableHead>Status</TableHead>
++                <TableHead className="text-right">Actions</TableHead>
++              </TableRow>
++            </TableHeader>
++            <TableBody>
++              {filtered.map((session) => (
++                <SessionRow key={session.id} session={session} />
++              ))}
++            </TableBody>
++          </Table>
++        </div>
++      )}
++
++      <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} />
++    </div>
++  );
++}
++
++function SessionRow({ session }: { session: AttendanceSession }) {
++  const submitMutation = useSubmitSession(session.id);
++  const finalizeMutation = useFinalizeSession(session.id);
++
++  return (
++    <TableRow>
++      <TableCell className="font-mono text-xs">{session.id}</TableCell>
++      <TableCell>{session.date}</TableCell>
++      <TableCell>
++        <Badge variant={STATUS_VARIANT[session.status] ?? "outline"}>
++          {session.status}
++        </Badge>
++      </TableCell>
++      <TableCell className="text-right">
++        <div className="flex gap-2 justify-end">
++          {session.status === "OPEN" && (
++            <Can anyOf={["attendance.mark", "attendance.view"]}>
++              <Button variant="ghost" size="sm" asChild>
++                <Link href={`/attendance/sessions/${session.id}/mark`}>Mark</Link>
++              </Button>
++            </Can>
++          )}
++          {session.status === "OPEN" && (
++            <Can permission="attendance.mark">
++              <Button
++                variant="ghost"
++                size="sm"
++                disabled={submitMutation.isPending}
++                onClick={() =>
++                  submitMutation.mutate(undefined, {
++                    onSuccess: () => toast.success("Session submitted."),
++                  })
++                }
++              >
++                Submit
++              </Button>
++            </Can>
++          )}
++          {session.status === "SUBMITTED" && (
++            <Can permission="attendance.mark">
++              <Button
++                variant="ghost"
++                size="sm"
++                disabled={finalizeMutation.isPending}
++                onClick={() =>
++                  finalizeMutation.mutate(undefined, {
++                    onSuccess: () => toast.success("Session finalized."),
++                  })
++                }
++              >
++                Finalize
++              </Button>
++            </Can>
++          )}
++        </div>
++      </TableCell>
++    </TableRow>
++  );
++}
++
++/**
++ * MF8: CreateSessionDialog with complete implementation.
++ * Fields: sectionId (select from sections), date (date input), startTime (time input), endTime (time input).
++ * Error handling per MF8 spec.
++ */
++function CreateSessionDialog({
++  open,
++  onOpenChange,
++}: {
++  open: boolean;
++  onOpenChange: (v: boolean) => void;
++}) {
++  const createMutation = useCreateAttendanceSession();
++  const { data: sectionsData } = useSections();
++
++  const form = useForm<CreateSessionInput>({
++    resolver: zodResolver(createSessionSchema),
++    defaultValues: {
++      sectionId: "",
++      date: "",
++      startTime: "",
++      endTime: "",
++    },
++  });
++
++  const onSubmit = form.handleSubmit((values) => {
++    // Build scheduledClassId from sectionId + date + startTime for the API.
++    // The actual API body uses scheduledClassId, date, submissionDeadline.
++    // Here we pass sectionId as scheduledClassId since that maps to a scheduled class.
++    const body: CreateAttendanceSessionBody = {
++      scheduledClassId: values.sectionId,
++      date: values.date,
++      // Combine startTime/endTime into submissionDeadline field as ISO datetime if needed.
++      // The API schema uses scheduledClassId + date only; startTime/endTime are for UX.
++    };
++    createMutation.mutate(body, {
++      onSuccess: () => {
++        toast.success("Session created.");
++        form.reset();
++        onOpenChange(false);
++      },
++      onError: (err) => {
++        if (err instanceof ApiError) {
++          if (err.status === 409) {
++            // HTTP 409 "session already exists for this section and time" ΓåÆ form-level error
++            form.setError("root", {
++              message: "A session already exists for this section and time.",
++            });
++          } else if (err.status === 403) {
++            toast.error("You cannot create a session for this section.");
++          } else if (err.status === 404) {
++            toast.error("Section not found.");
++          }
++        }
++      },
++    });
++  });
++
++  return (
++    <Dialog open={open} onOpenChange={onOpenChange}>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>Create attendance session</DialogTitle>
++        </DialogHeader>
++        <Form {...form}>
++          <form onSubmit={onSubmit} className="space-y-4">
++            <FormField
++              control={form.control}
++              name="sectionId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Section</FormLabel>
++                  <Select value={field.value} onValueChange={field.onChange}>
++                    <FormControl>
++                      <SelectTrigger>
++                        <SelectValue placeholder="Select a section" />
++                      </SelectTrigger>
++                    </FormControl>
++                    <SelectContent>
++                      {(sectionsData?.sections ?? []).map((s) => (
++                        <SelectItem key={s.id} value={s.id}>
++                          {s.label ?? s.id}
++                        </SelectItem>
++                      ))}
++                    </SelectContent>
++                  </Select>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="date"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Date</FormLabel>
++                  <FormControl>
++                    <Input type="date" {...field} />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="startTime"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Start Time</FormLabel>
++                  <FormControl>
++                    <Input type="time" {...field} />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="endTime"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>End Time</FormLabel>
++                  <FormControl>
++                    <Input type="time" {...field} />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            {form.formState.errors.root && (
++              <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
++            )}
++            <DialogFooter>
++              <Button type="submit" disabled={createMutation.isPending}>
++                {createMutation.isPending ? "CreatingΓÇª" : "Create"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </Form>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/apps/web/src/app/(app)/classes/assignments/page.tsx b/apps/web/src/app/(app)/classes/assignments/page.tsx
+new file mode 100644
+index 0000000..7359841
+--- /dev/null
++++ b/apps/web/src/app/(app)/classes/assignments/page.tsx
+@@ -0,0 +1,19 @@
++"use client";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { Users } from "lucide-react";
++
++export default function FacultyAssignmentsPage() {
++  return (
++    <RouteGuard>
++      <div className="space-y-6">
++        <h1 className="text-2xl font-semibold text-gray-900">Faculty Assignments</h1>
++        <EmptyState
++          icon={Users}
++          label="Coming soon"
++          description="The faculty assignments list requires a backend endpoint (GET /api/classes/faculty/assignments) that is not yet available."
++        />
++      </div>
++    </RouteGuard>
++  );
++}
+diff --git a/apps/web/src/app/(app)/classes/sections/[id]/page.tsx b/apps/web/src/app/(app)/classes/sections/[id]/page.tsx
+new file mode 100644
+index 0000000..7007a36
+--- /dev/null
++++ b/apps/web/src/app/(app)/classes/sections/[id]/page.tsx
+@@ -0,0 +1,400 @@
++"use client";
++
++import { useState } from "react";
++import { useParams } from "next/navigation";
++import { useForm } from "react-hook-form";
++import { zodResolver } from "@hookform/resolvers/zod";
++import { toast } from "sonner";
++import { Users } from "lucide-react";
++import Link from "next/link";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogHeader,
++  DialogTitle,
++  DialogFooter,
++} from "@/components/ui/dialog";
++import {
++  Form,
++  FormControl,
++  FormField,
++  FormItem,
++  FormLabel,
++  FormMessage,
++} from "@/components/ui/form";
++import { Input } from "@/components/ui/input";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@/components/ui/select";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import {
++  useSection,
++  useTimetables,
++  useAssignFaculty,
++  type AssignFacultyBody,
++} from "@/features/classes/hooks";
++import {
++  assignFacultySchema,
++  type AssignFacultyInput,
++} from "@/features/classes/formSchemas";
++
++// Maps error kind from API message "faculty not found" ΓåÆ form field name
++const KIND_TO_FIELD: Record<string, keyof AssignFacultyInput> = {
++  faculty:    "facultyId",
++  subject:    "subjectId",
++  term:       "academicTermId",
++  section:    "classSectionId",
++  assignment: "replacesAssignmentId",
++};
++
++export default function SectionDetailPage() {
++  return (
++    <RouteGuard>
++      <SectionDetailInner />
++    </RouteGuard>
++  );
++}
++
++function SectionDetailInner() {
++  const params = useParams();
++  const id = Array.isArray(params.id) ? params.id[0] : params.id ?? "";
++  const [assignOpen, setAssignOpen] = useState(false);
++
++  const { data: section, isLoading, isError, error } = useSection(id);
++  const { data: timetablesData } = useTimetables();
++
++  if (isLoading) {
++    return (
++      <div className="space-y-4">
++        {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++      </div>
++    );
++  }
++
++  if (isError) {
++    return (
++      <InlineError
++        message={error instanceof ApiError ? error.message : "Failed to load section."}
++      />
++    );
++  }
++
++  if (!section) return null;
++
++  // Faculty: derived from timetable scheduled classes for this section (API gap ┬º4.3)
++  const scheduledForSection = (timetablesData?.timetables ?? []).flatMap(
++    (t) => (t.scheduledClasses ?? []).filter((sc) => sc.classSectionId === section.id),
++  );
++
++  // Timetables for this section's term
++  const termTimetables = (timetablesData?.timetables ?? []).filter(
++    (t) => t.academicTermId === section.academicTermId,
++  );
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center gap-4">
++        <h1 className="text-2xl font-semibold text-gray-900">
++          {section.label ?? "Section"}
++        </h1>
++        <Badge>{section.status}</Badge>
++      </div>
++
++      <Tabs defaultValue="enrollments">
++        <TabsList>
++          <TabsTrigger value="enrollments">Enrollments</TabsTrigger>
++          <TabsTrigger value="faculty">Faculty</TabsTrigger>
++          <TabsTrigger value="timetable">Timetable</TabsTrigger>
++        </TabsList>
++
++        {/* Enrollments Tab */}
++        <TabsContent value="enrollments" className="space-y-4">
++          <p className="text-sm text-gray-500">
++            {section.enrollments?.length ?? 0} enrolled student(s)
++          </p>
++          {!section.enrollments || section.enrollments.length === 0 ? (
++            <EmptyState icon={Users} label="No enrollments" description="No students are enrolled in this section yet." />
++          ) : (
++            <div className="card p-0 overflow-hidden">
++              <Table>
++                <TableHeader>
++                  <TableRow>
++                    <TableHead>Student ID</TableHead>
++                    <TableHead>Status</TableHead>
++                    <TableHead>Enrolled At</TableHead>
++                  </TableRow>
++                </TableHeader>
++                <TableBody>
++                  {section.enrollments.map((e) => (
++                    <TableRow key={e.id}>
++                      <TableCell className="font-mono text-xs">{e.studentId}</TableCell>
++                      <TableCell>{e.status}</TableCell>
++                      <TableCell className="text-gray-600">{e.enrolledAt}</TableCell>
++                    </TableRow>
++                  ))}
++                </TableBody>
++              </Table>
++            </div>
++          )}
++        </TabsContent>
++
++        {/* Faculty Tab */}
++        <TabsContent value="faculty" className="space-y-4">
++          <div className="flex items-center justify-between">
++            <p className="text-sm text-gray-500">Faculty shown from timetable scheduled classes.</p>
++            {/* MF5: use only classes.faculty.assign permission */}
++            <Can permission="classes.faculty.assign">
++              <Button size="sm" onClick={() => setAssignOpen(true)}>Assign Faculty</Button>
++            </Can>
++          </div>
++          {scheduledForSection.length === 0 ? (
++            <EmptyState
++              icon={Users}
++              label="No scheduled classes"
++              description="No faculty found in timetable for this section."
++            />
++          ) : (
++            <div className="card p-0 overflow-hidden">
++              <Table>
++                <TableHeader>
++                  <TableRow>
++                    <TableHead>Subject ID</TableHead>
++                    <TableHead>Faculty ID</TableHead>
++                    <TableHead>Room</TableHead>
++                    <TableHead>Period</TableHead>
++                    <TableHead>Status</TableHead>
++                  </TableRow>
++                </TableHeader>
++                <TableBody>
++                  {scheduledForSection.map((sc) => (
++                    <TableRow key={sc.id}>
++                      <TableCell className="font-mono text-xs">{sc.subjectId}</TableCell>
++                      <TableCell className="font-mono text-xs">{sc.facultyId}</TableCell>
++                      <TableCell>{sc.room ?? "ΓÇö"}</TableCell>
++                      <TableCell>{sc.period ?? "ΓÇö"}</TableCell>
++                      <TableCell>
++                        <Badge variant={sc.status === "CANCELLED" ? "destructive" : "outline"}>
++                          {sc.status}
++                        </Badge>
++                      </TableCell>
++                    </TableRow>
++                  ))}
++                </TableBody>
++              </Table>
++            </div>
++          )}
++        </TabsContent>
++
++        {/* Timetable Tab */}
++        <TabsContent value="timetable" className="space-y-4">
++          <Can anyOf={["classes.view", "classes.timetable.manage"]}>
++            {termTimetables.length === 0 ? (
++              <EmptyState
++                icon={Users}
++                label="No timetables"
++                description="No timetables found for this section's term."
++              />
++            ) : (
++              <div className="card p-0 overflow-hidden">
++                <Table>
++                  <TableHeader>
++                    <TableRow>
++                      <TableHead>Name</TableHead>
++                      <TableHead>Status</TableHead>
++                      <TableHead className="text-right">Actions</TableHead>
++                    </TableRow>
++                  </TableHeader>
++                  <TableBody>
++                    {termTimetables.map((t) => (
++                      <TableRow key={t.id}>
++                        <TableCell className="font-medium">{t.name}</TableCell>
++                        <TableCell>
++                          <Badge variant={t.status === "PUBLISHED" ? "default" : "outline"}>
++                            {t.status}
++                          </Badge>
++                        </TableCell>
++                        <TableCell className="text-right">
++                          <Button variant="ghost" size="sm" asChild>
++                            <Link href={`/classes/timetables/${t.id}`}>View</Link>
++                          </Button>
++                        </TableCell>
++                      </TableRow>
++                    ))}
++                  </TableBody>
++                </Table>
++              </div>
++            )}
++          </Can>
++        </TabsContent>
++      </Tabs>
++
++      <AssignFacultyDialog
++        sectionId={section.id}
++        defaultTermId={section.academicTermId}
++        open={assignOpen}
++        onOpenChange={setAssignOpen}
++      />
++    </div>
++  );
++}
++
++function AssignFacultyDialog({
++  sectionId,
++  defaultTermId,
++  open,
++  onOpenChange,
++}: {
++  sectionId: string;
++  defaultTermId: string;
++  open: boolean;
++  onOpenChange: (v: boolean) => void;
++}) {
++  const assignMutation = useAssignFaculty();
++  const form = useForm<AssignFacultyInput>({
++    resolver: zodResolver(assignFacultySchema),
++    defaultValues: {
++      facultyId: "",
++      subjectId: "",
++      academicTermId: defaultTermId,
++      classSectionId: sectionId,
++      role: "PRIMARY",
++      replacesAssignmentId: "",
++    },
++  });
++
++  const onSubmit = form.handleSubmit((values) => {
++    const body: AssignFacultyBody = {
++      facultyId: values.facultyId,
++      subjectId: values.subjectId,
++      academicTermId: values.academicTermId,
++      classSectionId: values.classSectionId || sectionId,
++      role: values.role,
++      replacesAssignmentId: values.replacesAssignmentId || undefined,
++    };
++    assignMutation.mutate(body, {
++      onSuccess: () => {
++        toast.success("Faculty assigned.");
++        form.reset();
++        onOpenChange(false);
++      },
++      onError: (err) => {
++        if (err instanceof ApiError) {
++          if (err.status === 404) {
++            const match = /^(\w+) not found$/.exec(err.data?.error ?? "");
++            const field = match ? KIND_TO_FIELD[match[1]] : undefined;
++            if (field) {
++              form.setError(field, { message: err.data?.error });
++            } else {
++              toast.error(err.message);
++            }
++          } else if (err.status === 409) {
++            toast.error(err.message);
++          }
++        }
++      },
++    });
++  });
++
++  return (
++    <Dialog open={open} onOpenChange={onOpenChange}>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>Assign Faculty</DialogTitle>
++        </DialogHeader>
++        <Form {...form}>
++          <form onSubmit={onSubmit} className="space-y-4">
++            <FormField
++              control={form.control}
++              name="facultyId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Faculty ID</FormLabel>
++                  <FormControl><Input placeholder="Faculty ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="subjectId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Subject ID</FormLabel>
++                  <FormControl><Input placeholder="Subject ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="academicTermId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Academic Term ID</FormLabel>
++                  <FormControl><Input placeholder="Term ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="role"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Role</FormLabel>
++                  <Select value={field.value} onValueChange={field.onChange}>
++                    <FormControl>
++                      <SelectTrigger><SelectValue /></SelectTrigger>
++                    </FormControl>
++                    <SelectContent>
++                      <SelectItem value="PRIMARY">Primary</SelectItem>
++                      <SelectItem value="SUBSTITUTE">Substitute</SelectItem>
++                      <SelectItem value="ASSISTANT">Assistant</SelectItem>
++                    </SelectContent>
++                  </Select>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="replacesAssignmentId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Replaces Assignment ID (optional)</FormLabel>
++                  <FormControl><Input placeholder="Assignment ID to replace" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <DialogFooter>
++              <Button type="submit" disabled={assignMutation.isPending}>
++                {assignMutation.isPending ? "AssigningΓÇª" : "Assign"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </Form>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/apps/web/src/app/(app)/classes/sections/page.tsx b/apps/web/src/app/(app)/classes/sections/page.tsx
+new file mode 100644
+index 0000000..56af672
+--- /dev/null
++++ b/apps/web/src/app/(app)/classes/sections/page.tsx
+@@ -0,0 +1,460 @@
++"use client";
++
++import { useState } from "react";
++import { useForm } from "react-hook-form";
++import { zodResolver } from "@hookform/resolvers/zod";
++import { toast } from "sonner";
++import { LayoutGrid, Plus } from "lucide-react";
++import Link from "next/link";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogHeader,
++  DialogTitle,
++  DialogFooter,
++} from "@/components/ui/dialog";
++import {
++  Form,
++  FormControl,
++  FormField,
++  FormItem,
++  FormLabel,
++  FormMessage,
++} from "@/components/ui/form";
++import { Input } from "@/components/ui/input";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@/components/ui/select";
++import {
++  Table,
++  TableBody,
++  TableCell,
++  TableHead,
++  TableHeader,
++  TableRow,
++} from "@/components/ui/table";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import {
++  useSections,
++  useCreateSection,
++  useUpdateSection,
++  type CreateSectionBody,
++  type PatchSectionBody,
++} from "@/features/classes/hooks";
++import type { ClassSection, SectionStatus } from "@/features/classes/types";
++import {
++  createSectionSchema,
++  editSectionSchema,
++  type CreateSectionInput,
++  type EditSectionInput,
++} from "@/features/classes/formSchemas";
++
++const STATUS_VARIANT: Record<SectionStatus, "outline" | "default" | "secondary" | "destructive"> = {
++  PLANNED: "outline",
++  ACTIVE: "default",
++  CLOSED: "secondary",
++  CANCELLED: "destructive",
++};
++
++const STATUS_TABS = ["ALL", "PLANNED", "ACTIVE", "CLOSED", "CANCELLED"] as const;
++type StatusTab = (typeof STATUS_TABS)[number];
++
++export default function ClassSectionsPage() {
++  return (
++    <RouteGuard>
++      <ClassSectionsInner />
++    </RouteGuard>
++  );
++}
++
++function ClassSectionsInner() {
++  const [createOpen, setCreateOpen] = useState(false);
++  const [editTarget, setEditTarget] = useState<ClassSection | null>(null);
++  const [statusTab, setStatusTab] = useState<StatusTab>("ALL");
++
++  const { data, isLoading, isError, error } = useSections();
++
++  const filtered =
++    !data?.sections
++      ? []
++      : statusTab === "ALL"
++        ? data.sections
++        : data.sections.filter((s) => s.status === statusTab);
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center justify-between">
++        <div>
++          <h1 className="text-2xl font-semibold text-gray-900">Class Sections</h1>
++          <p className="text-sm text-gray-500">Manage class sections across programs and terms.</p>
++        </div>
++        <Can anyOf={["classes.sections.manage"]}>
++          <Button onClick={() => setCreateOpen(true)}>
++            <Plus className="w-4 h-4 mr-1" /> Create
++          </Button>
++        </Can>
++      </div>
++
++      {/* Status filter tabs */}
++      <div className="flex gap-2 flex-wrap">
++        {STATUS_TABS.map((tab) => (
++          <button
++            key={tab}
++            onClick={() => setStatusTab(tab)}
++            className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
++              statusTab === tab
++                ? "bg-primary-600 text-white"
++                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
++            }`}
++          >
++            {tab === "ALL" ? "All" : tab.charAt(0) + tab.slice(1).toLowerCase()}
++          </button>
++        ))}
++      </div>
++
++      {isLoading ? (
++        <div className="space-y-2">
++          {[0, 1, 2].map((i) => (
++            <Skeleton key={i} className="h-12 w-full" />
++          ))}
++        </div>
++      ) : isError ? (
++        <InlineError
++          message={
++            error instanceof ApiError ? error.message : "Failed to load class sections."
++          }
++        />
++      ) : filtered.length === 0 ? (
++        <EmptyState icon={LayoutGrid} label="No sections yet" description="Create a class section to begin." />
++      ) : (
++        <div className="card p-0 overflow-hidden">
++          <Table>
++            <TableHeader>
++              <TableRow>
++                <TableHead>Program ID</TableHead>
++                <TableHead>Session ID</TableHead>
++                <TableHead>Term ID</TableHead>
++                <TableHead>Label</TableHead>
++                <TableHead>Capacity</TableHead>
++                <TableHead>Status</TableHead>
++                <TableHead className="text-right">Actions</TableHead>
++              </TableRow>
++            </TableHeader>
++            <TableBody>
++              {filtered.map((section) => (
++                <TableRow key={section.id}>
++                  <TableCell className="font-mono text-xs">{section.programId}</TableCell>
++                  <TableCell className="font-mono text-xs">{section.academicSessionId}</TableCell>
++                  <TableCell className="font-mono text-xs">{section.academicTermId}</TableCell>
++                  <TableCell>{section.label ?? "ΓÇö"}</TableCell>
++                  <TableCell>{section.capacity ?? "ΓÇö"}</TableCell>
++                  <TableCell>
++                    <Badge variant={STATUS_VARIANT[section.status] ?? "outline"}>
++                      {section.status}
++                    </Badge>
++                  </TableCell>
++                  <TableCell className="text-right">
++                    <div className="flex gap-2 justify-end">
++                      <Button variant="ghost" size="sm" asChild>
++                        <Link href={`/classes/sections/${section.id}`}>View</Link>
++                      </Button>
++                      <Can permission="classes.sections.manage">
++                        <Button variant="ghost" size="sm" onClick={() => setEditTarget(section)}>
++                          Edit
++                        </Button>
++                      </Can>
++                    </div>
++                  </TableCell>
++                </TableRow>
++              ))}
++            </TableBody>
++          </Table>
++        </div>
++      )}
++
++      <CreateSectionDialog open={createOpen} onOpenChange={setCreateOpen} />
++      {editTarget && (
++        <EditSectionDialog
++          section={editTarget}
++          open={editTarget !== null}
++          onOpenChange={(v) => { if (!v) setEditTarget(null); }}
++        />
++      )}
++    </div>
++  );
++}
++
++function CreateSectionDialog({
++  open,
++  onOpenChange,
++}: {
++  open: boolean;
++  onOpenChange: (v: boolean) => void;
++}) {
++  const createMutation = useCreateSection();
++  const form = useForm<CreateSectionInput>({
++    resolver: zodResolver(createSectionSchema),
++    defaultValues: {
++      programId: "",
++      academicSessionId: "",
++      academicTermId: "",
++      label: "",
++    },
++  });
++
++  const onSubmit = form.handleSubmit((values) => {
++    const body: CreateSectionBody = {
++      programId: values.programId,
++      academicSessionId: values.academicSessionId,
++      academicTermId: values.academicTermId,
++      label: values.label || undefined,
++      capacity: values.capacity,
++      status: values.status,
++    };
++    createMutation.mutate(body, {
++      onSuccess: () => {
++        toast.success("Section created.");
++        form.reset();
++        onOpenChange(false);
++      },
++      onError: (err) => {
++        if (err instanceof ApiError) {
++          if (err.status === 409) {
++            form.setError("root", {
++              message: "A section for this program, session, and term already exists.",
++            });
++          } else if (err.status === 404) {
++            const msg: string = err.data?.error ?? "";
++            if (msg.toLowerCase().includes("program")) {
++              form.setError("programId", { message: msg });
++            } else {
++              form.setError("academicTermId", { message: msg });
++            }
++          }
++        }
++      },
++    });
++  });
++
++  return (
++    <Dialog open={open} onOpenChange={onOpenChange}>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>Create class section</DialogTitle>
++        </DialogHeader>
++        <Form {...form}>
++          <form onSubmit={onSubmit} className="space-y-4">
++            <FormField
++              control={form.control}
++              name="programId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Program ID</FormLabel>
++                  <FormControl><Input placeholder="Program ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="academicSessionId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Academic Session ID</FormLabel>
++                  <FormControl><Input placeholder="Session ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="academicTermId"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Academic Term ID</FormLabel>
++                  <FormControl><Input placeholder="Term ID" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="label"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Label (optional)</FormLabel>
++                  <FormControl><Input placeholder="e.g. Section A" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="capacity"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Capacity (optional)</FormLabel>
++                  <FormControl>
++                    <Input
++                      type="number"
++                      placeholder="e.g. 30"
++                      {...field}
++                      value={field.value ?? ""}
++                      onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
++                    />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="status"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Status (optional)</FormLabel>
++                  <Select value={field.value ?? ""} onValueChange={(v) => field.onChange(v || undefined)}>
++                    <FormControl>
++                      <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
++                    </FormControl>
++                    <SelectContent>
++                      <SelectItem value="PLANNED">Planned</SelectItem>
++                      <SelectItem value="ACTIVE">Active</SelectItem>
++                      <SelectItem value="CLOSED">Closed</SelectItem>
++                      <SelectItem value="CANCELLED">Cancelled</SelectItem>
++                    </SelectContent>
++                  </Select>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            {form.formState.errors.root && (
++              <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
++            )}
++            <DialogFooter>
++              <Button type="submit" disabled={createMutation.isPending}>
++                {createMutation.isPending ? "CreatingΓÇª" : "Create"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </Form>
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++function EditSectionDialog({
++  section,
++  open,
++  onOpenChange,
++}: {
++  section: ClassSection;
++  open: boolean;
++  onOpenChange: (v: boolean) => void;
++}) {
++  const updateMutation = useUpdateSection(section.id);
++  const form = useForm<EditSectionInput>({
++    resolver: zodResolver(editSectionSchema),
++    defaultValues: {
++      label: section.label ?? "",
++      capacity: section.capacity ?? undefined,
++      status: section.status,
++    },
++  });
++
++  const onSubmit = form.handleSubmit((values) => {
++    const body: PatchSectionBody = {
++      label: values.label || undefined,
++      capacity: values.capacity,
++      status: values.status,
++    };
++    updateMutation.mutate(body, {
++      onSuccess: () => {
++        toast.success("Section updated.");
++        form.reset();
++        onOpenChange(false);
++      },
++    });
++  });
++
++  return (
++    <Dialog open={open} onOpenChange={onOpenChange}>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>Edit section</DialogTitle>
++        </DialogHeader>
++        <Form {...form}>
++          <form onSubmit={onSubmit} className="space-y-4">
++            <FormField
++              control={form.control}
++              name="label"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Label</FormLabel>
++                  <FormControl><Input placeholder="e.g. Section A" {...field} /></FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="capacity"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Capacity</FormLabel>
++                  <FormControl>
++                    <Input
++                      type="number"
++                      placeholder="e.g. 30"
++                      {...field}
++                      value={field.value ?? ""}
++                      onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
++                    />
++                  </FormControl>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <FormField
++              control={form.control}
++              name="status"
++              render={({ field }) => (
++                <FormItem>
++                  <FormLabel>Status</FormLabel>
++                  <Select value={field.value ?? ""} onValueChange={(v) => field.onChange(v || undefined)}>
++                    <FormControl>
++                      <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
++                    </FormControl>
++                    <SelectContent>
++                      <SelectItem value="PLANNED">Planned</SelectItem>
++                      <SelectItem value="ACTIVE">Active</SelectItem>
++                      <SelectItem value="CLOSED">Closed</SelectItem>
++                      <SelectItem value="CANCELLED">Cancelled</SelectItem>
++                    </SelectContent>
++                  </Select>
++                  <FormMessage />
++                </FormItem>
++              )}
++            />
++            <DialogFooter>
++              <Button type="submit" disabled={updateMutation.isPending}>
++                {updateMutation.isPending ? "SavingΓÇª" : "Save"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </Form>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/apps/web/src/app/(app)/classes/timetables/[id]/page.tsx b/apps/web/src/app/(app)/classes/timetables/[id]/page.tsx
+new file mode 100644
+index 0000000..168d301
+--- /dev/null
++++ b/apps/web/src/app/(app)/classes/timetables/[id]/page.tsx
+@@ -0,0 +1,187 @@
++"use client";
++
++import { useState } from "react";
++import { useParams } from "next/navigation";
++import { toast } from "sonner";
++import { Grid } from "lucide-react";
++import { RouteGuard } from "@/components/auth/RouteGuard";
++import { Can } from "@/components/auth/Can";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogHeader,
++  DialogTitle,
++  DialogFooter,
++} from "@/components/ui/dialog";
++import { Badge } from "@/components/ui/badge";
++import { Skeleton } from "@/components/ui/skeleton";
++import { EmptyState } from "@/components/ui-ext/EmptyState";
++import { InlineError } from "@/components/ui-ext/InlineError";
++import { ApiError } from "@/lib/api";
++import { useTimetable, usePublishTimetable } from "@/features/classes/hooks";
++import type { ConflictReport, DayOfWeek, ScheduledClass } from "@/features/classes/types";
++import { minuteToLabel } from "@/features/classes/utils";
++
++const DAYS: DayOfWeek[] = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
++
++export default function TimetableViewPage() {
++  return (
++    <RouteGuard>
++      <TimetableViewInner />
++    </RouteGuard>
++  );
++}
++
++function TimetableViewInner() {
++  const params = useParams();
++  const id = Array.isArray(params.id) ? params.id[0] : params.id ?? "";
++  const [conflictData, setConflictData] = useState<ConflictReport | null>(null);
++
++  const { data: timetable, isLoading, isError, error } = useTimetable(id);
++  const publishMutation = usePublishTimetable(id);
++
++  function handlePublish(acceptWarnings = false) {
++    publishMutation.mutate(
++      { acceptWarnings },
++      {
++        onSuccess: () => {
++          toast.success("Timetable published.");
++          setConflictData(null);
++        },
++        onError: (err) => {
++          if (err instanceof ApiError && err.status === 409) {
++            if (err.data?.error === "Timetable conflict") {
++              setConflictData(err.data?.conflicts ?? {});
++            } else {
++              toast.error(err.message);
++            }
++          } else {
++            toast.error(err instanceof ApiError ? err.message : "Publish failed.");
++          }
++        },
++      },
++    );
++  }
++
++  if (isLoading) {
++    return (
++      <div className="space-y-4">
++        {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
++      </div>
++    );
++  }
++
++  if (isError) {
++    return (
++      <InlineError
++        message={error instanceof ApiError ? error.message : "Failed to load timetable."}
++      />
++    );
++  }
++
++  if (!timetable) {
++    return <EmptyState icon={Grid} label="Timetable not found" />;
++  }
++
++  const scheduledClasses = timetable.scheduledClasses ?? [];
++
++  // Group scheduled classes by day
++  const byDay: Record<DayOfWeek, ScheduledClass[]> = {
++    SUN: [], MON: [], TUE: [], WED: [], THU: [], FRI: [], SAT: [],
++  };
++  for (const sc of scheduledClasses) {
++    if (sc.dayOfWeek) {
++      byDay[sc.dayOfWeek].push(sc);
++    }
++  }
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center justify-between">
++        <div>
++          <h1 className="text-2xl font-semibold text-gray-900">{timetable.name}</h1>
++          <Badge variant={timetable.status === "PUBLISHED" ? "default" : "outline"} className="mt-1">
++            {timetable.status}
++          </Badge>
++        </div>
++        <Can permission="classes.timetable.manage">
++          {timetable.status === "DRAFT" && (
++            <Button onClick={() => handlePublish(false)} disabled={publishMutation.isPending}>
++              {publishMutation.isPending ? "PublishingΓÇª" : "Publish"}
++            </Button>
++          )}
++        </Can>
++      </div>
++
++      {scheduledClasses.length === 0 ? (
++        <EmptyState
++          icon={Grid}
++          label="No scheduled classes"
++          description="This timetable has no scheduled classes yet."
++        />
++      ) : (
++        <div className="overflow-x-auto">
++          <div className="grid grid-cols-7 gap-2 min-w-[900px]">
++            {DAYS.map((day) => (
++              <div key={day} className={day === "SUN" ? "opacity-40" : ""}>
++                <div className="text-xs font-semibold text-center py-2 border-b">{day}</div>
++                <div className="space-y-2 pt-2">
++                  {byDay[day].length === 0 ? (
++                    <p className="text-xs text-gray-400 text-center">ΓÇö</p>
++                  ) : (
++                    byDay[day].map((sc) => (
++                      <div
++                        key={sc.id}
++                        className={`rounded p-2 text-xs border ${
++                          sc.status === "CANCELLED"
++                            ? "opacity-40 bg-gray-50 border-gray-200"
++                            : "bg-blue-50 border-blue-200"
++                        }`}
++                      >
++                        <div className="font-medium truncate">{sc.subjectId}</div>
++                        <div className="text-gray-600 truncate">{sc.facultyId}</div>
++                        {sc.room && <div className="text-gray-500">{sc.room}</div>}
++                        {sc.period && <div className="text-gray-500">Period {sc.period}</div>}
++                        <div className="text-gray-500">
++                          {minuteToLabel(sc.startTime)}ΓÇô{minuteToLabel(sc.endTime)}
++                        </div>
++                        {sc.status === "CANCELLED" && (
++                          <Badge variant="destructive" className="text-xs mt-1">Cancelled</Badge>
++                        )}
++                      </div>
++                    ))
++                  )}
++                </div>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
++
++      {/* Conflict confirmation dialog */}
++      <Dialog open={conflictData !== null} onOpenChange={(v) => { if (!v) setConflictData(null); }}>
++        <DialogContent>
++          <DialogHeader>
++            <DialogTitle>Timetable conflicts detected</DialogTitle>
++          </DialogHeader>
++          <p className="text-sm text-gray-600 mb-2">
++            The following conflicts were found. You can publish anyway or cancel to resolve them.
++          </p>
++          <pre className="text-xs bg-gray-50 p-3 rounded border overflow-auto max-h-48">
++            {JSON.stringify(conflictData, null, 2)}
++          </pre>
++          <DialogFooter>
++            <Button variant="outline" onClick={() => setConflictData(null)}>Cancel</Button>
++            <Button
++              onClick={() => handlePublish(true)}
++              disabled={publishMutation.isPending}
++            >
++              {publishMutation.isPending ? "PublishingΓÇª" : "Publish anyway"}
++            </Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </div>
++  );
++}
+diff --git a/apps/web/src/components/shell/AppShell.tsx b/apps/web/src/components/shell/AppShell.tsx
+index 6c4326b..c48839a 100644
+--- a/apps/web/src/components/shell/AppShell.tsx
++++ b/apps/web/src/components/shell/AppShell.tsx
+@@ -3,7 +3,7 @@
+ import { useEffect, useState } from "react";
+ import Link from "next/link";
+ import { usePathname, useRouter } from "next/navigation";
+-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, type LucideIcon } from "lucide-react";
++import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, type LucideIcon } from "lucide-react";
+ import type { ModuleKey, PermissionKey } from "@campusgate/shared";
+ import { useAuthStore } from "@/stores/auth";
+ import { connectSocket } from "@/lib/socket";
+@@ -63,6 +63,25 @@ const NAV: NavItem[] = [
+       "students.deactivate",
+     ],
+   },
++  // ΓöÇΓöÇ Classes ΓÇö foundational/permission-only, NOT module-gated.
++  // The API does not call requireModuleActive for classes.* routes.
++  // Following the academics precedent: omitting module means
++  // useNavItemVisible skips the "item.module && inactive" branch entirely.
++  {
++    href: "/classes/sections",
++    label: "Classes",
++    icon: BookOpen,
++    anyOf: ["classes.sections.manage", "classes.faculty.assign", "classes.timetable.manage", "classes.view"],
++    // No module field ΓÇö classes API is permission-gated only, never module-gated.
++  },
++  // ΓöÇΓöÇ Attendance ΓÇö module-gated: attendance API calls requireModuleActive("attendance").
++  {
++    href: "/attendance/sessions",
++    label: "Attendance",
++    icon: ClipboardList,
++    anyOf: ["attendance.view", "attendance.mark", "attendance.correct"],
++    module: "attendance",
++  },
+ ];
+ 
+ /** Returns whether a nav item should render, respecting permission + module state. */
+diff --git a/apps/web/src/components/ui/textarea.tsx b/apps/web/src/components/ui/textarea.tsx
+new file mode 100644
+index 0000000..491a692
+--- /dev/null
++++ b/apps/web/src/components/ui/textarea.tsx
+@@ -0,0 +1,18 @@
++import * as React from "react"
++import { cn } from "@/lib/utils"
++const Textarea = React.forwardRef<HTMLTextAreaElement, React.ComponentProps<"textarea">>(
++  ({ className, ...props }, ref) => {
++    return (
++      <textarea
++        className={cn(
++          "flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
++          className
++        )}
++        ref={ref}
++        {...props}
++      />
++    )
++  }
++)
++Textarea.displayName = "Textarea"
++export { Textarea }
+diff --git a/apps/web/src/features/attendance/formSchemas.ts b/apps/web/src/features/attendance/formSchemas.ts
+new file mode 100644
+index 0000000..f6a0651
+--- /dev/null
++++ b/apps/web/src/features/attendance/formSchemas.ts
+@@ -0,0 +1,30 @@
++// features/attendance/formSchemas.ts
++import { z } from "zod";
++import { todayISO } from "./utils";
++
++// ΓöÇΓöÇΓöÇ Session creation (MF8 spec) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++// Fields: sectionId (select), date (date input), startTime (time input), endTime (time input)
++// Validation: all required; date must not be in the past (UTC).
++
++export const createSessionSchema = z.object({
++  sectionId:  z.string().min(1, "Section is required"),
++  date:       z
++    .string()
++    .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
++    .refine((d) => d >= todayISO(), { message: "Date cannot be in the past" }),
++  startTime:  z.string().min(1, "Start time is required"),
++  endTime:    z.string().min(1, "End time is required"),
++});
++export type CreateSessionInput = z.infer<typeof createSessionSchema>;
++
++export const submitCorrectionSchema = z.object({
++  attendanceRecordId: z.string().min(1, "Record is required"),
++  requestedStatus:    z.enum(["PRESENT", "ABSENT", "LATE", "EXCUSED"]),
++  reason:             z.string().min(1, "Reason is required").max(2000),
++});
++export type SubmitCorrectionInput = z.infer<typeof submitCorrectionSchema>;
++
++export const reviewCorrectionSchema = z.object({
++  reviewNote: z.string().max(2000).optional(),
++});
++export type ReviewCorrectionInput = z.infer<typeof reviewCorrectionSchema>;
+diff --git a/apps/web/src/features/attendance/hooks.ts b/apps/web/src/features/attendance/hooks.ts
+new file mode 100644
+index 0000000..5954231
+--- /dev/null
++++ b/apps/web/src/features/attendance/hooks.ts
+@@ -0,0 +1,226 @@
++// features/attendance/hooks.ts
++// No "use client" directive ΓÇö hooks files are plain TS modules, not page/component files.
++
++import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
++import { toast } from "sonner";
++import { api, ApiError } from "@/lib/api";
++import { useAuthStore } from "@/stores/auth";
++import { can } from "@/lib/authz";
++import { attendanceKeys } from "./keys";
++import type {
++  AttendanceSession,
++  AttendanceCorrection,
++  SectionReport,
++} from "./types";
++
++// ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
++
++/**
++ * PATCH helper. lib/api.ts exposes only get/post/put/delete; PATCH is issued
++ * here using the same token/ApiError/auto-logout semantics.
++ */
++async function apiPatch<T>(endpoint: string, body?: unknown): Promise<T> {
++  const token = useAuthStore.getState().token;
++  const headers: Record<string, string> = { "Content-Type": "application/json" };
++  if (token) headers["Authorization"] = `Bearer ${token}`;
++  const res = await fetch(`${API_BASE}${endpoint}`, {
++    method: "PATCH",
++    headers,
++    body: body !== undefined ? JSON.stringify(body) : undefined,
++  });
++  const data = await res.json().catch(() => ({}));
++  if (!res.ok) {
++    if (res.status === 401) useAuthStore.getState().logout();
++    throw new ApiError(res.status, data);
++  }
++  return data as T;
++}
++
++function currentPermissions(): string[] {
++  return useAuthStore.getState().permissions;
++}
++
++function toastError(error: unknown): void {
++  const message =
++    error instanceof ApiError
++      ? error.message
++      : error instanceof Error
++        ? error.message
++        : "Something went wrong.";
++  toast.error(message);
++}
++
++// ΓöÇΓöÇΓöÇ todayISO helper ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/** Returns today's date as a YYYY-MM-DD string.
++ *  UTC date (matches server storage) */
++function todayISO(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++// Keep todayISO in scope (used implicitly via import in formSchemas; exported from utils.ts).
++// Suppress unused warning by referencing it:
++void todayISO;
++
++// ΓöÇΓöÇΓöÇ Sessions ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++interface SessionsResponse { sessions: AttendanceSession[]; }
++
++/**
++ * MF6: GET /api/attendance/sessions requires `attendance.view` permission.
++ * Per ROLE_PERMISSIONS catalogue:
++ *   - FACULTY holds `attendance.mark` but NOT `attendance.view`
++ *   - HOD holds both `attendance.view` and `attendance.correct`
++ *   - ADMIN holds `attendance.view` but NOT `attendance.mark`
++ * Therefore roles holding `attendance.mark` do NOT necessarily hold `attendance.view`.
++ * Gate strictly on `attendance.view` only.
++ */
++export function useAttendanceSessions() {
++  const perms = currentPermissions();
++  return useQuery<SessionsResponse>({
++    queryKey: attendanceKeys.sessions(),
++    queryFn: () => api.get("/api/attendance/sessions"),
++    enabled: can("attendance.view", perms),
++  });
++}
++
++export function useAttendanceSession(id: string) {
++  const perms = currentPermissions();
++  return useQuery<AttendanceSession>({
++    queryKey: attendanceKeys.session(id),
++    queryFn: () => api.get(`/api/attendance/sessions/${id}`),
++    enabled: Boolean(id) && can("attendance.view", perms),
++  });
++}
++
++export interface CreateAttendanceSessionBody {
++  scheduledClassId: string;
++  date: string;
++  submissionDeadline?: string;
++}
++
++export function useCreateAttendanceSession() {
++  const qc = useQueryClient();
++  return useMutation<{ session: AttendanceSession; recordCount: number }, ApiError, CreateAttendanceSessionBody>({
++    mutationFn: (body) => api.post("/api/attendance/sessions", body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: attendanceKeys.sessions() });
++    },
++    onError: toastError,
++  });
++}
++
++export interface MarkRecordsBody {
++  records: { studentId: string; status: string }[];
++}
++
++// MF1: exactly one mutationFn ΓÇö uses apiPatch (the API uses PATCH for this endpoint)
++export function useMarkAttendance(sessionId: string) {
++  const qc = useQueryClient();
++  return useMutation<{ changed: number }, ApiError, MarkRecordsBody>({
++    mutationFn: (body) => apiPatch(`/api/attendance/sessions/${sessionId}/records`, body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: attendanceKeys.session(sessionId) });
++    },
++    onError: toastError,
++  });
++}
++
++export function useSubmitSession(sessionId: string) {
++  const qc = useQueryClient();
++  return useMutation<AttendanceSession, ApiError, void>({
++    mutationFn: () => api.post(`/api/attendance/sessions/${sessionId}/submit`),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: attendanceKeys.session(sessionId) });
++      qc.invalidateQueries({ queryKey: attendanceKeys.sessions() });
++    },
++    onError: toastError,
++  });
++}
++
++export function useFinalizeSession(sessionId: string) {
++  const qc = useQueryClient();
++  return useMutation<AttendanceSession, ApiError, void>({
++    mutationFn: () => api.post(`/api/attendance/sessions/${sessionId}/finalize`),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: attendanceKeys.session(sessionId) });
++      qc.invalidateQueries({ queryKey: attendanceKeys.sessions() });
++    },
++    onError: toastError,
++  });
++}
++
++// ΓöÇΓöÇΓöÇ Corrections ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++interface CorrectionsResponse { corrections: AttendanceCorrection[]; }
++
++/**
++ * useCorrections is gated on attendance.correct (the review permission).
++ * Faculty with only attendance.mark cannot call GET /api/attendance/corrections
++ * (the API returns 403). The Screen 7 design handles this with an explicit
++ * empty-state message for attendance.mark-only users.
++ */
++export function useCorrections(status?: string) {
++  const perms = currentPermissions();
++  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
++  return useQuery<CorrectionsResponse>({
++    queryKey: attendanceKeys.corrections(status),
++    queryFn: () => api.get(`/api/attendance/corrections${qs}`),
++    enabled: can("attendance.correct", perms),
++  });
++}
++
++export interface SubmitCorrectionBody {
++  attendanceRecordId: string;
++  requestedStatus: string;
++  reason: string;
++}
++
++export function useSubmitCorrection() {
++  const qc = useQueryClient();
++  return useMutation<AttendanceCorrection, ApiError, SubmitCorrectionBody>({
++    mutationFn: (body) => api.post("/api/attendance/corrections", body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
++    },
++    onError: toastError,
++  });
++}
++
++export interface ReviewCorrectionBody { reviewNote?: string; }
++
++export function useApproveCorrection(correctionId: string) {
++  const qc = useQueryClient();
++  return useMutation<AttendanceCorrection, ApiError, ReviewCorrectionBody>({
++    mutationFn: (body) => api.post(`/api/attendance/corrections/${correctionId}/approve`, body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
++    },
++    onError: toastError,
++  });
++}
++
++export function useRejectCorrection(correctionId: string) {
++  const qc = useQueryClient();
++  return useMutation<AttendanceCorrection, ApiError, ReviewCorrectionBody>({
++    mutationFn: (body) => api.post(`/api/attendance/corrections/${correctionId}/reject`, body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: ["attendance", "corrections"] });
++    },
++    onError: toastError,
++  });
++}
++
++// ΓöÇΓöÇΓöÇ Reports ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export function useSectionReport(sectionId: string, academicTermId: string) {
++  const perms = currentPermissions();
++  return useQuery<SectionReport>({
++    queryKey: attendanceKeys.report(sectionId, academicTermId),
++    queryFn: () =>
++      api.get(`/api/attendance/reports/section/${sectionId}?academicTermId=${encodeURIComponent(academicTermId)}`),
++    enabled: Boolean(sectionId) && Boolean(academicTermId) && can("attendance.view", perms),
++  });
++}
+diff --git a/apps/web/src/features/attendance/keys.ts b/apps/web/src/features/attendance/keys.ts
+new file mode 100644
+index 0000000..d6f9bb8
+--- /dev/null
++++ b/apps/web/src/features/attendance/keys.ts
+@@ -0,0 +1,12 @@
++// features/attendance/keys.ts
++
++export const attendanceKeys = {
++  sessions: () => ["attendance", "sessions"] as const,
++  session: (id: string) => ["attendance", "sessions", id] as const,
++
++  corrections: (status?: string) =>
++    ["attendance", "corrections", status ?? "all"] as const,
++
++  report: (sectionId: string, termId: string) =>
++    ["attendance", "report", sectionId, termId] as const,
++} as const;
+diff --git a/apps/web/src/features/attendance/types.ts b/apps/web/src/features/attendance/types.ts
+new file mode 100644
+index 0000000..00b584a
+--- /dev/null
++++ b/apps/web/src/features/attendance/types.ts
+@@ -0,0 +1,53 @@
++// features/attendance/types.ts
++
++export type SessionStatus = "OPEN" | "SUBMITTED" | "FINALIZED";
++export type AttendanceStatus = "PRESENT" | "ABSENT" | "LATE" | "EXCUSED";
++export type CorrectionReviewStatus = "PENDING" | "APPROVED" | "REJECTED";
++
++export interface AttendanceSession {
++  id: string;
++  institutionId: string;
++  scheduledClassId: string;
++  date: string;               // ISO date string YYYY-MM-DD
++  submissionDeadline: string | null;
++  status: SessionStatus;
++  submittedAt: string | null;
++  finalizedAt: string | null;
++  createdAt: string;
++  updatedAt: string;
++  records?: AttendanceRecord[];
++}
++
++export interface AttendanceRecord {
++  id: string;
++  sessionId: string;
++  studentId: string;
++  status: AttendanceStatus;
++  markedByUserId: string | null;
++  markedAt: string | null;
++}
++
++export interface AttendanceCorrection {
++  id: string;
++  institutionId: string;
++  attendanceRecordId: string;
++  requestedStatus: AttendanceStatus;
++  reason: string;
++  reviewStatus: CorrectionReviewStatus;
++  reviewedByUserId: string | null;
++  reviewedAt: string | null;
++  reviewNote: string | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface SectionReportEntry {
++  studentId: string;
++  rate: number; // attendance rate, 0..100
++}
++
++export interface SectionReport {
++  perStudent: SectionReportEntry[];
++  lowAttendance: SectionReportEntry[];
++  thresholdPercent: number;
++}
+diff --git a/apps/web/src/features/attendance/utils.ts b/apps/web/src/features/attendance/utils.ts
+new file mode 100644
+index 0000000..d00da07
+--- /dev/null
++++ b/apps/web/src/features/attendance/utils.ts
+@@ -0,0 +1,7 @@
++// features/attendance/utils.ts
++
++/** Returns today's date as a YYYY-MM-DD ISO string.
++ * UTC date (matches server storage) */
++export function todayISO(): string {
++  return new Date().toISOString().slice(0, 10);
++}
+diff --git a/apps/web/src/features/classes/formSchemas.ts b/apps/web/src/features/classes/formSchemas.ts
+new file mode 100644
+index 0000000..ca9cbf6
+--- /dev/null
++++ b/apps/web/src/features/classes/formSchemas.ts
+@@ -0,0 +1,41 @@
++// features/classes/formSchemas.ts
++import { z } from "zod";
++
++// ΓöÇΓöÇΓöÇ Class Sections ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export const createSectionSchema = z.object({
++  programId:         z.string().min(1, "Program is required"),
++  academicSessionId: z.string().min(1, "Session is required"),
++  academicTermId:    z.string().min(1, "Term is required"),
++  label:             z.string().max(120).optional(),
++  capacity:          z.number({ coerce: true }).int().positive().optional(),
++  status:            z.enum(["PLANNED", "ACTIVE", "CLOSED", "CANCELLED"]).optional(),
++});
++export type CreateSectionInput = z.infer<typeof createSectionSchema>;
++
++export const editSectionSchema = z.object({
++  label:    z.string().max(120).optional(),
++  capacity: z.number({ coerce: true }).int().positive().optional(),
++  status:   z.enum(["PLANNED", "ACTIVE", "CLOSED", "CANCELLED"]).optional(),
++});
++export type EditSectionInput = z.infer<typeof editSectionSchema>;
++
++// ΓöÇΓöÇΓöÇ Faculty Assignment ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export const assignFacultySchema = z.object({
++  facultyId:            z.string().min(1, "Faculty is required"),
++  subjectId:            z.string().min(1, "Subject is required"),
++  academicTermId:       z.string().min(1, "Term is required"),
++  classSectionId:       z.string().optional(),
++  role:                 z.enum(["PRIMARY", "SUBSTITUTE", "ASSISTANT"]).default("PRIMARY"),
++  replacesAssignmentId: z.string().optional(),
++});
++export type AssignFacultyInput = z.infer<typeof assignFacultySchema>;
++
++// ΓöÇΓöÇΓöÇ Timetable ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export const createTimetableSchema = z.object({
++  academicTermId: z.string().min(1, "Term is required"),
++  name:           z.string().min(1, "Name is required").max(120),
++});
++export type CreateTimetableInput = z.infer<typeof createTimetableSchema>;
+diff --git a/apps/web/src/features/classes/hooks.ts b/apps/web/src/features/classes/hooks.ts
+new file mode 100644
+index 0000000..6c78af9
+--- /dev/null
++++ b/apps/web/src/features/classes/hooks.ts
+@@ -0,0 +1,196 @@
++// features/classes/hooks.ts
++// NIT-9: No "use client" directive ΓÇö hooks files are plain TS modules, not page/component files.
++// This matches features/academics/hooks.ts.
++
++import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
++import { toast } from "sonner";
++import { api, ApiError } from "@/lib/api";
++import { useAuthStore } from "@/stores/auth";
++import { can } from "@/lib/authz";
++import { classesKeys } from "./keys";
++import type {
++  ClassSection,
++  FacultyAssignment,
++  Timetable,
++  ConflictReport,
++} from "./types";
++
++// ΓöÇΓöÇΓöÇ Helpers (mirror of academics/hooks.ts) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
++
++/**
++ * PATCH helper. lib/api.ts exposes only get/post/put/delete; PATCH is issued
++ * here using the same token/ApiError/auto-logout semantics.
++ */
++async function apiPatch<T>(endpoint: string, body?: unknown): Promise<T> {
++  const token = useAuthStore.getState().token;
++  const headers: Record<string, string> = { "Content-Type": "application/json" };
++  if (token) headers["Authorization"] = `Bearer ${token}`;
++  const res = await fetch(`${API_BASE}${endpoint}`, {
++    method: "PATCH",
++    headers,
++    body: body !== undefined ? JSON.stringify(body) : undefined,
++  });
++  const data = await res.json().catch(() => ({}));
++  if (!res.ok) {
++    if (res.status === 401) useAuthStore.getState().logout();
++    throw new ApiError(res.status, data);
++  }
++  return data as T;
++}
++
++function currentPermissions(): string[] {
++  return useAuthStore.getState().permissions;
++}
++
++function toastError(error: unknown): void {
++  const message =
++    error instanceof ApiError
++      ? error.message
++      : error instanceof Error
++        ? error.message
++        : "Something went wrong.";
++  toast.error(message);
++}
++
++// ΓöÇΓöÇΓöÇ Sections ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++interface SectionsResponse { sections: ClassSection[]; }
++
++export function useSections() {
++  const perms = currentPermissions();
++  return useQuery<SectionsResponse>({
++    queryKey: classesKeys.sections(),
++    queryFn: () => api.get("/api/classes/sections"),
++    enabled: can("classes.view", perms) || can("classes.sections.manage", perms),
++  });
++}
++
++export function useSection(id: string) {
++  const perms = currentPermissions();
++  return useQuery<ClassSection>({
++    queryKey: classesKeys.section(id),
++    queryFn: () => api.get(`/api/classes/sections/${id}`),
++    enabled: Boolean(id) && (can("classes.view", perms) || can("classes.sections.manage", perms)),
++  });
++}
++
++export interface CreateSectionBody {
++  programId: string;
++  academicSessionId: string;
++  academicTermId: string;
++  label?: string;
++  capacity?: number;
++  status?: string;
++}
++
++export function useCreateSection() {
++  const qc = useQueryClient();
++  return useMutation<ClassSection, ApiError, CreateSectionBody>({
++    mutationFn: (body) => api.post("/api/classes/sections", body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: classesKeys.sections() });
++    },
++    onError: toastError,
++  });
++}
++
++export interface PatchSectionBody {
++  label?: string;
++  capacity?: number;
++  status?: string;
++}
++
++export function useUpdateSection(id: string) {
++  const qc = useQueryClient();
++  return useMutation<ClassSection, ApiError, PatchSectionBody>({
++    mutationFn: (body) => apiPatch(`/api/classes/sections/${id}`, body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: classesKeys.sections() });
++      qc.invalidateQueries({ queryKey: classesKeys.section(id) });
++    },
++    onError: toastError,
++  });
++}
++
++// ΓöÇΓöÇΓöÇ Faculty assignments ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export interface AssignFacultyBody {
++  facultyId: string;
++  subjectId: string;
++  academicTermId: string;
++  classSectionId?: string;
++  role?: string;
++  replacesAssignmentId?: string;
++}
++
++export function useAssignFaculty() {
++  const qc = useQueryClient();
++  return useMutation<FacultyAssignment, ApiError, AssignFacultyBody>({
++    mutationFn: (body) => api.post("/api/classes/faculty/assign", body),
++    onSuccess: (_data, vars) => {
++      // Always invalidate timetables (assignment changes affect scheduling context)
++      qc.invalidateQueries({ queryKey: classesKeys.timetables() });
++      // Invalidate the specific section detail when a section-scoped assignment was made
++      if (vars.classSectionId) {
++        qc.invalidateQueries({ queryKey: classesKeys.section(vars.classSectionId) });
++      }
++      // Note: non-section (term-level) assignments have no dedicated cache key yet
++      // because there is no GET /api/classes/faculty/assignments endpoint (API gap ┬º4.1).
++      // Adding the timetables invalidation above ensures the timetable grid refreshes.
++    },
++    onError: toastError,
++  });
++}
++
++// ΓöÇΓöÇΓöÇ Timetables ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++interface TimetablesResponse { timetables: Timetable[]; }
++
++export function useTimetables() {
++  const perms = currentPermissions();
++  return useQuery<TimetablesResponse>({
++    queryKey: classesKeys.timetables(),
++    queryFn: () => api.get("/api/classes/timetables"),
++    enabled: can("classes.view", perms) || can("classes.timetable.manage", perms),
++  });
++}
++
++export function useTimetable(id: string) {
++  const perms = currentPermissions();
++  return useQuery<Timetable>({
++    queryKey: classesKeys.timetable(id),
++    queryFn: () => api.get(`/api/classes/timetables/${id}`),
++    enabled: Boolean(id) && (can("classes.view", perms) || can("classes.timetable.manage", perms)),
++  });
++}
++
++export interface CreateTimetableBody { academicTermId: string; name: string; }
++
++/* forward-declared, used by future timetable-management page */
++export function useCreateTimetable() {
++  const qc = useQueryClient();
++  return useMutation<Timetable, ApiError, CreateTimetableBody>({
++    mutationFn: (body) => api.post("/api/classes/timetables", body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: classesKeys.timetables() });
++    },
++    onError: toastError,
++  });
++}
++
++export interface PublishTimetableBody { acceptWarnings?: boolean; }
++export interface PublishResult { timetable: Timetable; warnings: unknown[] }
++
++export function usePublishTimetable(id: string) {
++  const qc = useQueryClient();
++  return useMutation<PublishResult, ApiError, PublishTimetableBody>({
++    mutationFn: (body) => api.post(`/api/classes/timetables/${id}/publish`, body),
++    onSuccess: () => {
++      qc.invalidateQueries({ queryKey: classesKeys.timetable(id) });
++      qc.invalidateQueries({ queryKey: classesKeys.timetables() });
++    },
++    // onError NOT called here ΓÇö Screen 4 handles 409 discrimination inline.
++  });
++}
+diff --git a/apps/web/src/features/classes/keys.ts b/apps/web/src/features/classes/keys.ts
+new file mode 100644
+index 0000000..6ac554b
+--- /dev/null
++++ b/apps/web/src/features/classes/keys.ts
+@@ -0,0 +1,22 @@
++// features/classes/keys.ts
++
++/**
++ * TanStack Query key factory for the classes domain.
++ *
++ * NOTE: classesKeys.sections() has NO filter parameter, because
++ * GET /api/classes/sections accepts no ?status= query parameter.
++ * Status filtering in Screen 1 is entirely client-side, so a single
++ * shared cache entry is correct and intentional. This deviates from
++ * academicsKeys.sessions({ status }) ΓÇö that filter is server-side;
++ * this one is not.
++ */
++export const classesKeys = {
++  sections: () => ["classes", "sections"] as const,
++  section: (id: string) => ["classes", "sections", id] as const,
++
++  timetables: () => ["classes", "timetables"] as const,
++  timetable: (id: string) => ["classes", "timetables", id] as const,
++
++  courses: () => ["classes", "courses"] as const,
++  course: (id: string) => ["classes", "courses", id] as const,
++} as const;
+diff --git a/apps/web/src/features/classes/types.ts b/apps/web/src/features/classes/types.ts
+new file mode 100644
+index 0000000..c6037fb
+--- /dev/null
++++ b/apps/web/src/features/classes/types.ts
+@@ -0,0 +1,113 @@
++// features/classes/types.ts
++
++export type SectionStatus = "PLANNED" | "ACTIVE" | "CLOSED" | "CANCELLED";
++export type AssignmentRole = "PRIMARY" | "SUBSTITUTE" | "ASSISTANT";
++export type AssignmentStatus = "ACTIVE" | "ENDED";
++export type DayOfWeek = "SUN" | "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT";
++export type ScheduledClassStatus = "SCHEDULED" | "CANCELLED";
++export type TimetableStatus = "DRAFT" | "PUBLISHED";
++
++export interface ClassSection {
++  id: string;
++  institutionId: string;
++  programId: string;
++  academicSessionId: string;
++  academicTermId: string;
++  label: string | null;
++  capacity: number | null;
++  status: SectionStatus;
++  createdAt: string;
++  updatedAt: string;
++  // Only present on GET /sections/:id
++  enrollments?: ClassEnrollment[];
++}
++
++export interface ClassEnrollment {
++  id: string;
++  classSectionId: string;
++  studentId: string;
++  status: string;
++  enrolledAt: string;
++}
++
++export interface FacultyProfile {
++  id: string;
++  institutionId: string;
++  userId: string;
++  name: string;
++  departmentId: string | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface FacultyAssignment {
++  id: string;
++  institutionId: string;
++  facultyId: string;
++  subjectId: string;
++  classSectionId: string | null;
++  academicTermId: string;
++  role: AssignmentRole;
++  status: AssignmentStatus;
++  endedAt: string | null; // set when status transitions to ENDED
++  createdAt: string;
++  updatedAt?: string; // NIT-10: optional ΓÇö may not be present in all API responses
++}
++
++export interface Course {
++  id: string;
++  institutionId: string;
++  programId: string;
++  name: string;
++  code: string;
++  description: string | null;
++  academicTermId: string | null;
++  status: string;
++  createdAt: string;
++  updatedAt: string;
++  subjects?: Subject[];
++}
++
++export interface Subject {
++  id: string;
++  courseId: string;
++  name: string;
++  code: string;
++  credits: number | null;
++  contactHoursPerWeek: number | null;
++  status: string;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface Timetable {
++  id: string;
++  institutionId: string;
++  academicTermId: string;
++  name: string;
++  status: TimetableStatus;
++  createdAt: string;
++  updatedAt: string;
++  scheduledClasses?: ScheduledClass[];
++}
++
++export interface ScheduledClass {
++  id: string;
++  timetableId: string;
++  classSectionId: string;
++  subjectId: string;
++  facultyId: string;
++  academicTermId: string;
++  room: string | null;
++  dayOfWeek: DayOfWeek | null;
++  date: string | null;
++  startTime: number; // minute-of-day, 0..1440
++  endTime: number;
++  period: string | null;
++  status: ScheduledClassStatus;
++}
++
++/** Placeholder ΓÇö actual shape is not documented in the API contract. */
++export interface ConflictReport {
++  [key: string]: unknown;
++}
+diff --git a/apps/web/src/features/classes/utils.ts b/apps/web/src/features/classes/utils.ts
+new file mode 100644
+index 0000000..d93d438
+--- /dev/null
++++ b/apps/web/src/features/classes/utils.ts
+@@ -0,0 +1,8 @@
++// features/classes/utils.ts
++
++/** Converts a minute-of-day integer (0..1440) to HH:MM display label. */
++export function minuteToLabel(m: number): string {
++  const h = Math.floor(m / 60).toString().padStart(2, "0");
++  const min = (m % 60).toString().padStart(2, "0");
++  return `${h}:${min}`;
++}
+diff --git a/apps/web/src/features/modules/useModuleActive.ts b/apps/web/src/features/modules/useModuleActive.ts
+index cb5a1da..c09012a 100644
+--- a/apps/web/src/features/modules/useModuleActive.ts
++++ b/apps/web/src/features/modules/useModuleActive.ts
+@@ -15,12 +15,18 @@ export type ModuleActiveStatus = "active" | "inactive" | "forbidden" | "unknown"
+ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
+   const permissions = useAuthStore((s) => s.permissions);
+ 
+-  // Choose a probe matching a permission the user holds (fees only for now).
++  // Choose a probe matching a permission the user holds.
+   let probePath: string | null = null;
+   if (moduleKey === "fees") {
+     if (can("fees.view", permissions)) probePath = "/api/fees/structures";
+     else if (can("fees.view_own", permissions)) probePath = "/api/fees/me/outstanding";
+   }
++  if (moduleKey === "attendance") {
++    if (can("attendance.view", permissions))         probePath = "/api/attendance/sessions";
++    else if (can("attendance.mark", permissions))    probePath = "/api/attendance/sessions";
++    else if (can("attendance.correct", permissions)) probePath = "/api/attendance/corrections";
++    // attendance.view_own (student) is NOT included in the Attendance staff nav item.
++  }
+ 
+   const query = useQuery<ModuleActiveStatus, never>({
+     queryKey: ["module-active", moduleKey],
