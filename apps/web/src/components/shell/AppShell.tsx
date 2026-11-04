@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -81,6 +81,15 @@ const NAV: NavItem[] = [
     icon: ClipboardList,
     anyOf: ["attendance.view", "attendance.mark", "attendance.correct"],
     module: "attendance",
+  },
+  // ── Examinations — module-gated: exams.* routes call requireModuleActive("examinations").
+  // anyOf includes exams.results.view_own so students reach /exams/my-results.
+  {
+    href: "/exams",
+    label: "Examinations",
+    icon: FileCheck,
+    anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own"],
+    module: "examinations",
   },
 ];
 

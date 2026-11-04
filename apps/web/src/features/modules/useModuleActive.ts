@@ -28,6 +28,11 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     // attendance.view_own (student) is NOT included in the Attendance staff nav item.
   }
 
+  if (moduleKey === "examinations") {
+    if (can("exams.results.view", permissions)) probePath = "/api/exams";
+    else if (can("exams.results.view_own", permissions)) probePath = "/api/exams/me/results";
+  }
+
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,
