@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase-6 admissions BEHAVIORAL integration suite (design §11) — runs against the
  * REAL Supabase instance through a REAL Fastify app (real `authenticate` + the
  * real admissionsRoutes + the real withTenant/RLS path). It proves the guarantees
@@ -981,5 +981,145 @@ describe("Phase-6 admissions behavioral (real DB, real routes)", () => {
     await setAdmissionsState(instA, "ACTIVE");
     const stillThere = await adminClient.application.findUnique({ where: { id: applicationId } });
     expect(stillThere).toBeTruthy();
+  }, 180_000);
+
+  // ─── G4/G5/G6: applicant + officer read surfaces and the draft edit ─────────
+
+  it("LOOKUPS (G4): officer gets minimal programs+sessions of ONLY its tenant; applicant/foreign-tenant officer see no cross-tenant data; applicant is 403", async () => {
+    const own = await app.inject({ method: "GET", url: "/api/admissions/lookups", headers: authHeader(officerToken()) });
+    expect(own.statusCode).toBe(200);
+    const body = own.json() as { programs: Array<Record<string, unknown>>; sessions: Array<Record<string, unknown>> };
+    expect(body.programs.map((p) => p.id).sort()).toEqual([programA, programA2].sort());
+    expect(Object.keys(body.programs[0]).sort()).toEqual(["code", "id", "name"]);
+    expect(body.sessions.map((s) => s.id)).toEqual([sessionA]);
+    expect(Object.keys(body.sessions[0]).sort()).toEqual(["id", "name", "status"]);
+
+    // Tenant B's officer sees none of tenant A's programs/sessions (RLS + institutionId).
+    const foreign = await app.inject({ method: "GET", url: "/api/admissions/lookups", headers: authHeader(officerTokenB()) });
+    expect(foreign.statusCode).toBe(200);
+    expect(foreign.json()).toEqual({ programs: [], sessions: [] });
+
+    // An applicant (view_own only) is denied.
+    const email = `${PFX.toLowerCase()}applicant_lookups@a.test`;
+    const campaignId = await seedCampaign("lookups");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admissions/applications",
+      headers: authHeader(officerToken()),
+      payload: { campaignId, programId: programA, applicantEmail: email },
+    });
+    const applicantToken = tokenFor(created.json().applicantUserId as string, "STUDENT", instA);
+    const denied = await app.inject({ method: "GET", url: "/api/admissions/lookups", headers: authHeader(applicantToken) });
+    expect(denied.statusCode).toBe(403);
+  }, 180_000);
+
+  it("OPEN CAMPAIGNS (G5): applicant sees only OPEN campaigns with program names + public config; DRAFT/CLOSED hidden; officer denied; staff campaign reads carry names", async () => {
+    const openId = await seedCampaign("g5open", { config: { requiredFields: ["fullName"], requiredDocTypes: ["TRANSCRIPT"] } });
+    const draftId = await seedCampaign("g5draft", { status: "DRAFT" });
+    const closedId = await seedCampaign("g5closed", { status: "CLOSED" });
+
+    const email = `${PFX.toLowerCase()}applicant_g5@a.test`;
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admissions/applications",
+      headers: authHeader(officerToken()),
+      payload: { campaignId: openId, programId: programA, applicantEmail: email },
+    });
+    expect(created.statusCode).toBe(201);
+    const applicantToken = tokenFor(created.json().applicantUserId as string, "STUDENT", instA);
+
+    const list = await app.inject({ method: "GET", url: "/api/admissions/campaigns/open?pageSize=100", headers: authHeader(applicantToken) });
+    expect(list.statusCode).toBe(200);
+    const campaigns = list.json().campaigns as Array<{ id: string; programs: Array<{ id: string; name: string }>; config: unknown }>;
+    const ids = campaigns.map((c) => c.id);
+    expect(ids).toContain(openId);
+    expect(ids).not.toContain(draftId);
+    expect(ids).not.toContain(closedId);
+    const mine = campaigns.find((c) => c.id === openId)!;
+    expect(Object.keys(mine).sort()).toEqual(["closeAt", "config", "id", "name", "openAt", "programs"]);
+    expect(mine.config).toEqual({ requiredFields: ["fullName"], requiredDocTypes: ["TRANSCRIPT"] });
+    expect(mine.programs.map((p) => p.id)).toContain(programA);
+    expect(mine.programs.find((p) => p.id === programA)!.name).toBe(`${PFX}BCA`);
+
+    // Detail: OPEN ok, DRAFT/CLOSED -> 404.
+    expect((await app.inject({ method: "GET", url: `/api/admissions/campaigns/open/${openId}`, headers: authHeader(applicantToken) })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/admissions/campaigns/open/${draftId}`, headers: authHeader(applicantToken) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/admissions/campaigns/open/${closedId}`, headers: authHeader(applicantToken) })).statusCode).toBe(404);
+
+    // Staff (no view_own) are denied the applicant surface.
+    expect((await app.inject({ method: "GET", url: "/api/admissions/campaigns/open", headers: authHeader(officerToken()) })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: "/api/admissions/campaigns/open", headers: authHeader(adminToken()) })).statusCode).toBe(403);
+
+    // Applicant /mine carries campaign + program names.
+    const mineRes = await app.inject({ method: "GET", url: "/api/admissions/applications/mine", headers: authHeader(applicantToken) });
+    expect(mineRes.statusCode).toBe(200);
+    const row = (mineRes.json().applications as Array<{ id: string; campaign: { name: string }; program: { name: string } }>)[0];
+    expect(row.campaign.name).toBe(`${PFX}Campaign g5open`);
+    expect(row.program.name).toBe(`${PFX}BCA`);
+
+    // Staff campaign read carries program + session names.
+    const staff = await app.inject({ method: "GET", url: `/api/admissions/campaigns/${openId}`, headers: authHeader(officerToken()) });
+    expect(staff.statusCode).toBe(200);
+    expect(staff.json().intakeSession.name).toBe(`${PFX}Session`);
+    expect(staff.json().targetProgram.name).toBe(`${PFX}BCA`);
+
+    // Tenant isolation: tenant B's officer cannot read A's campaign.
+    expect((await app.inject({ method: "GET", url: `/api/admissions/campaigns/${openId}`, headers: authHeader(officerTokenB()) })).statusCode).toBe(404);
+  }, 180_000);
+
+  it("DRAFT EDIT (G6): owner edits a DRAFT's formData; non-owner 404; staff 403; after SUBMIT the edit is 409 and formData is unchanged", async () => {
+    const campaignId = await seedCampaign("g6", { config: { requiredFields: ["fullName"], requiredDocTypes: [] } });
+    const mk = async (email: string) => {
+      const r = await app.inject({
+        method: "POST",
+        url: "/api/admissions/applications",
+        headers: authHeader(officerToken()),
+        payload: { campaignId, programId: programA, applicantEmail: email, formData: {} },
+      });
+      expect(r.statusCode).toBe(201);
+      return { applicationId: r.json().id as string, token: tokenFor(r.json().applicantUserId as string, "STUDENT", instA) };
+    };
+    const owner = await mk(`${PFX.toLowerCase()}applicant_g6a@a.test`);
+    const other = await mk(`${PFX.toLowerCase()}applicant_g6b@a.test`);
+
+    // Submitting an empty draft fails on the missing required field...
+    const early = await app.inject({ method: "POST", url: `/api/admissions/applications/${owner.applicationId}/submit`, headers: authHeader(owner.token), payload: {} });
+    expect(early.statusCode).toBe(422);
+
+    // ...the owner fixes it via PATCH, then submit succeeds.
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/api/admissions/applications/${owner.applicationId}`,
+      headers: authHeader(owner.token),
+      payload: { formData: { fullName: "Edited Name" } },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().formData).toEqual({ fullName: "Edited Name" });
+
+    // A different applicant (same tenant) cannot edit it -> 404; officer/admin -> 403.
+    const foreign = await app.inject({ method: "PATCH", url: `/api/admissions/applications/${owner.applicationId}`, headers: authHeader(other.token), payload: { formData: { fullName: "Hijack" } } });
+    expect(foreign.statusCode).toBe(404);
+    expect((await app.inject({ method: "PATCH", url: `/api/admissions/applications/${owner.applicationId}`, headers: authHeader(officerToken()), payload: { formData: { fullName: "x" } } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PATCH", url: `/api/admissions/applications/${owner.applicationId}`, headers: authHeader(adminToken()), payload: { formData: { fullName: "x" } } })).statusCode).toBe(403);
+    // Cross-tenant: tenant B's officer is denied (403: no view_own) and the row is untouched.
+    expect((await app.inject({ method: "PATCH", url: `/api/admissions/applications/${owner.applicationId}`, headers: authHeader(officerTokenB()), payload: { formData: { fullName: "x" } } })).statusCode).toBe(403);
+
+    // Bad body -> 400.
+    expect((await app.inject({ method: "PATCH", url: `/api/admissions/applications/${owner.applicationId}`, headers: authHeader(owner.token), payload: { formData: { a: 1 }, status: "ACCEPTED" } })).statusCode).toBe(400);
+
+    const submit = await app.inject({ method: "POST", url: `/api/admissions/applications/${owner.applicationId}/submit`, headers: authHeader(owner.token), payload: {} });
+    expect(submit.statusCode).toBe(200);
+
+    // Now SUBMITTED: the edit is refused and the stored formData is unchanged.
+    const late = await app.inject({
+      method: "PATCH",
+      url: `/api/admissions/applications/${owner.applicationId}`,
+      headers: authHeader(owner.token),
+      payload: { formData: { fullName: "Too Late" } },
+    });
+    expect(late.statusCode).toBe(409);
+    const row = await adminClient.application.findUnique({ where: { id: owner.applicationId } });
+    expect(row?.formData).toEqual({ fullName: "Edited Name" });
+    expect(row?.status).toBe("SUBMITTED");
   }, 180_000);
 });

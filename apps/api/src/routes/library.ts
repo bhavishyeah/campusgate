@@ -19,6 +19,9 @@ import {
   payLibraryFineSchema,
   catalogueSearchQuerySchema,
   libraryReportQuerySchema,
+  libraryLoanListQuerySchema,
+  libraryReservationListQuerySchema,
+  libraryStudentLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -1678,6 +1681,148 @@ export async function libraryRoutes(app: FastifyInstance) {
       });
       if ("notFound" in outcome) return reply.status(404).send({ error: "student not found" });
       return reply.send({ fines: outcome.fines });
+    },
+  );
+
+  // ─── 8.9b STAFF CIRCULATION READS (library.books.view / library.issue) ───────
+
+  // Minimal student projection shared by the staff reads — never dob/phone/address.
+  const studentDisplaySelect = {
+    id: true,
+    name: true,
+    enrollmentNo: true,
+    program: true,
+  } as const;
+
+  // GET /loans — staff loan list with joined student + book display fields.
+  // Filters: status, overdue=true (still-open and past due), studentId.
+  app.get(
+    "/loans",
+    { preHandler: [requirePermission("library.books.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = libraryLoanListQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { status, overdue, studentId, page, pageSize } = parsed.data;
+      const now = new Date();
+
+      const result = await withTenant(institutionId, async (tx) => {
+        const where: Prisma.LibraryLoanWhereInput = {
+          institutionId,
+          ...(status ? { status } : {}),
+          ...(studentId ? { studentId } : {}),
+          ...(overdue === "true"
+            ? { status: status ?? { in: ["ACTIVE", "OVERDUE"] }, returnDate: null, dueDate: { lt: now } }
+            : {}),
+        };
+        const openFirst = overdue === "true" || status === "ACTIVE" || status === "OVERDUE";
+        const [total, loans] = await Promise.all([
+          tx.libraryLoan.count({ where }),
+          tx.libraryLoan.findMany({
+            where,
+            orderBy: openFirst
+              ? [{ dueDate: "asc" }, { id: "asc" }]
+              : [{ issueDate: "desc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            include: {
+              student: { select: studentDisplaySelect },
+              bookCopy: {
+                select: {
+                  id: true,
+                  accessionNumber: true,
+                  bookTitle: { select: { id: true, title: true, author: true } },
+                },
+              },
+            },
+          }),
+        ]);
+        return { total, loans };
+      });
+
+      const loans = result.loans.map((l) => ({
+        ...l,
+        isOverdue:
+          (l.status === "ACTIVE" || l.status === "OVERDUE") && l.returnDate === null && l.dueDate < now,
+      }));
+      return reply.send({ loans, total: result.total, page, pageSize });
+    },
+  );
+
+  // GET /reservations — staff reservation queue with joined display fields.
+  app.get(
+    "/reservations",
+    { preHandler: [requirePermission("library.books.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = libraryReservationListQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { status, bookTitleId, page, pageSize } = parsed.data;
+
+      const result = await withTenant(institutionId, async (tx) => {
+        const where: Prisma.BookReservationWhereInput = {
+          institutionId,
+          ...(status ? { status } : {}),
+          ...(bookTitleId ? { bookTitleId } : {}),
+        };
+        const queueOrder = status === undefined || status === "PENDING" || status === "FULFILLED";
+        const [total, reservations] = await Promise.all([
+          tx.bookReservation.count({ where }),
+          tx.bookReservation.findMany({
+            where,
+            orderBy: queueOrder
+              ? [{ reservedAt: "asc" }, { id: "asc" }]
+              : [{ reservedAt: "desc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            include: {
+              student: { select: studentDisplaySelect },
+              bookTitle: { select: { id: true, title: true, author: true } },
+              fulfilledByCopy: { select: { id: true, accessionNumber: true } },
+            },
+          }),
+        ]);
+        return { total, reservations };
+      });
+
+      return reply.send({
+        reservations: result.reservations,
+        total: result.total,
+        page,
+        pageSize,
+      });
+    },
+  );
+
+  // GET /students/lookup?q= — library-scoped student picker for the issue desk.
+  // Gated by library.issue (NOT students.view); returns only id/name/enrollmentNo/program.
+  app.get(
+    "/students/lookup",
+    { preHandler: [requirePermission("library.issue"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = libraryStudentLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+
+      const students = await withTenant(institutionId, (tx) =>
+        tx.studentProfile.findMany({
+          where: {
+            institutionId,
+            // Only people who can actually borrow: not an un-enrolled APPLICANT.
+            status: { not: "APPLICANT" },
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { enrollmentNo: { contains: q, mode: "insensitive" } },
+            ],
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: limit,
+          select: studentDisplaySelect,
+        }),
+      );
+
+      return reply.send({ students });
     },
   );
 

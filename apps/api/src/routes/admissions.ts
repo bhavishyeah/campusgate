@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+﻿import type { FastifyInstance, FastifyRequest } from "fastify";
 import bcrypt from "bcrypt";
 import { withTenant, privilegedPrisma, Prisma } from "@campusgate/db";
 import {
@@ -18,6 +18,7 @@ import {
   declineOfferSchema,
   expireOfferSchema,
   enrollApplicationSchema,
+  updateApplicationDraftSchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -200,6 +201,53 @@ export async function admissionsRoutes(app: FastifyInstance) {
     const page = Math.max(1, Number.parseInt(String(q.page ?? "1"), 10) || 1);
     const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(q.pageSize ?? "20"), 10) || 20));
     return { page, pageSize };
+  }
+
+  // Shared staff campaign read shape: program ids + the OFFERED program names
+  // (cheap join: campaignProgramIds already mirrors this set at write time).
+  const campaignReadInclude = {
+    programs: { select: { programId: true, program: { select: { id: true, name: true, code: true } } } },
+    intakeSession: { select: { id: true, name: true } },
+    targetProgram: { select: { id: true, name: true, code: true } },
+  } as const;
+
+  // Applicant-facing campaign projection: ONLY what is needed to apply. No
+  // status flags beyond OPEN, no internal ids (intake session, join rows).
+  const openCampaignSelect = {
+    id: true,
+    name: true,
+    openAt: true,
+    closeAt: true,
+    config: true,
+    programs: { select: { program: { select: { id: true, name: true, code: true } } } },
+    targetProgram: { select: { id: true, name: true, code: true } },
+  } as const;
+
+  type OpenCampaignRow = {
+    id: string;
+    name: string;
+    openAt: Date | null;
+    closeAt: Date | null;
+    config: unknown;
+    programs: { program: { id: string; name: string; code: string } }[];
+    targetProgram: { id: string; name: string; code: string } | null;
+  };
+
+  // Offered programs = targetProgram ∪ join rows (deduped), same set the write
+  // paths validate against; config narrowed to the bounded public shape.
+  function toOpenCampaign(row: OpenCampaignRow) {
+    const byId = new Map<string, { id: string; name: string; code: string }>();
+    if (row.targetProgram) byId.set(row.targetProgram.id, row.targetProgram);
+    for (const p of row.programs) byId.set(p.program.id, p.program);
+    const cfg = parseCampaignConfig(row.config);
+    return {
+      id: row.id,
+      name: row.name,
+      openAt: row.openAt,
+      closeAt: row.closeAt,
+      programs: [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      config: { requiredFields: cfg.requiredFields, requiredDocTypes: cfg.requiredDocTypes },
+    };
   }
 
   // ─── PUBLIC APPLICANT ONBOARDING (declared BEFORE the authenticate hook) ──────
@@ -464,7 +512,7 @@ export async function admissionsRoutes(app: FastifyInstance) {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
-            include: { programs: { select: { programId: true } } },
+            include: campaignReadInclude,
           }),
         ]);
         return { total, campaigns };
@@ -484,7 +532,7 @@ export async function admissionsRoutes(app: FastifyInstance) {
       const outcome = await withTenant(institutionId, async (tx) => {
         const campaign = await tx.admissionCampaign.findFirst({
           where: { id, institutionId },
-          include: { programs: { select: { programId: true } } },
+          include: campaignReadInclude,
         });
         if (!campaign) return { notFound: true as const };
         return { campaign };
@@ -519,6 +567,10 @@ export async function admissionsRoutes(app: FastifyInstance) {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            include: {
+              campaign: { select: { id: true, name: true } },
+              program: { select: { id: true, name: true, code: true } },
+            },
           }),
         ]);
         return { total, applications };
@@ -550,6 +602,8 @@ export async function admissionsRoutes(app: FastifyInstance) {
             ...(canViewAll ? {} : { applicantUserId: request.user.userId }),
           },
           include: {
+            campaign: { select: { id: true, name: true } },
+            program: { select: { id: true, name: true, code: true } },
             documents: { orderBy: { createdAt: "asc" } },
             offers: { orderBy: { offeredAt: "desc" } },
             ...(canViewAll ? { reviews: { orderBy: { reviewedAt: "asc" } } } : {}),
@@ -573,10 +627,97 @@ export async function admissionsRoutes(app: FastifyInstance) {
         return tx.application.findMany({
           where: { institutionId, applicantUserId: userId },
           orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-          include: { offers: { orderBy: { offeredAt: "desc" } } },
+          include: {
+            offers: { orderBy: { offeredAt: "desc" } },
+            campaign: { select: { id: true, name: true } },
+            program: { select: { id: true, name: true, code: true } },
+          },
         });
       });
       return reply.send({ applications: result });
+    },
+  );
+
+  // GET /campaigns/open — applicant-visible OPEN campaigns only. Mirrors the
+  // staff /campaigns shape but strips internal fields (status is always "OPEN";
+  // no config beyond the public requiredFields/requiredDocTypes shape it already
+  // carries). Gated by admissions.view_own (NOT applications.view) so an
+  // APPLICANT — who holds no staff key — can discover what to apply to.
+  app.get(
+    "/campaigns/open",
+    { preHandler: [requirePermission("admissions.view_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { page, pageSize } = pageParams(request.query);
+
+      const result = await withTenant(institutionId, async (tx) => {
+        const where: Prisma.AdmissionCampaignWhereInput = { institutionId, status: "OPEN" };
+        const [total, campaigns] = await Promise.all([
+          tx.admissionCampaign.count({ where }),
+          tx.admissionCampaign.findMany({
+            where,
+            orderBy: [{ openAt: "desc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            select: openCampaignSelect,
+          }),
+        ]);
+        return { total, campaigns };
+      });
+
+      return reply.send({
+        campaigns: result.campaigns.map(toOpenCampaign),
+        total: result.total,
+        page,
+        pageSize,
+      });
+    },
+  );
+
+  // GET /campaigns/open/:id — applicant-visible detail of a single OPEN campaign.
+  app.get(
+    "/campaigns/open/:id",
+    { preHandler: [requirePermission("admissions.view_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { id } = request.params as { id: string };
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const campaign = await tx.admissionCampaign.findFirst({
+          where: { id, institutionId, status: "OPEN" },
+          select: openCampaignSelect,
+        });
+        if (!campaign) return { notFound: true as const };
+        return { campaign };
+      });
+      if ("notFound" in outcome) return reply.status(404).send({ error: "open campaign not found" });
+      return reply.send(toOpenCampaign(outcome.campaign));
+    },
+  );
+
+  // GET /lookups — read-only programs + academic sessions for the campaign and
+  // offer forms. Gated by admissions.campaigns.manage (the officer's own write
+  // key — least privilege: no academics.* grant to ADMISSION_OFFICER).
+  app.get(
+    "/lookups",
+    { preHandler: [requirePermission("admissions.campaigns.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const result = await withTenant(institutionId, async (tx) => {
+        const [programs, sessions] = await Promise.all([
+          tx.program.findMany({
+            where: { institutionId, status: "ACTIVE" },
+            orderBy: [{ name: "asc" }, { id: "asc" }],
+            select: { id: true, name: true, code: true },
+          }),
+          tx.academicSession.findMany({
+            where: { institutionId },
+            orderBy: [{ startDate: "desc" }, { id: "asc" }],
+            select: { id: true, name: true, status: true },
+          }),
+        ]);
+        return { programs, sessions };
+      });
+      return reply.send(result);
     },
   );
 
@@ -690,6 +831,69 @@ export async function admissionsRoutes(app: FastifyInstance) {
       if ("conflict" in outcome) return reply.status(409).send({ error: outcome.conflict });
       if ("unprocessable" in outcome) return reply.status(422).send({ error: outcome.unprocessable });
       return reply.status(201).send(outcome.application);
+    },
+  );
+
+  // ═══ APPLICATIONS — EDIT DRAFT (applicant, admissions.view_own + ownership) ═══
+  // PATCH /applications/:id — replace formData of the caller's OWN application
+  // while it is still DRAFT. Any other status is 409 (the lifecycle owns it).
+  app.patch(
+    "/applications/:id",
+    { preHandler: [requirePermission("admissions.view_own"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const { id } = request.params as { id: string };
+      const parsed = updateApplicationDraftSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const application = await ownApplication(tx, institutionId, userId, id);
+        if (!application) return { notFound: true as const };
+        if (application.status !== "DRAFT") {
+          await recordAuditEvent(
+            {
+              action: "admissions.application.status_changed",
+              result: "DENIED",
+              ...actor(request),
+              institutionId,
+              resourceType: "Application",
+              resourceId: application.id,
+              metadata: { reason: "edit refused: not a draft", status: application.status },
+            },
+            tx,
+          );
+          return { conflict: "only a DRAFT application can be edited" as const };
+        }
+
+        // Conditional write: a concurrent submit between the read and here makes
+        // this match zero rows instead of editing a submitted application.
+        const written = await tx.application.updateMany({
+          where: { id: application.id, institutionId, applicantUserId: userId, status: "DRAFT" },
+          data: { formData: parsed.data.formData as Prisma.InputJsonValue },
+        });
+        if (written.count === 0) return { conflict: "only a DRAFT application can be edited" as const };
+
+        const updated = await tx.application.findFirst({
+          where: { id: application.id, institutionId, applicantUserId: userId },
+        });
+        await recordAuditEvent(
+          {
+            action: "admissions.application.status_changed",
+            result: "SUCCESS",
+            ...actor(request),
+            institutionId,
+            resourceType: "Application",
+            resourceId: application.id,
+            metadata: { draftEdited: true },
+          },
+          tx,
+        );
+        return { application: updated };
+      });
+
+      if ("notFound" in outcome) return reply.status(404).send({ error: "application not found" });
+      if ("conflict" in outcome) return reply.status(409).send({ error: outcome.conflict });
+      return reply.send(outcome.application);
     },
   );
 

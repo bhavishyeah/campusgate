@@ -605,6 +605,31 @@ export const libraryReportQuerySchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+// Staff circulation reads (GET /loans, GET /reservations, GET /students/lookup).
+export const libraryLoanStatusEnum = z.enum(["ACTIVE", "OVERDUE", "RETURNED", "LOST"]);
+export const libraryReservationStatusEnum = z.enum(["PENDING", "FULFILLED", "CANCELLED", "EXPIRED"]);
+
+export const libraryLoanListQuerySchema = z.object({
+  status: libraryLoanStatusEnum.optional(),
+  // overdue=true -> still-open loans (ACTIVE/OVERDUE) past their due date.
+  overdue: z.enum(["true", "false"]).optional(),
+  studentId: z.string().min(1).max(100).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const libraryReservationListQuerySchema = z.object({
+  status: libraryReservationStatusEnum.optional(),
+  bookTitleId: z.string().min(1).max(100).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const libraryStudentLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+
 // ─── ADMISSIONS (Phase 6) ────────────────────────────────────────────────────
 
 // Enum members mirror the pg enums added by the phase6_admissions migration.
@@ -707,6 +732,14 @@ export const createApplicationSchema = z
     formData: z.record(z.string(), z.unknown()).optional(),
     applicantEmail: z.string().email("Invalid email address").optional(),
     applicantName: z.string().min(2).max(200).optional(),
+  })
+  .strict();
+
+// Draft edit (PATCH /applications/:id). The applicant replaces the application's
+// formData while it is still DRAFT; ownership + status are enforced in-handler.
+export const updateApplicationDraftSchema = z
+  .object({
+    formData: z.record(z.string(), z.unknown()),
   })
   .strict();
 
@@ -1092,6 +1125,10 @@ export type WaiveLibraryFineInput = z.infer<typeof waiveLibraryFineSchema>;
 export type PayLibraryFineInput = z.infer<typeof payLibraryFineSchema>;
 export type CatalogueSearchQueryInput = z.infer<typeof catalogueSearchQuerySchema>;
 export type LibraryReportQueryInput = z.infer<typeof libraryReportQuerySchema>;
+export type LibraryLoanListQueryInput = z.infer<typeof libraryLoanListQuerySchema>;
+export type LibraryReservationListQueryInput = z.infer<typeof libraryReservationListQuerySchema>;
+export type LibraryStudentLookupQueryInput = z.infer<typeof libraryStudentLookupQuerySchema>;
+export type UpdateApplicationDraftInput = z.infer<typeof updateApplicationDraftSchema>;
 export type AdmissionCampaignStatusValue = z.infer<typeof admissionCampaignStatusEnum>;
 export type ApplicationStatusValue = z.infer<typeof applicationStatusEnum>;
 export type ApplicationReviewDecisionValue = z.infer<typeof applicationReviewDecisionEnum>;

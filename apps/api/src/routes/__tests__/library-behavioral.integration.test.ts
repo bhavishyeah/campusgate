@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase-5 library BEHAVIORAL integration suite (design §11.2) — runs against the
  * REAL Supabase instance through a REAL Fastify app (real `authenticate` + the
  * real libraryRoutes + the real withTenant/RLS path). It proves the guarantees
@@ -99,6 +99,12 @@ const termA = id("term");
 const programA = id("prog");
 const studentProfileA = id("sp");
 const studentProfileB = id("sp2");
+// Tenant B (isolation foil for the staff circulation reads).
+const instB = id("instB");
+const deptB = id("deptB");
+const librarianUserB = id("u_libB");
+const studentUserInB = id("u_stuInB");
+const studentProfileInB = id("spInB");
 
 let app: FastifyInstance;
 let libraryRoutes: typeof import("../library.js").libraryRoutes;
@@ -110,6 +116,7 @@ const authHeader = (t: string) => ({ authorization: `Bearer ${t}` });
 const libToken = () => tokenFor(librarianUser, "GUARD");
 const stuToken = () => tokenFor(studentUser, "STUDENT");
 const stu2Token = () => tokenFor(studentUser2, "STUDENT");
+const libTokenB = () => app.jwt.sign({ userId: librarianUserB, role: "GUARD", institutionId: instB });
 
 async function templateRoleId(key: string): Promise<string> {
   const role = await adminClient.role.findFirst({ where: { key, institutionId: null }, select: { id: true } });
@@ -282,6 +289,51 @@ async function seed(): Promise<void> {
   );
 }
 
+async function seedTenantB(): Promise<void> {
+  await withRetry(() =>
+    adminClient.institution.create({ data: { id: instB, name: `${PFX}InstB`, code: id("CODE_B"), status: "ACTIVE" } }),
+  );
+  await withRetry(() =>
+    adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("DB"), institutionId: instB } }),
+  );
+  await withRetry(() =>
+    adminClient.user.createMany({
+      data: [
+        { id: librarianUserB, email: `${PFX.toLowerCase()}libb@example.test`, role: "GUARD", institutionId: instB },
+        { id: studentUserInB, email: `${PFX.toLowerCase()}stuinb@example.test`, role: "STUDENT", institutionId: instB },
+      ],
+    }),
+  );
+  const roleId = await templateRoleId("LIBRARIAN");
+  const mId = id(`mbr_${librarianUserB}`);
+  await withRetry(() =>
+    adminClient.institutionMembership.create({ data: { id: mId, userId: librarianUserB, institutionId: instB, membershipStatus: "ACTIVE" } }),
+  );
+  await withRetry(() =>
+    adminClient.membershipRole.create({ data: { id: id(`mrl_${librarianUserB}`), membershipId: mId, roleId, institutionId: instB } }),
+  );
+  await withRetry(() =>
+    adminClient.institutionModule.create({
+      data: { id: id("imodB"), institutionId: instB, moduleKey: "library", state: "ACTIVE", entitledAt: new Date(), activatedAt: new Date() },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.studentProfile.create({
+      data: {
+        id: studentProfileInB,
+        userId: studentUserInB,
+        institutionId: instB,
+        enrollmentNo: id("ENRB"),
+        name: `${PFX}Zed Foreign`,
+        departmentId: deptB,
+        program: "BCA",
+        semester: 1,
+        status: "ACTIVE",
+      },
+    }),
+  );
+}
+
 // ── direct-seed helpers (bypass the routes) used to set up specific scenarios ──
 async function seedTitle(suffix: string): Promise<string> {
   const tId = id(`title_${suffix}`);
@@ -314,6 +366,7 @@ async function setPolicy(settings: Record<string, unknown>): Promise<void> {
 beforeAll(async () => {
   await teardown();
   await seed();
+  await seedTenantB();
   const mod = await import("../library.js");
   libraryRoutes = mod.libraryRoutes;
   app = Fastify();
@@ -696,6 +749,147 @@ describe("Phase-5 library behavioral (real DB, real routes)", () => {
     expect(stillThere).toBe(1);
 
     // Restore ACTIVE so later tests (and beforeEach) start clean.
+    await setLibraryState("ACTIVE");
+  }, 180_000);
+
+  // ─── G1/G2/G3: staff circulation reads (loans, reservations, student lookup) ──
+
+  it("STAFF LOANS (G1): lists loans with joined student+book fields, filters status/overdue/studentId, paginates, and is tenant-isolated", async () => {
+    const titleId = await seedTitle("g1");
+    const copyOverdue = await seedCopy(titleId, "g1o", "ISSUED");
+    const copyFine = await seedCopy(titleId, "g1f", "ISSUED");
+    const copyRet = await seedCopy(titleId, "g1r");
+    const day = 24 * 3600_000;
+    const loan = (lid: string, copy: string, student: string, status: string, dueOffset: number, returned = false) =>
+      withRetry(() =>
+        adminClient.libraryLoan.create({
+          data: {
+            id: id(lid),
+            institutionId: instA,
+            bookCopyId: copy,
+            studentId: student,
+            issuedByUserId: librarianUser,
+            issueDate: new Date(Date.now() - 20 * day),
+            dueDate: new Date(Date.now() + dueOffset * day),
+            returnDate: returned ? new Date() : null,
+            status: status as any,
+          },
+        }),
+      );
+    await loan("ln_over", copyOverdue, studentProfileA, "ACTIVE", -5);
+    await loan("ln_ok", copyFine, studentProfileB, "ACTIVE", 5);
+    await loan("ln_ret", copyRet, studentProfileA, "RETURNED", -3, true);
+
+    // A loan in tenant B (must never appear for tenant A's librarian).
+    const titleB = id("title_g1B");
+    await withRetry(() => adminClient.bookTitle.create({ data: { id: titleB, institutionId: instB, title: `${PFX}TitleB`, author: "B", status: "ACTIVE" } }));
+    const copyB = id("copy_g1B");
+    await withRetry(() => adminClient.bookCopy.create({ data: { id: copyB, institutionId: instB, bookTitleId: titleB, accessionNumber: id("ACC_g1B"), status: "ISSUED", condition: "GOOD" } }));
+    await withRetry(() =>
+      adminClient.libraryLoan.create({
+        data: { id: id("ln_B"), institutionId: instB, bookCopyId: copyB, studentId: studentProfileInB, issuedByUserId: librarianUserB, dueDate: new Date(Date.now() - day), status: "ACTIVE" },
+      }),
+    );
+
+    type L = { id: string; isOverdue: boolean; student: Record<string, unknown>; bookCopy: { accessionNumber: string; bookTitle: { title: string } } };
+    const all = await app.inject({ method: "GET", url: "/api/library/loans?pageSize=100", headers: authHeader(libToken()) });
+    expect(all.statusCode).toBe(200);
+    const ids = (all.json().loans as L[]).map((l) => l.id);
+    expect(ids.sort()).toEqual([id("ln_over"), id("ln_ok"), id("ln_ret")].sort());
+    expect(all.json().total).toBe(3);
+    expect(ids).not.toContain(id("ln_B"));
+
+    // Joined display fields; student projection is minimal (no dob/phone/address).
+    const over = (all.json().loans as L[]).find((l) => l.id === id("ln_over"))!;
+    expect(Object.keys(over.student).sort()).toEqual(["enrollmentNo", "id", "name", "program"]);
+    expect(over.bookCopy.bookTitle.title).toBe(`${PFX}Title g1`);
+    expect(over.isOverdue).toBe(true);
+
+    // overdue=true -> only the past-due, still-open loan.
+    const od = await app.inject({ method: "GET", url: "/api/library/loans?overdue=true", headers: authHeader(libToken()) });
+    expect((od.json().loans as L[]).map((l) => l.id)).toEqual([id("ln_over")]);
+
+    // status + studentId filters.
+    const st = await app.inject({ method: "GET", url: "/api/library/loans?status=RETURNED", headers: authHeader(libToken()) });
+    expect((st.json().loans as L[]).map((l) => l.id)).toEqual([id("ln_ret")]);
+    const bySt = await app.inject({ method: "GET", url: `/api/library/loans?studentId=${studentProfileB}`, headers: authHeader(libToken()) });
+    expect((bySt.json().loans as L[]).map((l) => l.id)).toEqual([id("ln_ok")]);
+
+    // Pagination.
+    const p1 = await app.inject({ method: "GET", url: "/api/library/loans?pageSize=2&page=1", headers: authHeader(libToken()) });
+    const p2 = await app.inject({ method: "GET", url: "/api/library/loans?pageSize=2&page=2", headers: authHeader(libToken()) });
+    expect((p1.json().loans as L[]).length).toBe(2);
+    expect((p2.json().loans as L[]).length).toBe(1);
+    expect(p1.json().total).toBe(3);
+
+    // Tenant B's librarian sees only B's loan.
+    const forB = await app.inject({ method: "GET", url: "/api/library/loans", headers: authHeader(libTokenB()) });
+    expect((forB.json().loans as L[]).map((l) => l.id)).toEqual([id("ln_B")]);
+
+    // Role denial + module gate.
+    expect((await app.inject({ method: "GET", url: "/api/library/loans", headers: authHeader(stuToken()) })).statusCode).toBe(403);
+    await setLibraryState("SUSPENDED");
+    const gated = await app.inject({ method: "GET", url: "/api/library/loans", headers: authHeader(libToken()) });
+    expect(gated.statusCode).toBe(403);
+    expect(gated.json()).toMatchObject({ error: "Module not active: library" });
+    await setLibraryState("ACTIVE");
+  }, 180_000);
+
+  it("STAFF RESERVATIONS (G2): lists the queue with joined fields, filters by status, tenant-isolated, student denied", async () => {
+    const titleId = await seedTitle("g2");
+    const copyId = await seedCopy(titleId, "g2", "ISSUED");
+    await withRetry(() =>
+      adminClient.bookReservation.create({
+        data: { id: id("rv_p"), institutionId: instA, bookTitleId: titleId, studentId: studentProfileA, queuePosition: 1, status: "PENDING" },
+      }),
+    );
+    await withRetry(() =>
+      adminClient.bookReservation.create({
+        data: { id: id("rv_c"), institutionId: instA, bookTitleId: titleId, studentId: studentProfileB, queuePosition: 2, status: "CANCELLED", cancelledAt: new Date() },
+      }),
+    );
+    void copyId;
+
+    type R = { id: string; student: Record<string, unknown>; bookTitle: { title: string } };
+    const all = await app.inject({ method: "GET", url: "/api/library/reservations", headers: authHeader(libToken()) });
+    expect(all.statusCode).toBe(200);
+    expect((all.json().reservations as R[]).map((r) => r.id).sort()).toEqual([id("rv_p"), id("rv_c")].sort());
+    const first = (all.json().reservations as R[])[0];
+    expect(Object.keys(first.student).sort()).toEqual(["enrollmentNo", "id", "name", "program"]);
+    expect(first.bookTitle.title).toBe(`${PFX}Title g2`);
+
+    const pending = await app.inject({ method: "GET", url: "/api/library/reservations?status=PENDING", headers: authHeader(libToken()) });
+    expect((pending.json().reservations as R[]).map((r) => r.id)).toEqual([id("rv_p")]);
+    expect(pending.json().total).toBe(1);
+
+    // Tenant isolation + role denial + invalid filter.
+    const forB = await app.inject({ method: "GET", url: "/api/library/reservations", headers: authHeader(libTokenB()) });
+    expect(forB.json().reservations).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/api/library/reservations", headers: authHeader(stuToken()) })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: "/api/library/reservations?status=BOGUS", headers: authHeader(libToken()) })).statusCode).toBe(400);
+  }, 180_000);
+
+  it("STUDENT LOOKUP (G3): librarian finds students by name/enrollment in its tenant only, minimal fields; student denied; q too short -> 400", async () => {
+    const byName = await app.inject({ method: "GET", url: "/api/library/students/lookup?q=Student2", headers: authHeader(libToken()) });
+    expect(byName.statusCode).toBe(200);
+    const found = byName.json().students as Array<Record<string, unknown>>;
+    expect(found.map((s) => s.id)).toEqual([studentProfileB]);
+    expect(Object.keys(found[0]).sort()).toEqual(["enrollmentNo", "id", "name", "program"]);
+
+    const byEnr = await app.inject({ method: "GET", url: `/api/library/students/lookup?q=${encodeURIComponent(id("ENR2"))}`, headers: authHeader(libToken()) });
+    expect((byEnr.json().students as Array<{ id: string }>).map((s) => s.id)).toEqual([studentProfileB]);
+
+    // Tenant isolation: A's librarian never finds B's "Zed Foreign"; B's finds only B's.
+    const cross = await app.inject({ method: "GET", url: "/api/library/students/lookup?q=Zed", headers: authHeader(libToken()) });
+    expect(cross.json().students).toEqual([]);
+    const own = await app.inject({ method: "GET", url: "/api/library/students/lookup?q=Zed", headers: authHeader(libTokenB()) });
+    expect((own.json().students as Array<{ id: string }>).map((s) => s.id)).toEqual([studentProfileInB]);
+
+    // Role denial + validation + module gate.
+    expect((await app.inject({ method: "GET", url: "/api/library/students/lookup?q=Student", headers: authHeader(stuToken()) })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: "/api/library/students/lookup?q=a", headers: authHeader(libToken()) })).statusCode).toBe(400);
+    await setLibraryState("SUSPENDED");
+    expect((await app.inject({ method: "GET", url: "/api/library/students/lookup?q=Student", headers: authHeader(libToken()) })).statusCode).toBe(403);
     await setLibraryState("ACTIVE");
   }, 180_000);
 });
