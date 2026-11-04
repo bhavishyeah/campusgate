@@ -92,7 +92,7 @@ describe("landingRoute", () => {
     expect(landingRoute(["DEAN"], ["faculty.directory.view"])).toBe("/faculty-mgmt");
   });
   it("sends the real FACULTY role permissions to /faculty-mgmt/me", () => {
-    expect(landingRoute(["FACULTY"], ROLE_PERMISSIONS.FACULTY ?? [])).toBe("/faculty-mgmt/me");
+    expect(landingRoute(["FACULTY"], [...(ROLE_PERMISSIONS.FACULTY ?? [])])).toBe("/faculty-mgmt/me");
   });
   it("keeps ADMIN on /admin and HOD on /hod despite faculty/HR keys", () => {
     expect(landingRoute(["ADMIN"], [...HR_STAFF, ...FACULTY_STAFF])).toBe("/admin");
