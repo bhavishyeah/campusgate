@@ -949,3 +949,39 @@ export function useCreateStructure() {
 - **Endpoints recorded**: 35
 - **MFA step-up**: The `requireStepUp("exams.results.publish")` middleware reads the `x-step-up` request header. A missing/expired/wrong-action token returns **401** `{ error: "Step-up required" }`. The token is a short-lived JWT (5 min) with claims `{ userId, jti, stepUp: true, action: "exams.results.publish" }`, obtained from `POST /api/auth/mfa/verify` after a fresh TOTP assertion. There is **no stepUpToken field in the auth store**; the token must be fetched on demand and passed in the `x-step-up` header on the publish request.
 - **Permission keys**: `exams.manage`, `exams.grading.manage`, `exams.candidates.manage`, `exams.marks.enter`, `exams.moderate`, `exams.results.publish`, `exams.results.view`, `exams.results.view_own`, `exams.reeval.request_own`, `exams.reeval.manage`
+
+---
+
+## Addendum — faculty marking reads (backend commit d1fbf02)
+
+FACULTY holds only `exams.marks.enter`; every pre-existing GET needed to render a marks grid
+requires `exams.results.view` (ADMIN/HOD only — ADMIN/HOD never hold `marks.enter`, by
+separation of duties), so no role could use marks entry end to end. Two read-only endpoints were
+added. Both: `requirePermission("exams.marks.enter")` + `requireModuleActive("examinations")`,
+tenant-scoped, and scoped by ACTIVE FacultyAssignment exactly like `PUT /:id/marks`
+(subject + term, `classSectionId` = candidate's section OR NULL/subject-wide).
+
+### GET /api/exams/my-marking
+200 `{ exams: [{ id, name, type, status: "MARKS_OPEN"|"MARKS_LOCKED"|"MODERATION", academicTermId }] }`
+(max 100, newest first; `[]` if no matching assignments). 403 `{ error: "not a faculty member" }`
+for a non-faculty / deactivated holder.
+
+### GET /api/exams/:id/marks-sheet
+200
+```
+{
+  exam: { id, name, type, status, academicTermId },
+  editable: boolean,                       // exam.status === "MARKS_OPEN"
+  assessments: [{ id, name, subjectId, maxMarks, weight }],   // only the faculty's subjects with >=1 in-scope candidate
+  rows: [{ candidateId, studentId, enrollmentNo, studentName,
+           cells: [{ assessmentId, marksRecordId: string|null, marks: number|null }] }]
+}
+```
+A row's `cells` lists ONLY the assessments that candidate is in scope for; a missing
+(candidate, assessment) pair is NOT writable (PUT would 403). No in-scope pairs -> 200 with
+`assessments: []`, `rows: []`. Errors: 404 `examination not found` (also another tenant's exam),
+403 `not a faculty member`.
+
+### UI semantics
+There is no separate "submit" step for marks: they stay editable until staff move the exam to
+MARKS_LOCKED. The marks page therefore offers **Save** and **Save & close** (same PUT).

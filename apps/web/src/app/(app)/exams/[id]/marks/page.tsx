@@ -143,7 +143,10 @@ function MarksEntryInner() {
     invalidReason(key.split(":")[0], raw) !== null,
   );
 
-  function save(submit: boolean) {
+  // There is NO separate "submit" step in the backend: marks stay editable until
+  // staff move the exam to MARKS_LOCKED. So the two buttons are "Save" and
+  // "Save & close" (same PUT; close just navigates back afterwards).
+  function save(close: boolean) {
     // Changed, non-empty, in-scope cells only.
     const diff: MarkEntry[] = [];
     for (const [key, raw] of Object.entries(edits)) {
@@ -154,7 +157,8 @@ function MarksEntryInner() {
       diff.push({ assessmentId, candidateId, marks: value });
     }
     if (diff.length === 0) {
-      toast.info("Nothing to save.");
+      if (close) router.push("/exams");
+      else toast.info("Nothing to save.");
       return;
     }
     if (diff.length > MAX_BATCH) {
@@ -165,9 +169,9 @@ function MarksEntryInner() {
       { marks: diff },
       {
         onSuccess: (r) => {
-          toast.success(`Saved ${r.written} mark(s).`);
+          toast.success(`Saved ${r.written} mark(s). They stay editable until the exam is locked.`);
           setEdits({});
-          if (submit) router.push("/exams");
+          if (close) router.push("/exams");
         },
         onError: (err) => {
           if (err.status === 409) {
@@ -197,10 +201,10 @@ function MarksEntryInner() {
               disabled={!open || enter.isPending || hasInvalid}
               onClick={() => save(false)}
             >
-              Save draft
+              Save
             </Button>
             <Button disabled={!open || enter.isPending || hasInvalid} onClick={() => save(true)}>
-              Submit
+              Save &amp; close
             </Button>
           </div>
         </Can>
