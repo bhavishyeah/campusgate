@@ -34,6 +34,16 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     else if (can("exams.marks.enter", permissions)) probePath = "/api/exams/my-marking";
   }
 
+  if (moduleKey === "library") {
+    if (can("library.books.view", permissions)) probePath = "/api/library/titles?pageSize=1";
+    else if (can("library.view_own", permissions)) probePath = "/api/library/catalogue?pageSize=1";
+  }
+
+  if (moduleKey === "admissions") {
+    if (can("admissions.applications.view", permissions)) probePath = "/api/admissions/campaigns?pageSize=1";
+    else if (can("admissions.view_own", permissions)) probePath = "/api/admissions/campaigns/open?pageSize=1";
+  }
+
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,

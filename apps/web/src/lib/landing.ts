@@ -25,6 +25,16 @@ export function landingRoute(roles: string[], permissions: string[]): string {
   if (STAFF_FEES.some((p) => permissions.includes(p))) return "/fees";
   if (permissions.includes("fees.view_own")) return "/fees/me";
 
+  // 3b. Library / Admissions landings (LIBRARIAN, ADMISSION_OFFICER, APPLICANT).
+  // Evaluated AFTER the fees checks so fees users are unchanged. `roles` are the
+  // membership role keys, so the seeded applicant (legacy User.role=STUDENT but
+  // membership role APPLICANT) has roles=["APPLICANT"] and never hits /student.
+  // Each key is the guard key of its target page.
+  if (permissions.includes("library.books.view")) return "/library";
+  if (permissions.includes("admissions.applications.view")) return "/admissions";
+  if (permissions.includes("admissions.view_own")) return "/admissions/my";
+  if (permissions.includes("library.view_own")) return "/library/my";
+
   // 4. Authenticated but no known landing.
   return "/app";
 }

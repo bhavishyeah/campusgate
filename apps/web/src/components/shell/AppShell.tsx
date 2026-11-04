@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -90,6 +90,24 @@ const NAV: NavItem[] = [
     icon: FileCheck,
     anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own", "exams.marks.enter"],
     module: "examinations",
+  },
+  // ── Library — module-gated. Each anyOf holds only the key that opens the target page.
+  { href: "/library", label: "Library", icon: Library, anyOf: ["library.books.view"], module: "library" },
+  { href: "/library/my", label: "My Library", icon: BookMarked, anyOf: ["library.view_own"], module: "library" },
+  // ── Admissions — module-gated.
+  {
+    href: "/admissions",
+    label: "Admissions",
+    icon: ClipboardCheck,
+    anyOf: ["admissions.applications.view"],
+    module: "admissions",
+  },
+  {
+    href: "/admissions/my",
+    label: "My Application",
+    icon: FilePlus2,
+    anyOf: ["admissions.view_own"],
+    module: "admissions",
   },
 ];
 
