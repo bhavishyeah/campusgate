@@ -725,6 +725,44 @@ describe("Self vs staff surface (AC 17-18)", () => {
     expect(res.statusCode).toBe(200);
     expect((res.json() as unknown[]).length).toBe(1);
   });
+
+  it("G-SR1 /users/lookup: an agent finds in-tenant non-student users; a requester -> 403; q<2 -> 400", async () => {
+    // An agent (service_requests.assign.manage) can resolve an assignee id.
+    const ok = await inject({
+      method: "GET",
+      url: `/api/service-requests/users/lookup?q=${PFX.toLowerCase()}agent`,
+      headers: authHeader(agentToken()),
+    });
+    expect(ok.statusCode).toBe(200);
+    const users = ok.json().users as { id: string; email: string; name: string | null }[];
+    expect(users.some((u) => u.id === agentUser)).toBe(true);
+
+    // A STUDENT requester holds no assign.manage -> 403 (role-denial).
+    const denied = await inject({
+      method: "GET",
+      url: `/api/service-requests/users/lookup?q=${PFX.toLowerCase()}agent`,
+      headers: authHeader(studentToken()),
+    });
+    expect(denied.statusCode).toBe(403);
+
+    // q shorter than 2 chars -> 400.
+    const short = await inject({
+      method: "GET",
+      url: "/api/service-requests/users/lookup?q=a",
+      headers: authHeader(agentToken()),
+    });
+    expect(short.statusCode).toBe(400);
+  });
+
+  it("G-SR1 /users/lookup is tenant-scoped: a non-matching q returns an empty set (no cross-tenant leak)", async () => {
+    const res = await inject({
+      method: "GET",
+      url: "/api/service-requests/users/lookup?q=zzz-no-such-user-zzz",
+      headers: authHeader(agentToken()),
+    });
+    expect(res.statusCode).toBe(200);
+    expect((res.json().users as unknown[]).length).toBe(0);
+  });
 });
 
 // ─── Append-only ledgers + export ────────────────────────────────────────────

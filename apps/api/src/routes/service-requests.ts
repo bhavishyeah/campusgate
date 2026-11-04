@@ -14,6 +14,7 @@ import {
   serviceRequestCommentSchema,
   serviceRequestFeedbackSchema,
   serviceRequestListQuerySchema,
+  serviceRequestUserLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive, can } from "../services/authz-engine.js";
@@ -1407,6 +1408,42 @@ export async function serviceRequestsRoutes(app: FastifyInstance) {
       if ("notFound" in outcome) return reply.status(404).send({ error: "request not found" });
       if (isDeny(outcome)) return reply.status(outcome.deny.status).send({ error: outcome.deny.deny });
       return reply.status(201).send(outcome.feedback);
+    },
+  );
+
+  // ─── G-SR1. GET /users/lookup — agent picker for assign/reassign ─────────────
+  // Gated by service_requests.assign.manage (the key the triage queue uses to set
+  // assigneeUserId). SERVICE_AGENT has NO admin.users.view / students.view (strict
+  // least privilege), so without this the assign form would have no way to resolve
+  // an agent user id. Returns ONLY non-student tenant users (id/email/name) — an
+  // agent cannot enumerate students through it (the hostel G-HOS6 / inventory
+  // G-INV1 precedent). Read-only, no audit.
+  app.get(
+    "/users/lookup",
+    { preHandler: [requirePermission("service_requests.assign.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = serviceRequestUserLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const users = await withTenant(institutionId, (tx) =>
+        tx.user.findMany({
+          where: {
+            institutionId,
+            studentProfile: null,
+            OR: [
+              { email: { contains: q, mode: "insensitive" } },
+              { facultyProfile: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+          orderBy: [{ email: "asc" }],
+          take: limit,
+          select: { id: true, email: true, facultyProfile: { select: { name: true } } },
+        }),
+      );
+      return reply.send({
+        users: users.map((u) => ({ id: u.id, email: u.email, name: u.facultyProfile?.name ?? null })),
+      });
     },
   );
 

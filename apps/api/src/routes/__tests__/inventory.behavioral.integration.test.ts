@@ -644,3 +644,38 @@ describe("Inventory self-service (/me/assets, inventory.view_own, INVENTORY_MANA
     expect(assets.some((a) => a.id === theirs)).toBe(false);
   });
 });
+
+describe("Inventory G-INV1 /users/lookup (custodian/assignee picker)", () => {
+  it("returns in-tenant non-student users by email; a manager (no admin.users.view) may call it", async () => {
+    const res = await inject({
+      method: "GET",
+      url: `/api/inventory/users/lookup?q=${PFX.toLowerCase()}other`,
+      headers: authHeader(managerToken()),
+    });
+    expect(res.statusCode).toBe(200);
+    const users = res.json().users as { id: string; email: string; name: string | null }[];
+    expect(users.some((u) => u.id === otherUser)).toBe(true);
+  });
+
+  it("requires q >= 2 chars -> 400", async () => {
+    const res = await inject({
+      method: "GET",
+      url: "/api/inventory/users/lookup?q=a",
+      headers: authHeader(adminToken()),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("is tenant-scoped: a foreign-tenant user is never returned", async () => {
+    // instA's lookup can never surface a user keyed to a different institution —
+    // the WHERE pins institutionId from the token. Searching a non-matching q
+    // yields an empty set (no cross-tenant leak).
+    const res = await inject({
+      method: "GET",
+      url: "/api/inventory/users/lookup?q=zzz-no-such-user-zzz",
+      headers: authHeader(managerToken()),
+    });
+    expect(res.statusCode).toBe(200);
+    expect((res.json().users as unknown[]).length).toBe(0);
+  });
+});

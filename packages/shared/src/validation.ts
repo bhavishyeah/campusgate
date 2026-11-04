@@ -2246,6 +2246,16 @@ export type CreateInventoryAuditSessionInput = z.infer<typeof createInventoryAud
 export type InventoryAuditLineInput = z.infer<typeof inventoryAuditLineSchema>;
 export type InventoryListQueryInput = z.infer<typeof inventoryListQuerySchema>;
 
+// 9. User picker for custody transfer/assign (GET /users/lookup). Mirrors the
+// hostel G-HOS6 / hr G-H2 user-lookup shape: q 2..100 chars, limit 1..25
+// default 10. Gated by inventory.assets.manage; returns only non-student tenant
+// users so a manager cannot enumerate students through it.
+export const inventoryUserLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+export type InventoryUserLookupQueryInput = z.infer<typeof inventoryUserLookupQuerySchema>;
+
 // ─── Phase 9.6 Service Requests Management ───────────────────────────────────
 // institutionId / requesterUserId are NEVER accepted from the body — always
 // derived from the verified token. Enum members mirror the pg enums added by the
@@ -2398,6 +2408,18 @@ export type RejectServiceRequestInput = z.infer<typeof rejectServiceRequestSchem
 export type ServiceRequestCommentInput = z.infer<typeof serviceRequestCommentSchema>;
 export type ServiceRequestFeedbackInput = z.infer<typeof serviceRequestFeedbackSchema>;
 export type ServiceRequestListQueryInput = z.infer<typeof serviceRequestListQuerySchema>;
+
+// 11. Agent picker for assign/reassign (GET /users/lookup). Mirrors the hostel
+// G-HOS6 / inventory G-INV1 user-lookup shape: q 2..100 chars, limit 1..25
+// default 10. Gated by service_requests.assign.manage; returns only non-student
+// tenant users so an agent cannot enumerate students through it.
+export const serviceRequestUserLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+export type ServiceRequestUserLookupQueryInput = z.infer<
+  typeof serviceRequestUserLookupQuerySchema
+>;
 
 // ─── Phase 9.7 Document Management ───────────────────────────────────────────
 // institutionId / ownerUserId / storageKey / checksum / size are NEVER accepted

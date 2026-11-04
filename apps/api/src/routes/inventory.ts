@@ -14,6 +14,7 @@ import {
   createInventoryAuditSessionSchema,
   inventoryAuditLineSchema,
   inventoryListQuerySchema,
+  inventoryUserLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -1353,6 +1354,42 @@ export async function inventoryRoutes(app: FastifyInstance) {
         )
         .header("Content-Disposition", `attachment; filename="${filename}"`)
         .send(Buffer.from(buffer));
+    },
+  );
+
+  // ─── G-INV1. GET /users/lookup — custodian/assignee picker ───────────────────
+  // Gated by inventory.assets.manage (the key that sets custodyUserId / performs
+  // custody transfers). INVENTORY_MANAGER has NO admin.users.view / students.view
+  // (strict least privilege), so without this the custody-transfer and asset-
+  // create forms would have no way to resolve a user id. Returns ONLY non-student
+  // tenant users (id/email/name) — a manager cannot enumerate students through it
+  // (the hostel G-HOS6 precedent). Read-only, no audit.
+  app.get(
+    "/users/lookup",
+    { preHandler: [requirePermission("inventory.assets.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = inventoryUserLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const users = await withTenant(institutionId, (tx) =>
+        tx.user.findMany({
+          where: {
+            institutionId,
+            studentProfile: null,
+            OR: [
+              { email: { contains: q, mode: "insensitive" } },
+              { facultyProfile: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+          orderBy: [{ email: "asc" }],
+          take: limit,
+          select: { id: true, email: true, facultyProfile: { select: { name: true } } },
+        }),
+      );
+      return reply.send({
+        users: users.map((u) => ({ id: u.id, email: u.email, name: u.facultyProfile?.name ?? null })),
+      });
     },
   );
 
