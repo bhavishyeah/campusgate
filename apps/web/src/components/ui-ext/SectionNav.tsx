@@ -15,6 +15,15 @@ function isActive(pathname: string, href: string): boolean {
   if (pathname === href) return true;
   if (href === "/library" && pathname.startsWith("/library/titles")) return true;
   if (href === "/admissions" && pathname.startsWith("/admissions/applications")) return true;
+  if (
+    href === "/faculty-mgmt" &&
+    pathname.startsWith("/faculty-mgmt/") &&
+    !pathname.startsWith("/faculty-mgmt/workload-policy") &&
+    !pathname.startsWith("/faculty-mgmt/me")
+  ) {
+    return true;
+  }
+  if (href === "/hr" && pathname.startsWith("/hr/employees")) return true;
   return false;
 }
 
@@ -56,4 +65,18 @@ export const LIBRARY_STUDENT_NAV: SectionNavItem[] = [
 export const ADMISSIONS_STAFF_NAV: SectionNavItem[] = [
   { href: "/admissions", label: "Applications", permission: "admissions.applications.view" },
   { href: "/admissions/campaigns", label: "Campaigns", permission: "admissions.applications.view" },
+];
+
+export const FACULTY_STAFF_NAV: SectionNavItem[] = [
+  { href: "/faculty-mgmt", label: "Directory", permission: "faculty.directory.view" },
+  { href: "/faculty-mgmt/workload-policy", label: "Workload policy", permission: "faculty.workload.manage" },
+];
+
+export const HR_STAFF_NAV: SectionNavItem[] = [
+  { href: "/hr", label: "Employees", permission: "hr.directory.view" },
+  { href: "/hr/leave", label: "Leave requests", permission: "hr.leave.manage" },
+  { href: "/hr/leave/policies", label: "Leave policies", permission: "hr.leave.manage" },
+  { href: "/hr/attendance", label: "Attendance", permission: "hr.attendance.manage" },
+  { href: "/hr/attendance/shifts", label: "Shifts", permission: "hr.attendance.manage" },
+  { href: "/hr/reports", label: "Reports", permission: "hr.reports.view" },
 ];

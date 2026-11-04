@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { landingRoute } from "@/lib/landing";
 
 describe("landingRoute", () => {
@@ -70,5 +71,41 @@ describe("landingRoute", () => {
 
   it("falls back to /app for a holder of only library.issue", () => {
     expect(landingRoute([], ["library.issue"])).toBe("/app");
+  });
+
+  // ── 3c. Faculty Management / HR landings ──
+  const HR_STAFF = [
+    "hr.employees.manage", "hr.contracts.manage", "hr.leave.manage",
+    "hr.attendance.manage", "hr.reports.view", "hr.directory.view",
+  ];
+  const FACULTY_STAFF = [
+    "faculty.qualifications.manage", "faculty.workload.manage",
+    "faculty.teaching_history.manage", "faculty.directory.view",
+  ];
+  it("sends an HR_MANAGER to /hr", () => {
+    expect(landingRoute(["HR_MANAGER"], [...HR_STAFF, "documents.download"])).toBe("/hr");
+  });
+  it("sends an EMPLOYEE to /hr/me", () => {
+    expect(landingRoute(["EMPLOYEE"], ["hr.view_own", "documents.download"])).toBe("/hr/me");
+  });
+  it("sends a non-legacy faculty.directory.view holder to /faculty-mgmt", () => {
+    expect(landingRoute(["DEAN"], ["faculty.directory.view"])).toBe("/faculty-mgmt");
+  });
+  it("sends the real FACULTY role permissions to /faculty-mgmt/me", () => {
+    expect(landingRoute(["FACULTY"], ROLE_PERMISSIONS.FACULTY ?? [])).toBe("/faculty-mgmt/me");
+  });
+  it("keeps ADMIN on /admin and HOD on /hod despite faculty/HR keys", () => {
+    expect(landingRoute(["ADMIN"], [...HR_STAFF, ...FACULTY_STAFF])).toBe("/admin");
+    expect(landingRoute(["HOD"], FACULTY_STAFF)).toBe("/hod");
+  });
+  it("keeps fees and library holders on their landings even with hr.directory.view", () => {
+    expect(landingRoute(["ACCOUNTANT"], ["fees.view", "hr.directory.view"])).toBe("/fees");
+    expect(landingRoute(["LIBRARIAN"], ["library.books.view", "hr.directory.view"])).toBe("/library");
+  });
+  it("falls back to /app for a holder of only hr.employees.manage", () => {
+    expect(landingRoute([], ["hr.employees.manage"])).toBe("/app");
+  });
+  it("prefers /hr/me over /faculty-mgmt/me when both own-keys are held", () => {
+    expect(landingRoute([], ["faculty.view_own", "hr.view_own"])).toBe("/hr/me");
   });
 });

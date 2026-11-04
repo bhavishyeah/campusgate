@@ -68,3 +68,5 @@ export const api = {
 };
 
 export { ApiError };
+
+export { API_BASE };

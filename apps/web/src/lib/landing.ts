@@ -34,6 +34,11 @@ export function landingRoute(roles: string[], permissions: string[]): string {
   if (permissions.includes("admissions.applications.view")) return "/admissions";
   if (permissions.includes("admissions.view_own")) return "/admissions/my";
   if (permissions.includes("library.view_own")) return "/library/my";
+  // 3c. Faculty Management / HR landings (HR_MANAGER, EMPLOYEE, FACULTY). Appended AFTER 3b.
+  if (permissions.includes("hr.directory.view")) return "/hr";
+  if (permissions.includes("hr.view_own")) return "/hr/me";
+  if (permissions.includes("faculty.directory.view")) return "/faculty-mgmt";
+  if (permissions.includes("faculty.view_own")) return "/faculty-mgmt/me";
 
   // 4. Authenticated but no known landing.
   return "/app";

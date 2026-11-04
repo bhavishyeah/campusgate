@@ -44,6 +44,15 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     else if (can("admissions.view_own", permissions)) probePath = "/api/admissions/campaigns/open?pageSize=1";
   }
 
+  if (moduleKey === "faculty_management") {
+    if (can("faculty.directory.view", permissions)) probePath = "/api/faculty?pageSize=1";
+    else if (can("faculty.view_own", permissions)) probePath = "/api/faculty/me/profile";
+  }
+  if (moduleKey === "hr_management") {
+    if (can("hr.directory.view", permissions)) probePath = "/api/hr/employees?pageSize=1";
+    else if (can("hr.view_own", permissions)) probePath = "/api/hr/me/employee";
+  }
+
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,

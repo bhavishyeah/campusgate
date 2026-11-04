@@ -1,0 +1,27 @@
+export const hrKeys = {
+  all: ["hr"] as const,
+  employees: (f: { q?: string; status?: string; departmentId?: string; employmentType?: string; page: number }) =>
+    ["hr", "employees", "list", f] as const,
+  employeesAll: () => ["hr", "employees"] as const,
+  employee: (id: string) => ["hr", "employees", "detail", id] as const,
+  contracts: (id: string) => ["hr", "employees", id, "contracts"] as const,
+  empLeave: (id: string) => ["hr", "employees", id, "leave"] as const,
+  balance: (id: string, year: number) => ["hr", "employees", id, "balance", year] as const,
+  empAttendance: (id: string) => ["hr", "employees", id, "attendance"] as const,
+  userLookup: (q: string) => ["hr", "user-lookup", q] as const,
+  lookups: () => ["hr", "lookups"] as const,
+  leaveQueue: (f: { status?: string; leaveType?: string; employeeId?: string; page: number }) =>
+    ["hr", "leave", "queue", f] as const,
+  leaveAll: () => ["hr", "leave"] as const,
+  policies: () => ["hr", "leave", "policies"] as const,
+  shifts: () => ["hr", "shifts"] as const,
+  roster: (f: { date: string; page: number }) => ["hr", "attendance", "roster", f] as const,
+  rosterAll: () => ["hr", "attendance", "roster"] as const,
+  leaveSummary: () => ["hr", "reports", "leave"] as const,
+  attendanceSummary: (from: string, to: string) => ["hr", "reports", "attendance", from, to] as const,
+  meEmployee: () => ["hr", "me", "employee"] as const,
+  meContracts: () => ["hr", "me", "contracts"] as const,
+  meLeave: () => ["hr", "me", "leave"] as const,
+  meBalance: (year: number) => ["hr", "me", "balance", year] as const,
+  meAttendance: () => ["hr", "me", "attendance"] as const,
+} as const;
