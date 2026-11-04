@@ -350,6 +350,122 @@ describe("Request types + field definitions (AC 1-3)", () => {
   });
 });
 
+// ─── SR-1 requester active-type catalogue (GET /types/active, dual gate) ──────
+describe("GET /types/active — requester-facing active-type catalogue (SR-1)", () => {
+  it("requester sees ONLY active types, with minimal safe fields + hasFields; no staff fields leak", async () => {
+    const activeId = await createType({ name: "Active One", category: "facilities", slaTargetHours: 12 });
+    await addField(activeId, { fieldKey: "summary", label: "Summary", dataType: "TEXT", required: true });
+    const inactiveId = await createType({ name: "Inactive One", category: "facilities", isActive: false });
+
+    const res = await inject({
+      method: "GET",
+      url: "/api/service-requests/types/active",
+      headers: authHeader(studentToken()), // STUDENT holds request_own only
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { types: Array<Record<string, unknown>> };
+    const ids = body.types.map((t) => t.id);
+    expect(ids).toContain(activeId);
+    expect(ids).not.toContain(inactiveId); // inactive excluded
+
+    const active = body.types.find((t) => t.id === activeId)!;
+    // Exactly the requester-safe shape — nothing more.
+    expect(Object.keys(active).sort()).toEqual(
+      ["category", "description", "hasFields", "id", "name", "requiresApproval", "slaTargetHours"].sort(),
+    );
+    expect(active.hasFields).toBe(true);
+    // No staff / internal fields leak.
+    expect(active).not.toHaveProperty("code");
+    expect(active).not.toHaveProperty("defaultAssigneeRole");
+    expect(active).not.toHaveProperty("defaultAssigneeDepartmentId");
+    expect(active).not.toHaveProperty("createdByUserId");
+    expect(active).not.toHaveProperty("isActive");
+  });
+
+  it("staff (service_requests.view) may also read the catalogue (dual gate)", async () => {
+    const activeId = await createType({ name: "Staff Visible" });
+    const res = await inject({
+      method: "GET",
+      url: "/api/service-requests/types/active",
+      headers: authHeader(agentToken()), // SERVICE_AGENT holds service_requests.view
+    });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { types: Array<{ id: string }> }).types.map((t) => t.id)).toContain(activeId);
+  });
+
+  it("a token holding NEITHER service_requests.view NOR request_own -> 403", async () => {
+    // A user with an ACTIVE membership but NO membershipRole => zero permissions.
+    const bareUser = id("u_bare");
+    const bareMembership = id("mbr_bare");
+    await withRetry(() =>
+      adminClient.user.create({
+        data: { id: bareUser, email: `${PFX.toLowerCase()}bare@a.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA },
+      }),
+    );
+    await withRetry(() =>
+      adminClient.institutionMembership.create({
+        data: { id: bareMembership, userId: bareUser, institutionId: instA, membershipStatus: "ACTIVE", permissionsVersion: 0 },
+      }),
+    );
+    try {
+      const res = await inject({
+        method: "GET",
+        url: "/api/service-requests/types/active",
+        headers: authHeader(tokenFor(bareUser)),
+      });
+      expect(res.statusCode).toBe(403);
+    } finally {
+      await withRetry(() => adminClient.institutionMembership.deleteMany({ where: { id: bareMembership } }));
+      await withRetry(() => adminClient.user.deleteMany({ where: { id: bareUser } }));
+    }
+  });
+
+  it("tenant isolation: the requester never sees another tenant's active types", async () => {
+    const mine = await createType({ name: "Mine Active" });
+
+    // A SECOND tenant with its own ACTIVE service_requests module + an active type.
+    const instB = id("instB");
+    const typeB = id("typeB");
+    await withRetry(() =>
+      adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }),
+    );
+    await withRetry(() =>
+      adminClient.institutionModule.create({
+        data: { id: id("imod_B"), institutionId: instB, moduleKey: "service_requests", state: "ACTIVE", entitledAt: new Date(), activatedAt: new Date() },
+      }),
+    );
+    await withRetry(() =>
+      adminClient.serviceRequestType.create({
+        data: {
+          id: typeB,
+          institutionId: instB,
+          name: "Tenant B Secret",
+          code: id("B_CODE"),
+          category: "facilities",
+          slaTargetHours: 24,
+          isActive: true,
+          createdByUserId: adminUser,
+        },
+      }),
+    );
+    try {
+      const res = await inject({
+        method: "GET",
+        url: "/api/service-requests/types/active",
+        headers: authHeader(studentToken()), // scoped to instA by the token
+      });
+      expect(res.statusCode).toBe(200);
+      const ids = (res.json() as { types: Array<{ id: string }> }).types.map((t) => t.id);
+      expect(ids).toContain(mine);
+      expect(ids).not.toContain(typeB); // RLS + withTenant keeps tenant B invisible
+    } finally {
+      await withRetry(() => adminClient.serviceRequestType.deleteMany({ where: { id: typeB } }));
+      await withRetry(() => adminClient.institutionModule.deleteMany({ where: { institutionId: instB } }));
+      await withRetry(() => adminClient.institution.deleteMany({ where: { id: instB } }));
+    }
+  });
+});
+
 // ─── Raise + validation ──────────────────────────────────────────────────────
 describe("Raise + field validation (AC 4-6)", () => {
   it("raise -> 201 OPEN, dueAt = raisedAt + slaTargetHours, activity STATUS_CHANGE (AC4)", async () => {

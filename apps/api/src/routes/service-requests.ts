@@ -349,6 +349,60 @@ export async function serviceRequestsRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── 3b. GET /types/active — requester-facing active-type catalogue (dual gate)
+  // SR-1 fix (this workflow's feat(api) commit). The requester raise flow needs
+  // to DISCOVER which types it may raise against; GET /types above is staff-only
+  // (service_requests.view). This endpoint mirrors the SAME dual gate as
+  // GET /types/:id/fields (view OR request_own) so no new permission key is added
+  // and service_requests.view is NOT widened. Tenant-scoped by RLS; returns ONLY
+  // isActive types and ONLY the minimal non-sensitive config the picker needs
+  // (id, name, category, description, requiresApproval, slaTargetHours, hasFields).
+  // Deliberately omits code, defaultAssigneeRole, defaultAssigneeDepartmentId,
+  // createdByUserId, request counts, and isActive (always true here) — no staff /
+  // internal fields leak to a requester. Same exposure boundary as the field
+  // schema a requester can already read. The catalogue is small (one row per
+  // active type), so the full ordered list is returned without pagination, like
+  // GET /types.
+  app.get(
+    "/types/active",
+    { preHandler: [requireModuleActive(gate)] },
+    async (request, reply) => {
+      if (!request.auth) return reply.status(401).send({ error: "Unauthorized" });
+      if (
+        !can(request.auth, "service_requests.view") &&
+        !can(request.auth, "service_requests.request_own")
+      ) {
+        return reply.status(403).send({ error: "Forbidden: missing permission" });
+      }
+      const { institutionId } = request.user;
+      const rows = await withTenant(institutionId, (tx) =>
+        tx.serviceRequestType.findMany({
+          where: { institutionId, isActive: true },
+          orderBy: [{ category: "asc" }, { name: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            name: true,
+            category: true,
+            description: true,
+            requiresApproval: true,
+            slaTargetHours: true,
+            _count: { select: { fieldDefinitions: true } },
+          },
+        }),
+      );
+      const types = rows.map((t) => ({
+        id: t.id,
+        name: t.name,
+        category: t.category,
+        description: t.description,
+        requiresApproval: t.requiresApproval,
+        slaTargetHours: t.slaTargetHours,
+        hasFields: t._count.fieldDefinitions > 0,
+      }));
+      return reply.send({ types });
+    },
+  );
+
   // ─── 4. POST /types/:id/fields — add a field definition ─────────────────────
   app.post(
     "/types/:id/fields",
