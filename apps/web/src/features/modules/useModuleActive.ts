@@ -53,6 +53,14 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     else if (can("hr.view_own", permissions)) probePath = "/api/hr/me/employee";
   }
 
+  if (moduleKey === "hostel") {
+    if (can("hostel.view", permissions)) probePath = "/api/hostel/buildings?pageSize=1";
+    else if (can("hostel.view_own", permissions)) probePath = "/api/hostel/me/occupancy";
+  }
+  if (moduleKey === "transport") {
+    if (can("transport.view", permissions)) probePath = "/api/transport/vehicles?pageSize=1";
+    else if (can("transport.view_own", permissions)) probePath = "/api/transport/me/enrollments";
+  }
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,

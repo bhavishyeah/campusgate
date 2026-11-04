@@ -39,6 +39,11 @@ export function landingRoute(roles: string[], permissions: string[]): string {
   if (permissions.includes("hr.view_own")) return "/hr/me";
   if (permissions.includes("faculty.directory.view")) return "/faculty-mgmt";
   if (permissions.includes("faculty.view_own")) return "/faculty-mgmt/me";
+  // 3d. Hostel / Transport landings (WARDEN, TRANSPORT_MANAGER, custom roles). Appended AFTER 3c.
+  if (permissions.includes("hostel.view")) return "/hostel";
+  if (permissions.includes("transport.view")) return "/transport";
+  if (permissions.includes("hostel.view_own")) return "/hostel/me";
+  if (permissions.includes("transport.view_own")) return "/transport/me";
 
   // 4. Authenticated but no known landing.
   return "/app";

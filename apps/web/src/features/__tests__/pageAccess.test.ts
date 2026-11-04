@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ROLE_PERMISSIONS, type PermissionKey } from "@campusgate/shared";
-import { FACULTY_STAFF_NAV, HR_STAFF_NAV } from "@/components/ui-ext/SectionNav";
+import { FACULTY_STAFF_NAV, HOSTEL_STAFF_NAV, HR_STAFF_NAV, TRANSPORT_STAFF_NAV } from "@/components/ui-ext/SectionNav";
 
 interface PageAccessRow {
   route: string;
@@ -54,7 +54,30 @@ export const PAGE_ACCESS: PageAccessRow[] = [
   ]),
   // HR self (EMPLOYEE)
   { route: "/hr/me", guard: "hr.view_own", queryKeys: ["hr.view_own"], role: "EMPLOYEE" },
-];
+  // Hostel staff (ADMIN, WARDEN)
+  ...(["ADMIN", "WARDEN"] as const).flatMap((role): PageAccessRow[] => [
+    { route: "/hostel", guard: "hostel.view", queryKeys: ["hostel.view"], role },
+    { route: "/hostel/buildings", guard: "hostel.view", queryKeys: ["hostel.view", "hostel.buildings.manage"], role },
+    { route: "/hostel/rooms", guard: "hostel.view", queryKeys: ["hostel.view", "hostel.buildings.manage"], role },
+    { route: "/hostel/allocations", guard: "hostel.view", queryKeys: ["hostel.view", "hostel.allocations.manage"], role },
+    { route: "/hostel/check-events", guard: "hostel.view", queryKeys: ["hostel.view"], role },
+    { route: "/hostel/leave", guard: "hostel.view", queryKeys: ["hostel.view", "hostel.leave.manage"], role },
+    { route: "/hostel/maintenance", guard: "hostel.view", queryKeys: ["hostel.view", "hostel.maintenance.manage"], role },
+  ]),
+  // Hostel self (STUDENT)
+  { route: "/hostel/me", guard: "hostel.view_own", queryKeys: ["hostel.view_own"], role: "STUDENT" },
+  // Transport staff (ADMIN, TRANSPORT_MANAGER)
+  ...(["ADMIN", "TRANSPORT_MANAGER"] as const).flatMap((role): PageAccessRow[] => [
+    { route: "/transport", guard: "transport.view", queryKeys: ["transport.view", "transport.routes.manage"], role },
+    { route: "/transport/routes/[id]", guard: "transport.view", queryKeys: ["transport.view", "transport.routes.manage", "transport.assignments.manage"], role },
+    { route: "/transport/vehicles", guard: "transport.view", queryKeys: ["transport.view", "transport.vehicles.manage"], role },
+    { route: "/transport/drivers", guard: "transport.view", queryKeys: ["transport.view", "transport.drivers.manage"], role },
+    { route: "/transport/enrollments", guard: "transport.view", queryKeys: ["transport.view", "transport.enrollments.manage"], role },
+    { route: "/transport/maintenance", guard: "transport.view", queryKeys: ["transport.view", "transport.maintenance.manage"], role },
+    { route: "/transport/reports", guard: "transport.view", queryKeys: ["transport.view"], role },
+  ]),
+  // Transport self (STUDENT)
+  { route: "/transport/me", guard: "transport.view_own", queryKeys: ["transport.view_own"], role: "STUDENT" },];
 
 // SectionNav items (every <Can permission> key used by the nav bars).
 const SECTION_NAV_KEYS: { key: PermissionKey; role: string }[] = [
@@ -64,6 +87,8 @@ const SECTION_NAV_KEYS: { key: PermissionKey; role: string }[] = [
   { key: "admissions.applications.view", role: "ADMISSION_OFFICER" },
   ...FACULTY_STAFF_NAV.map((i) => ({ key: i.permission, role: "HOD" })),
   ...HR_STAFF_NAV.map((i) => ({ key: i.permission, role: "HR_MANAGER" })),
+  ...HOSTEL_STAFF_NAV.map((i) => ({ key: i.permission, role: "WARDEN" })),
+  ...TRANSPORT_STAFF_NAV.map((i) => ({ key: i.permission, role: "TRANSPORT_MANAGER" })),
 ];
 
 // AppShell NAV anyOf keys.
@@ -76,6 +101,10 @@ const NAV_KEYS: { key: PermissionKey; role: string }[] = [
   { key: "faculty.view_own", role: "FACULTY" },
   { key: "hr.directory.view", role: "HR_MANAGER" },
   { key: "hr.view_own", role: "EMPLOYEE" },
+  { key: "hostel.view", role: "WARDEN" },
+  { key: "hostel.view_own", role: "STUDENT" },
+  { key: "transport.view", role: "TRANSPORT_MANAGER" },
+  { key: "transport.view_own", role: "STUDENT" },
 ];
 
 describe("PAGE_ACCESS table", () => {
@@ -119,7 +148,7 @@ describe("PAGE_ACCESS table", () => {
   });
 
   it("every ADMIN SectionNav link key is held by ADMIN", () => {
-    for (const item of [...FACULTY_STAFF_NAV, ...HR_STAFF_NAV]) {
+    for (const item of [...FACULTY_STAFF_NAV, ...HR_STAFF_NAV, ...HOSTEL_STAFF_NAV, ...TRANSPORT_STAFF_NAV]) {
       expect(ROLE_PERMISSIONS.ADMIN ?? [], `ADMIN must hold ${item.permission}`).toContain(item.permission);
     }
   });
@@ -150,6 +179,32 @@ describe("PAGE_ACCESS table", () => {
   it("HOD holds no hr staff key", () => {
     for (const key of ROLE_PERMISSIONS.HOD ?? []) {
       expect(key.startsWith("hr."), `HOD must not hold ${key}`).toBe(false);
+    }
+  });
+
+  it("ADMIN lacks the hostel and transport own keys", () => {
+    expect(ROLE_PERMISSIONS.ADMIN ?? []).not.toContain("hostel.view_own");
+    expect(ROLE_PERMISSIONS.ADMIN ?? []).not.toContain("transport.view_own");
+  });
+  it("WARDEN lacks every transport key and hostel.view_own", () => {
+    const held = ROLE_PERMISSIONS.WARDEN ?? [];
+    expect(held).not.toContain("hostel.view_own");
+    for (const key of held) expect(key.startsWith("transport."), `WARDEN must not hold ${key}`).toBe(false);
+  });
+  it("TRANSPORT_MANAGER lacks every hostel key and transport.view_own", () => {
+    const held = ROLE_PERMISSIONS.TRANSPORT_MANAGER ?? [];
+    expect(held).not.toContain("transport.view_own");
+    for (const key of held) expect(key.startsWith("hostel."), `TRANSPORT_MANAGER must not hold ${key}`).toBe(false);
+  });
+  it("STUDENT holds only the two own keys of hostel/transport", () => {
+    const keys = (ROLE_PERMISSIONS.STUDENT ?? []).filter((k) => k.startsWith("hostel.") || k.startsWith("transport."));
+    expect([...keys].sort()).toEqual(["hostel.view_own", "transport.view_own"]);
+  });
+  it("other roles hold no hostel or transport key", () => {
+    for (const role of ["HOD", "FACULTY", "ACCOUNTANT", "LIBRARIAN", "HR_MANAGER", "EMPLOYEE", "ADMISSION_OFFICER", "APPLICANT"]) {
+      for (const key of ROLE_PERMISSIONS[role] ?? []) {
+        expect(key.startsWith("hostel.") || key.startsWith("transport."), `${role} must not hold ${key}`).toBe(false);
+      }
     }
   });
 });

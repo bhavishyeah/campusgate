@@ -24,6 +24,8 @@ function isActive(pathname: string, href: string): boolean {
     return true;
   }
   if (href === "/hr" && pathname.startsWith("/hr/employees")) return true;
+  // Route detail pages belong to the Routes tab; /hostel is exact-only (every other page has its own link).
+  if (href === "/transport" && pathname.startsWith("/transport/routes")) return true;
   return false;
 }
 
@@ -79,4 +81,23 @@ export const HR_STAFF_NAV: SectionNavItem[] = [
   { href: "/hr/attendance", label: "Attendance", permission: "hr.attendance.manage" },
   { href: "/hr/attendance/shifts", label: "Shifts", permission: "hr.attendance.manage" },
   { href: "/hr/reports", label: "Reports", permission: "hr.reports.view" },
+];
+
+export const HOSTEL_STAFF_NAV: SectionNavItem[] = [
+  { href: "/hostel", label: "Overview", permission: "hostel.view" },
+  { href: "/hostel/buildings", label: "Buildings", permission: "hostel.view" },
+  { href: "/hostel/rooms", label: "Rooms", permission: "hostel.view" },
+  { href: "/hostel/allocations", label: "Allocations", permission: "hostel.view" },
+  { href: "/hostel/check-events", label: "Check-in/out", permission: "hostel.view" },
+  { href: "/hostel/leave", label: "Leave", permission: "hostel.view" },
+  { href: "/hostel/maintenance", label: "Maintenance", permission: "hostel.view" },
+];
+
+export const TRANSPORT_STAFF_NAV: SectionNavItem[] = [
+  { href: "/transport", label: "Routes", permission: "transport.view" },
+  { href: "/transport/vehicles", label: "Vehicles", permission: "transport.view" },
+  { href: "/transport/drivers", label: "Drivers", permission: "transport.view" },
+  { href: "/transport/enrollments", label: "Enrollments", permission: "transport.view" },
+  { href: "/transport/maintenance", label: "Maintenance", permission: "transport.view" },
+  { href: "/transport/reports", label: "Reports", permission: "transport.view" },
 ];

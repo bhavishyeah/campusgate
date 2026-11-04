@@ -108,4 +108,33 @@ describe("landingRoute", () => {
   it("prefers /hr/me over /faculty-mgmt/me when both own-keys are held", () => {
     expect(landingRoute([], ["faculty.view_own", "hr.view_own"])).toBe("/hr/me");
   });
+
+  // ── 3d. Hostel / Transport landings ──
+  it("sends the real WARDEN permissions to /hostel", () => {
+    expect(landingRoute(["WARDEN"], [...(ROLE_PERMISSIONS.WARDEN ?? [])])).toBe("/hostel");
+  });
+  it("sends the real TRANSPORT_MANAGER permissions to /transport", () => {
+    expect(landingRoute(["TRANSPORT_MANAGER"], [...(ROLE_PERMISSIONS.TRANSPORT_MANAGER ?? [])])).toBe("/transport");
+  });
+  it("prefers /hostel when both staff keys are held", () => {
+    expect(landingRoute([], ["transport.view", "hostel.view"])).toBe("/hostel");
+  });
+  it("sends non-legacy own-key holders to the self pages", () => {
+    expect(landingRoute(["PARENT"], ["hostel.view_own"])).toBe("/hostel/me");
+    expect(landingRoute(["PARENT"], ["transport.view_own"])).toBe("/transport/me");
+    expect(landingRoute([], ["hostel.view_own", "transport.view_own"])).toBe("/hostel/me");
+  });
+  it("keeps STUDENT on /student and ADMIN on /admin with the real permissions", () => {
+    expect(landingRoute(["STUDENT"], [...(ROLE_PERMISSIONS.STUDENT ?? [])])).toBe("/student");
+    expect(landingRoute(["ADMIN"], [...(ROLE_PERMISSIONS.ADMIN ?? [])])).toBe("/admin");
+  });
+  it("keeps earlier landings ahead of hostel/transport", () => {
+    expect(landingRoute(["ACCOUNTANT"], ["fees.view", "hostel.view"])).toBe("/fees");
+    expect(landingRoute(["LIBRARIAN"], ["library.books.view", "transport.view"])).toBe("/library");
+    expect(landingRoute([], ["hr.directory.view", "hostel.view"])).toBe("/hr");
+    expect(landingRoute([], ["faculty.view_own", "hostel.view"])).toBe("/faculty-mgmt/me");
+  });
+  it("falls back to /app for a holder of only hostel.allocations.manage", () => {
+    expect(landingRoute([], ["hostel.allocations.manage"])).toBe("/app");
+  });
 });

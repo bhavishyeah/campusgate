@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -114,6 +114,11 @@ const NAV: NavItem[] = [
   { href: "/faculty-mgmt/me", label: "My Faculty Profile", icon: UserCircle, anyOf: ["faculty.view_own"], module: "faculty_management" },
   { href: "/hr", label: "HR", icon: Briefcase, anyOf: ["hr.directory.view"], module: "hr_management" },
   { href: "/hr/me", label: "My Employment", icon: IdCard, anyOf: ["hr.view_own"], module: "hr_management" },
+  // ── Hostel / Transport — module-gated. Each anyOf holds only the key that opens the target page.
+  { href: "/hostel", label: "Hostel", icon: Building2, anyOf: ["hostel.view"], module: "hostel" },
+  { href: "/hostel/me", label: "My Hostel", icon: BedDouble, anyOf: ["hostel.view_own"], module: "hostel" },
+  { href: "/transport", label: "Transport", icon: BusFront, anyOf: ["transport.view"], module: "transport" },
+  { href: "/transport/me", label: "My Transport", icon: Bus, anyOf: ["transport.view_own"], module: "transport" },
 ];
 
 /** Returns whether a nav item should render, respecting permission + module state. */
