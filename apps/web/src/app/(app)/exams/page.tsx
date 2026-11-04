@@ -47,7 +47,7 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { ExamStatusBadge } from "@/components/exams/ExamStatusBadge";
 import { ApiError } from "@/lib/api";
-import { useExams, useCreateExam } from "@/features/exams/hooks";
+import { useExams, useCreateExam, useMyMarking } from "@/features/exams/hooks";
 import { EXAM_PERM } from "@/features/exams/permissions";
 import {
   createExamFormSchema,
@@ -59,18 +59,95 @@ export default function ExamsListPage() {
   const router = useRouter();
   const canView = useCan(EXAM_PERM.view);
   const canViewOwn = useCan(EXAM_PERM.viewOwn);
+  const canMark = useCan(EXAM_PERM.marksEnter);
   // Students hold only view_own; the nav entry points here, so send them to their results.
-  const redirect = !canView && canViewOwn;
+  const redirect = !canView && !canMark && canViewOwn;
 
   useEffect(() => {
     if (redirect) router.replace("/exams/my-results");
   }, [redirect, router]);
 
   if (redirect) return null;
+  // Faculty hold only marks.enter: show their assigned-exams landing.
+  if (!canView && canMark) {
+    return (
+      <RouteGuard requirePermission={EXAM_PERM.marksEnter}>
+        <FacultyLanding />
+      </RouteGuard>
+    );
+  }
   return (
     <RouteGuard requirePermission={EXAM_PERM.view}>
       <ExamsListInner />
     </RouteGuard>
+  );
+}
+
+function FacultyLanding() {
+  const { data, isLoading, isError, error } = useMyMarking();
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">My marking</h1>
+        <p className="text-sm text-gray-500">Examinations you are assigned to mark.</p>
+      </div>
+      {isLoading ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </div>
+      ) : isError ? (
+        error instanceof ApiError && error.status === 403 ? (
+          <EmptyState
+            icon={FileCheck}
+            label="You do not have access to this view"
+            description="You are not an active faculty member."
+          />
+        ) : (
+          <InlineError
+            message={error instanceof ApiError ? error.message : "Failed to load your exams."}
+          />
+        )
+      ) : !data || data.exams.length === 0 ? (
+        <EmptyState
+          icon={FileCheck}
+          label="No exams assigned to you"
+          description="Exams appear here once marks are open for your classes."
+        />
+      ) : (
+        <div className="card p-0 overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.exams.map((e) => (
+                <TableRow key={e.id}>
+                  <TableCell className="font-medium">
+                    <Link
+                      href={`/exams/${e.id}/marks`}
+                      className="text-primary-700 hover:underline"
+                    >
+                      {e.name}
+                    </Link>
+                  </TableCell>
+                  <TableCell>{e.type}</TableCell>
+                  <TableCell>
+                    <ExamStatusBadge status={e.status} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
   );
 }
 

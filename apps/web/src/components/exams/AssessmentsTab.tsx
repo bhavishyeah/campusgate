@@ -96,6 +96,11 @@ export function AssessmentsTab({ examId }: { examId: string }) {
                 <p className="text-sm font-medium text-gray-900">Subject {subjectId}</p>
                 <WeightTotalChip total={sum} />
               </div>
+              {sum < 100 && (
+                <p className="px-4 pb-2 text-xs text-amber-700">
+                  Weights total {sum}% — assessments should sum to 100% before marks open
+                </p>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>

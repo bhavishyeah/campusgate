@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ClipboardList } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { RouteGuard } from "@/components/auth/RouteGuard";
 import { Can } from "@/components/auth/Can";
 import { Button } from "@/components/ui/button";
@@ -23,16 +22,10 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { ExamStatusBadge } from "@/components/exams/ExamStatusBadge";
 import { ApiError } from "@/lib/api";
-import {
-  useEnterMarks,
-  useExam,
-  useExamAssessments,
-  useExamCandidates,
-  useExamMarks,
-  type MarkEntry,
-} from "@/features/exams/hooks";
-import { examsKeys } from "@/features/exams/keys";
+import { useCan } from "@/lib/authz";
+import { useEnterMarks, useMarksSheet, type MarkEntry } from "@/features/exams/hooks";
 import { EXAM_PERM } from "@/features/exams/permissions";
+import type { ExaminationStatus } from "@/features/exams/types";
 
 const MAX_BATCH = 5000;
 
@@ -47,70 +40,89 @@ export default function MarksEntryPage() {
   );
 }
 
+function BackButton() {
+  return (
+    <Button asChild variant="outline">
+      <Link href="/exams">Back to examinations</Link>
+    </Button>
+  );
+}
+
 function MarksEntryInner() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const router = useRouter();
-  const qc = useQueryClient();
+  const allowed = useCan(EXAM_PERM.marksEnter);
 
-  const exam = useExam(id);
-  const assessments = useExamAssessments(id);
-  const candidates = useExamCandidates(id);
-  const marks = useExamMarks(id);
+  const sheet = useMarksSheet(id);
   const enter = useEnterMarks(id);
 
   // Local edits keyed by assessmentId:candidateId (string so empty is representable).
   const [edits, setEdits] = useState<Record<string, string>>({});
 
-  const existing = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const m of marks.data?.marks ?? []) {
-      map.set(cellKey(m.assessmentId, m.candidateId), m.marks);
+  const data = sheet.data;
+
+  // Existing marks and the set of editable (in-scope) pairs, from the sheet only.
+  const { existing, inScope } = useMemo(() => {
+    const ex = new Map<string, number>();
+    const scope = new Set<string>();
+    for (const row of data?.rows ?? []) {
+      for (const c of row.cells) {
+        const key = cellKey(c.assessmentId, row.candidateId);
+        scope.add(key);
+        if (c.marks !== null) ex.set(key, c.marks);
+      }
     }
-    return map;
-  }, [marks.data]);
+    return { existing: ex, inScope: scope };
+  }, [data]);
 
-  const assessmentList = assessments.data?.assessments ?? [];
-  const candidateList = candidates.data?.candidates ?? [];
   const maxByAssessment = useMemo(
-    () => new Map(assessmentList.map((a) => [a.id, a.maxMarks])),
-    [assessmentList],
+    () => new Map((data?.assessments ?? []).map((a) => [a.id, a.maxMarks])),
+    [data],
   );
 
-  const isLoading = exam.isLoading || assessments.isLoading || candidates.isLoading;
-  if (isLoading) return <Skeleton className="h-24 w-full" />;
-
-  // Faculty scope is server-side. A 403 on the reads, or nothing to show, means
-  // the user has no assigned work for this exam: show an empty state, not an error.
-  const forbidden = [exam.error, assessments.error, candidates.error].some(
-    (e) => e instanceof ApiError && e.status === 403,
-  );
-  const hardError = [exam.error, assessments.error, candidates.error].find(
-    (e) => e && !(e instanceof ApiError && e.status === 403),
-  );
-  if (hardError) {
-    return (
-      <InlineError
-        message={hardError instanceof ApiError ? hardError.message : "Failed to load marks entry."}
-      />
-    );
-  }
-  if (forbidden || assessmentList.length === 0 || candidateList.length === 0) {
+  if (!allowed) {
     return (
       <EmptyState
         icon={ClipboardList}
-        label="No marks to enter"
+        label="You do not have access to this view"
+        description="Marks entry requires the marks-entry permission."
+        action={<BackButton />}
+      />
+    );
+  }
+  if (sheet.isLoading) return <Skeleton className="h-24 w-full" />;
+  if (sheet.isError) {
+    const status = sheet.error instanceof ApiError ? sheet.error.status : 0;
+    if (status === 403) {
+      return (
+        <EmptyState
+          icon={ClipboardList}
+          label="You do not have access to this view"
+          description="You are not assigned as a faculty member for this exam."
+          action={<BackButton />}
+        />
+      );
+    }
+    return (
+      <InlineError
+        message={sheet.error instanceof ApiError ? sheet.error.message : "Failed to load marks entry."}
+      />
+    );
+  }
+  if (!data || data.assessments.length === 0 || data.rows.length === 0) {
+    return (
+      <EmptyState
+        icon={ClipboardList}
+        label="No marks to enter for you in this exam"
         description="You have no assigned candidates or assessments for this exam."
-        action={
-          <Button asChild variant="outline">
-            <Link href="/exams">Back to examinations</Link>
-          </Button>
-        }
+        action={<BackButton />}
       />
     );
   }
 
-  const open = exam.data?.status === "MARKS_OPEN";
+  const open = data.editable;
+  const assessmentList = data.assessments;
 
   function valueFor(assessmentId: string, candidateId: string): string {
     const key = cellKey(assessmentId, candidateId);
@@ -132,10 +144,10 @@ function MarksEntryInner() {
   );
 
   function save(submit: boolean) {
-    // Changed, non-empty cells only.
+    // Changed, non-empty, in-scope cells only.
     const diff: MarkEntry[] = [];
     for (const [key, raw] of Object.entries(edits)) {
-      if (raw === "") continue;
+      if (raw === "" || !inScope.has(key)) continue;
       const [assessmentId, candidateId] = key.split(":");
       const value = Number(raw);
       if (existing.get(key) === value) continue;
@@ -155,12 +167,14 @@ function MarksEntryInner() {
         onSuccess: (r) => {
           toast.success(`Saved ${r.written} mark(s).`);
           setEdits({});
-          if (submit) router.push(`/exams/${id}`);
+          if (submit) router.push("/exams");
         },
         onError: (err) => {
           if (err.status === 409) {
             toast.error("Marks are locked for this exam.");
-            qc.invalidateQueries({ queryKey: examsKeys.exam(id) });
+            void sheet.refetch();
+          } else if (err.status === 403) {
+            toast.error("You are not assigned to enter this mark");
           } else {
             toast.error(err.message);
           }
@@ -173,10 +187,8 @@ function MarksEntryInner() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold text-gray-900">
-            Marks entry{exam.data ? `: ${exam.data.name}` : ""}
-          </h1>
-          {exam.data && <ExamStatusBadge status={exam.data.status} />}
+          <h1 className="text-2xl font-semibold text-gray-900">Marks entry: {data.exam.name}</h1>
+          <ExamStatusBadge status={data.exam.status as ExaminationStatus} />
         </div>
         <Can permission={EXAM_PERM.marksEnter}>
           <div className="flex gap-2">
@@ -211,11 +223,22 @@ function MarksEntryInner() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {candidateList.map((c) => (
-              <TableRow key={c.id}>
-                <TableCell className="font-medium">{c.studentId}</TableCell>
+            {data.rows.map((row) => (
+              <TableRow key={row.candidateId}>
+                <TableCell className="font-medium">
+                  {row.studentName}
+                  <span className="block text-xs text-gray-500">{row.enrollmentNo}</span>
+                </TableCell>
                 {assessmentList.map((a) => {
-                  const value = valueFor(a.id, c.id);
+                  const key = cellKey(a.id, row.candidateId);
+                  if (!inScope.has(key)) {
+                    return (
+                      <TableCell key={a.id} aria-label="Not assigned to you">
+                        <span className="text-gray-400">—</span>
+                      </TableCell>
+                    );
+                  }
+                  const value = valueFor(a.id, row.candidateId);
                   const problem = invalidReason(a.id, value);
                   return (
                     <TableCell key={a.id}>
@@ -223,11 +246,11 @@ function MarksEntryInner() {
                         inputMode="numeric"
                         value={value}
                         disabled={!open}
-                        aria-label={`${a.name} marks for ${c.studentId}`}
+                        aria-label={`${a.name} marks for ${row.studentName}`}
                         aria-invalid={problem !== null}
                         className={problem ? "border-red-500" : undefined}
                         onChange={(e) =>
-                          setEdits((prev) => ({ ...prev, [cellKey(a.id, c.id)]: e.target.value }))
+                          setEdits((prev) => ({ ...prev, [key]: e.target.value }))
                         }
                       />
                       {problem && <p className="text-xs text-red-600 mt-1">{problem}</p>}

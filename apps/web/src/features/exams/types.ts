@@ -191,3 +191,42 @@ export interface PublishResult {
   version: number;
   snapshotCount: number;
 }
+
+// --- Faculty marking (exams.marks.enter) -------------------------------------
+export interface MyMarkingExam {
+  id: string;
+  name: string;
+  type: string;
+  status: "MARKS_OPEN" | "MARKS_LOCKED" | "MODERATION";
+  academicTermId: string;
+}
+
+export interface MarksSheetAssessment {
+  id: string;
+  name: string;
+  subjectId: string;
+  maxMarks: number;
+  weight: number;
+}
+
+export interface MarksSheetCell {
+  assessmentId: string;
+  marksRecordId: string | null;
+  marks: number | null;
+}
+
+export interface MarksSheetRow {
+  candidateId: string;
+  studentId: string;
+  enrollmentNo: string;
+  studentName: string;
+  // Only assessments this candidate is in scope for; a missing pair is not editable.
+  cells: MarksSheetCell[];
+}
+
+export interface MarksSheet {
+  exam: { id: string; name: string; type: string; status: string; academicTermId: string };
+  editable: boolean;
+  assessments: MarksSheetAssessment[];
+  rows: MarksSheetRow[];
+}

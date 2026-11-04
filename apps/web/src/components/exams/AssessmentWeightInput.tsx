@@ -57,6 +57,11 @@ export function AssessmentWeightInput({
         {projected > 100 && (
           <span className="text-red-700">Exceeds remaining headroom ({Math.max(0, headroom)})</span>
         )}
+        {projected < 100 && (
+          <span className="text-amber-700">
+            Weights total {projected}% — assessments should sum to 100% before marks open
+          </span>
+        )}
       </div>
     </div>
   );

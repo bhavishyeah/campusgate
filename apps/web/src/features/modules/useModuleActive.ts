@@ -31,6 +31,7 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
   if (moduleKey === "examinations") {
     if (can("exams.results.view", permissions)) probePath = "/api/exams";
     else if (can("exams.results.view_own", permissions)) probePath = "/api/exams/me/results";
+    else if (can("exams.marks.enter", permissions)) probePath = "/api/exams/my-marking";
   }
 
   const query = useQuery<ModuleActiveStatus, never>({

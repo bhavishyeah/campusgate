@@ -17,6 +17,8 @@ import type {
   GradingBand,
   GradingScheme,
   MarksRecord,
+  MarksSheet,
+  MyMarkingExam,
   MyResultDetail,
   MyResultExam,
   MyResultHistoryEntry,
@@ -133,6 +135,24 @@ export function useExamMarks(id: string) {
     queryKey: examsKeys.marks(id),
     queryFn: () => api.get(`/api/exams/${id}/marks`),
     enabled: Boolean(id) && can(EXAM_PERM.view, currentPermissions()),
+  });
+}
+
+export function useMyMarking() {
+  return useQuery<{ exams: MyMarkingExam[] }>({
+    queryKey: examsKeys.myMarking(),
+    queryFn: () => api.get("/api/exams/my-marking"),
+    enabled: can(EXAM_PERM.marksEnter, currentPermissions()),
+    retry: false,
+  });
+}
+
+export function useMarksSheet(examId: string) {
+  return useQuery<MarksSheet>({
+    queryKey: examsKeys.marksSheet(examId),
+    queryFn: () => api.get(`/api/exams/${examId}/marks-sheet`),
+    enabled: Boolean(examId) && can(EXAM_PERM.marksEnter, currentPermissions()),
+    retry: false,
   });
 }
 
@@ -340,6 +360,7 @@ export function useEnterMarks(id: string) {
     mutationFn: (body) => api.put(`/api/exams/${id}/marks`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: examsKeys.marks(id) });
+      qc.invalidateQueries({ queryKey: examsKeys.marksSheet(id) });
     },
   });
 }

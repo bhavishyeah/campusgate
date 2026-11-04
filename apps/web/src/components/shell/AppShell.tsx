@@ -88,7 +88,7 @@ const NAV: NavItem[] = [
     href: "/exams",
     label: "Examinations",
     icon: FileCheck,
-    anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own"],
+    anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own", "exams.marks.enter"],
     module: "examinations",
   },
 ];

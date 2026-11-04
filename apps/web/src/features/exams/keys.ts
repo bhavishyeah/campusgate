@@ -13,6 +13,9 @@ export const examsKeys = {
   gradingSchemes: () => ["exams", "grading-schemes"] as const,
   myResults: () => ["exams", "me", "results"] as const,
   myResult: (examId: string) => ["exams", "me", "results", examId] as const,
+  // Faculty marking (exams.marks.enter only)
+  myMarking: () => ["exams", "me", "marking"] as const,
+  marksSheet: (id: string) => ["exams", "marks-sheet", id] as const,
   // Own branch (not under "results") so myResult("history") cannot collide.
   myHistory: () => ["exams", "me", "history"] as const,
 } as const;
