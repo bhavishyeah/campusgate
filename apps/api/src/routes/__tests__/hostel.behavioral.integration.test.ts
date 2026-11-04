@@ -106,6 +106,14 @@ const studentUser2 = id("u_student2");
 const studentProfile2 = id("sp_2");
 const studentUser3 = id("u_student3");
 const studentProfile3 = id("sp_3");
+// Frontend-read additions (setup step): a WARDEN-membership staff user plus a
+// second tenant (B) with its own student, used to prove tenant isolation of the
+// new lookups/reads.
+const wardenUser = id("u_warden");
+const instB = id("instB");
+const deptB = id("deptB");
+const studentUserB = id("u_studentB");
+const studentProfileB = id("sp_B");
 
 let app: FastifyInstance;
 
@@ -268,9 +276,29 @@ async function allocate(roomId: string, studentId: string) {
   });
 }
 
+// WARDEN user (template WARDEN role -> the five hostel staff keys only) in A, and
+// tenant B with one student. B hostel rows are created inside the tests (the
+// per-test clearHostel removes every PFX-prefixed hostel row).
+async function seedExtra(): Promise<void> {
+  await withRetry(() => adminClient.user.create({ data: { id: wardenUser, email: `${PFX.toLowerCase()}warden@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instA } }));
+  await ensureMembership(wardenUser, "WARDEN");
+  await withRetry(() => adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }));
+  await withRetry(() => adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.user.create({
+      data: { id: studentUserB, email: `${studentUserB.toLowerCase()}@b.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instB },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.studentProfile.create({
+      data: { id: studentProfileB, userId: studentUserB, institutionId: instB, enrollmentNo: id("ENR_B"), name: `${PFX}Student B`, departmentId: deptB, program: "TEST", semester: 1, status: "ACTIVE" },
+    }),
+  );
+}
 beforeAll(async () => {
   await teardown();
   await seed();
+  await seedExtra();
 
   const { hostelRoutes } = await import("../hostel.js");
 
@@ -649,4 +677,152 @@ describe("Phase-9.3 hostel management behavioral (real DB, real routes, real RLS
     expect(student2List.statusCode).toBe(200);
     expect(student2List.json().applications.some((a: { id: string }) => a.id === leave1Id)).toBe(false);
   }, 120_000);
+});
+describe("Frontend reads/lookups (WARDEN role, tenant isolation, role denial; real DB, real RLS)", () => {
+  const wardenToken = () => tokenFor(wardenUser, "GUARD");
+  const get = (url: string, token: string) =>
+    app.inject({ method: "GET", url: `/api/hostel${url}`, headers: authHeader(token) });
+  // Tenant-B hostel rows (building -> room -> ACTIVE allocation for the B student).
+  async function seedTenantBHostel(): Promise<{ buildingId: string; roomId: string; allocationId: string }> {
+    const building = await withRetry(() =>
+      adminClient.hostelBuilding.create({ data: { institutionId: instB, name: `${PFX}Block B`, type: "BOYS", createdByUserId: "x" } }),
+    );
+    const room = await withRetry(() =>
+      adminClient.hostelRoom.create({ data: { institutionId: instB, buildingId: building.id, roomNumber: "B1", capacity: 2, createdByUserId: "x" } }),
+    );
+    const alloc = await withRetry(() =>
+      adminClient.hostelRoomAllocation.create({
+        data: { institutionId: instB, roomId: room.id, studentId: studentProfileB, status: "ACTIVE", allocatedAt: new Date(), allocatedByUserId: "x" },
+      }),
+    );
+    return { buildingId: building.id, roomId: room.id, allocationId: alloc.id };
+  }
+
+  it("WARDEN reads: rooms list with occupancy, enriched allocations/leave/maintenance, check-events, buildings warden; tenant B never leaks", async () => {
+    const b = await seedTenantBHostel();
+    // A WARDEN creates the building with themself as warden, then a room.
+    const mk = await app.inject({
+      method: "POST",
+      url: "/api/hostel/buildings",
+      headers: authHeader(wardenToken()),
+      payload: { name: `Block W ${Date.now()}`, type: "GIRLS", wardenUserId: wardenUser },
+    });
+    expect(mk.statusCode).toBe(201);
+    const buildingId = mk.json().id as string;
+    const roomId = await createRoom(buildingId, 2);
+    const alloc = await app.inject({
+      method: "POST",
+      url: "/api/hostel/allocations",
+      headers: authHeader(wardenToken()),
+      payload: { roomId, studentId: studentProfile1 },
+    });
+    expect(alloc.statusCode).toBe(201);
+    const allocationId = alloc.json().id as string;
+    // check event + maintenance + a student leave, all through real routes.
+    expect(
+      (await app.inject({ method: "POST", url: `/api/hostel/allocations/${allocationId}/check`, headers: authHeader(wardenToken()), payload: { eventType: "CHECK_IN" } })).statusCode,
+    ).toBe(201);
+    expect(
+      (await app.inject({ method: "POST", url: "/api/hostel/maintenance", headers: authHeader(wardenToken()), payload: { roomId, issue: "leaky tap" } })).statusCode,
+    ).toBe(201);
+    expect(
+      (await app.inject({ method: "POST", url: "/api/hostel/me/leave", headers: authHeader(student1Token()), payload: { fromDate: "2027-03-01T00:00:00.000Z", toDate: "2027-03-02T00:00:00.000Z", reason: "home" } })).statusCode,
+    ).toBe(201);
+
+    // buildings: warden display + roomCount; B's building absent.
+    const buildings = await get("/buildings", wardenToken());
+    expect(buildings.statusCode).toBe(200);
+    const mine = (buildings.json().buildings as Array<{ id: string; roomCount: number; warden: { id: string; email: string } | null }>).find((x) => x.id === buildingId);
+    expect(mine).toBeTruthy();
+    expect(mine!.roomCount).toBe(1);
+    expect(mine!.warden).toMatchObject({ id: wardenUser });
+    expect(buildings.json().buildings.some((x: { id: string }) => x.id === b.buildingId)).toBe(false);
+
+    // rooms: occupancy computed; building filter; B's room absent.
+    const rooms = await get("/rooms", wardenToken());
+    expect(rooms.statusCode).toBe(200);
+    const roomRow = (rooms.json().rooms as Array<{ id: string; occupancy: { capacity: number; occupied: number; available: number }; building: { id: string } }>).find((r) => r.id === roomId);
+    expect(roomRow).toBeTruthy();
+    expect(roomRow!.occupancy).toEqual({ capacity: 2, occupied: 1, available: 1 });
+    expect(roomRow!.building.id).toBe(buildingId);
+    expect(rooms.json().rooms.some((r: { id: string }) => r.id === b.roomId)).toBe(false);
+    expect((await get(`/rooms?buildingId=${b.buildingId}`, wardenToken())).json().rooms).toEqual([]);
+    expect((await get("/rooms?status=BOGUS", wardenToken())).statusCode).toBe(400);
+
+    // allocations: student + room/building names; buildingId filter; B's absent.
+    const allocs = await get(`/allocations?buildingId=${buildingId}`, wardenToken());
+    expect(allocs.statusCode).toBe(200);
+    expect(allocs.json().allocations).toHaveLength(1);
+    expect(allocs.json().allocations[0]).toMatchObject({
+      id: allocationId,
+      student: { id: studentProfile1, enrollmentNo: id("ENR_1") },
+      room: { id: roomId, building: { id: buildingId } },
+    });
+    const allAllocs = await get("/allocations", wardenToken());
+    expect(allAllocs.json().allocations.some((a: { id: string }) => a.id === b.allocationId)).toBe(false);
+
+    // leave queue + maintenance carry names.
+    const leave = await get("/leave?status=REQUESTED", wardenToken());
+    expect(leave.statusCode).toBe(200);
+    expect(leave.json().applications[0].student).toMatchObject({ id: studentProfile1 });
+    const maint = await get("/maintenance", wardenToken());
+    expect(maint.json().requests[0].room).toMatchObject({ id: roomId, building: { id: buildingId } });
+
+    // check-events: filtered by allocation, with student + room; tenant B's allocation yields nothing.
+    const events = await get(`/check-events?allocationId=${allocationId}`, wardenToken());
+    expect(events.statusCode).toBe(200);
+    expect(events.json().total).toBe(1);
+    expect(events.json().events[0]).toMatchObject({ eventType: "CHECK_IN", student: { id: studentProfile1 }, allocation: { id: allocationId } });
+    expect((await get(`/check-events?allocationId=${b.allocationId}`, wardenToken())).json().events).toEqual([]);
+  }, 180_000);
+
+  it("pickers: students/lookup is tenant-scoped and flags allocated students; users/lookup excludes students and tenant B", async () => {
+    await seedTenantBHostel();
+    const building = await createBuilding();
+    const room = await createRoom(building, 2);
+    expect((await allocate(room, studentProfile1)).statusCode).toBe(201);
+
+    const res = await get(`/students/lookup?q=${encodeURIComponent(PFX + "Student")}&limit=25`, wardenToken());
+    expect(res.statusCode).toBe(200);
+    const students = res.json().students as Array<{ id: string; hasActiveAllocation: boolean }>;
+    const ids = students.map((s) => s.id).sort();
+    expect(ids).toEqual([studentProfile1, studentProfile2, studentProfile3].sort());
+    expect(students.find((s) => s.id === studentProfile1)!.hasActiveAllocation).toBe(true);
+    expect(students.find((s) => s.id === studentProfile2)!.hasActiveAllocation).toBe(false);
+    expect(Object.keys(students[0]).sort()).toEqual(["enrollmentNo", "hasActiveAllocation", "id", "name", "program"]);
+    expect((await get("/students/lookup?q=a", wardenToken())).statusCode).toBe(400);
+
+    // users/lookup: staff only (no student-profile users), never tenant B users.
+    const users = await get(`/users/lookup?q=${encodeURIComponent(PFX.toLowerCase())}`, wardenToken());
+    expect(users.statusCode).toBe(200);
+    const uids = (users.json().users as Array<{ id: string }>).map((u) => u.id);
+    expect(uids).toContain(wardenUser);
+    expect(uids).toContain(adminUser);
+    expect(uids).not.toContain(studentUser1);
+    expect(uids).not.toContain(studentUserB);
+    expect(Object.keys(users.json().users[0]).sort()).toEqual(["email", "id", "name"]);
+  }, 180_000);
+
+  it("role denial + module gate: STUDENT cannot use staff reads/lookups, WARDEN cannot use /me/*; /me/allocation carries the room", async () => {
+    const building = await createBuilding();
+    const room = await createRoom(building, 2);
+    expect((await allocate(room, studentProfile1)).statusCode).toBe(201);
+    for (const url of ["/rooms", "/check-events", "/students/lookup?q=ab", "/users/lookup?q=ab", "/buildings", "/allocations"]) {
+      expect((await get(url, student1Token())).statusCode).toBe(403);
+    }
+    expect((await get("/me/allocation", wardenToken())).statusCode).toBe(403);
+    const mine = await get("/me/allocation", student1Token());
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json().allocation.room).toMatchObject({ id: room });
+    expect(mine.json().allocation.room.building.id).toBe(building);
+
+    // module inactive -> the new reads fail closed (403).
+    await withRetry(() => adminClient.institutionModule.update({ where: { id: id("imod_A") }, data: { state: "SUSPENDED" } }));
+    try {
+      expect((await get("/rooms", wardenToken())).statusCode).toBe(403);
+      expect((await get("/students/lookup?q=ab", wardenToken())).statusCode).toBe(403);
+    } finally {
+      await withRetry(() => adminClient.institutionModule.update({ where: { id: id("imod_A") }, data: { state: "ACTIVE" } }));
+    }
+  }, 180_000);
 });

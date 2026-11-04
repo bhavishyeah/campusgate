@@ -17,6 +17,7 @@ import {
   createTransportMaintenanceSchema,
   transportMaintenanceTransitionSchema,
   transportListQuerySchema,
+  transportStudentLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -128,6 +129,20 @@ export async function transportRoutes(app: FastifyInstance) {
     });
   }
 
+  // Display projections for the staff reads (setup step G-TRN*): rows used to carry
+  // only ids, so the screens could not show names. Minimal fields; tenant scoping
+  // comes from the surrounding withTenant + institutionId filters.
+  const studentDisplaySelect = {
+    id: true,
+    name: true,
+    enrollmentNo: true,
+    program: true,
+  } as const;
+  const enrollmentDisplayInclude = {
+    student: { select: studentDisplaySelect },
+    route: { select: { id: true, code: true, name: true } },
+    stop: { select: { id: true, name: true, sequence: true } },
+  } as const;
   // feeAmount is int paise in the DB; serialize it back as a decimal-digit
   // STRING on every response that returns a route (money-as-string, §D.1).
   function serializeRoute<T extends { feeAmount: number | null }>(route: T) {
@@ -899,6 +914,13 @@ export async function transportRoutes(app: FastifyInstance) {
               : {}),
           },
           orderBy: [{ effectiveFrom: "desc" }, { id: "asc" }],
+          // G-TRN2: additive vehicle + driver display projections.
+          include: {
+            vehicle: {
+              select: { id: true, registrationNo: true, type: true, seatCapacity: true, status: true },
+            },
+            driver: { select: { id: true, name: true, licenseNo: true, phone: true, status: true } },
+          },
         });
         return { assignments };
       });
@@ -1216,6 +1238,8 @@ export async function transportRoutes(app: FastifyInstance) {
             orderBy: [{ enrolledAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            // G-TRN3: additive student/route/stop display projections.
+            include: enrollmentDisplayInclude,
           }),
         ]);
         return { total, enrollments };
@@ -1522,6 +1546,8 @@ export async function transportRoutes(app: FastifyInstance) {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            // G-TRN4: additive vehicle display projection.
+            include: { vehicle: { select: { id: true, registrationNo: true, type: true } } },
           }),
         ]);
         return { total, requests };
@@ -1531,6 +1557,36 @@ export async function transportRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── G-TRN1. GET /students/lookup — transport-scoped student picker ─────────────
+  // Gated by transport.enrollments.manage (TRANSPORT_MANAGER holds no students.view).
+  // Returns only id/name/enrollmentNo/program, excludes un-enrolled APPLICANTs (the
+  // library G3 precedent).
+  app.get(
+    "/students/lookup",
+    { preHandler: [requirePermission("transport.enrollments.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = transportStudentLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const students = await withTenant(institutionId, (tx) =>
+        tx.studentProfile.findMany({
+          where: {
+            institutionId,
+            status: { not: "APPLICANT" },
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { enrollmentNo: { contains: q, mode: "insensitive" } },
+            ],
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: limit,
+          select: studentDisplaySelect,
+        }),
+      );
+      return reply.send({ students });
+    },
+  );
   // ─── 28. GET /reports/roster — enrolled students per route ───────────────────
   app.get(
     "/reports/roster",
@@ -1549,6 +1605,8 @@ export async function transportRoutes(app: FastifyInstance) {
             ...(routeId ? { routeId } : {}),
           },
           orderBy: [{ routeId: "asc" }, { enrolledAt: "asc" }, { id: "asc" }],
+          // G-TRN3: additive student/route/stop display projections.
+          include: enrollmentDisplayInclude,
         }),
       );
 
@@ -1695,9 +1753,17 @@ export async function transportRoutes(app: FastifyInstance) {
       const enrollments = await withTenant(institutionId, async (tx) => {
         const self = await resolveSelf(tx, institutionId, userId);
         if (!self) return [];
+        // G-TRN5: additive route + stop display (a student holds no transport.view,
+        // so they could not otherwise resolve routeId/stopId to names).
         return tx.transportEnrollment.findMany({
           where: { institutionId, studentId: self.id, status: "ACTIVE" },
           orderBy: [{ enrolledAt: "asc" }, { id: "asc" }],
+          include: {
+            route: { select: { id: true, code: true, name: true } },
+            stop: {
+              select: { id: true, name: true, sequence: true, landmark: true, pickupOffsetMinutes: true },
+            },
+          },
         });
       });
       return reply.send({ enrollments });

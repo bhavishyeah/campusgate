@@ -14,6 +14,10 @@ import {
   createMaintenanceSchema,
   maintenanceTransitionSchema,
   hostelListQuerySchema,
+  hostelRoomsQuerySchema,
+  hostelCheckEventsQuerySchema,
+  hostelStudentLookupQuerySchema,
+  hostelUserLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -126,6 +130,21 @@ export async function hostelRoutes(app: FastifyInstance) {
     });
   }
 
+  // Display projections for the staff reads (setup step G-HOS*): rows used to carry
+  // only ids, so the screens could not show names. Minimal fields, tenant-scoped
+  // by the surrounding withTenant + institutionId filters.
+  const studentDisplaySelect = {
+    id: true,
+    name: true,
+    enrollmentNo: true,
+    program: true,
+  } as const;
+  const roomDisplaySelect = {
+    id: true,
+    roomNumber: true,
+    floor: true,
+    building: { select: { id: true, name: true } },
+  } as const;
   // ─── 1. POST /buildings — create a building (matrix row 1) ───────────────────
   app.post(
     "/buildings",
@@ -230,9 +249,30 @@ export async function hostelRoutes(app: FastifyInstance) {
             orderBy: [{ name: "asc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            include: { _count: { select: { rooms: true } } },
           }),
         ]);
-        return { total, buildings };
+        // G-HOS2: resolve the recorded wardenUserId to a display user (same tenant).
+        const wardenIds = [
+          ...new Set(buildings.map((b) => b.wardenUserId).filter((w): w is string => !!w)),
+        ];
+        const wardens = wardenIds.length
+          ? await tx.user.findMany({
+              where: { institutionId, id: { in: wardenIds } },
+              select: { id: true, email: true, facultyProfile: { select: { name: true } } },
+            })
+          : [];
+        const wardenById = new Map(
+          wardens.map((u) => [u.id, { id: u.id, email: u.email, name: u.facultyProfile?.name ?? null }]),
+        );
+        return {
+          total,
+          buildings: buildings.map(({ _count, ...b }) => ({
+            ...b,
+            roomCount: _count.rooms,
+            warden: b.wardenUserId ? (wardenById.get(b.wardenUserId) ?? null) : null,
+          })),
+        };
       });
 
       return reply.send({ buildings: result.buildings, total: result.total, page, pageSize });
@@ -364,6 +404,55 @@ export async function hostelRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── G-HOS1. GET /rooms — staff room list with building + computed occupancy ───
+  // Previously only /occupancy (ids + counts) and /rooms/:id existed, so a screen
+  // had no way to list rooms with their status/floor or build a room picker.
+  app.get(
+    "/rooms",
+    { preHandler: [requirePermission("hostel.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hostelRoomsQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { page, pageSize, buildingId, status } = parsed.data;
+      const result = await withTenant(institutionId, async (tx) => {
+        const where: Prisma.HostelRoomWhereInput = {
+          institutionId,
+          ...(buildingId ? { buildingId } : {}),
+          ...(status ? { status } : {}),
+        };
+        const [total, rooms] = await Promise.all([
+          tx.hostelRoom.count({ where }),
+          tx.hostelRoom.findMany({
+            where,
+            orderBy: [{ building: { name: "asc" } }, { roomNumber: "asc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            include: { building: { select: { id: true, name: true, type: true } } },
+          }),
+        ]);
+        const grouped = rooms.length
+          ? await tx.hostelRoomAllocation.groupBy({
+              by: ["roomId"],
+              where: { institutionId, status: "ACTIVE", roomId: { in: rooms.map((r) => r.id) } },
+              _count: { _all: true },
+            })
+          : [];
+        const occupiedByRoom = new Map<string, number>(grouped.map((g) => [g.roomId, g._count._all]));
+        return {
+          total,
+          rooms: rooms.map((r) => {
+            const occupied = occupiedByRoom.get(r.id) ?? 0;
+            return {
+              ...r,
+              occupancy: { capacity: r.capacity, occupied, available: r.capacity - occupied },
+            };
+          }),
+        };
+      });
+      return reply.send({ rooms: result.rooms, total: result.total, page, pageSize });
+    },
+  );
   // ─── 6. GET /rooms/:id — staff detail + computed occupancy (row 6) ───────────
   app.get(
     "/rooms/:id",
@@ -717,12 +806,13 @@ export async function hostelRoutes(app: FastifyInstance) {
       if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
       const { page, pageSize, status } = parsed.data;
       const { roomId } = request.query as { roomId?: string };
-
+      const { buildingId } = parsed.data;
       const result = await withTenant(institutionId, async (tx) => {
         const where: Prisma.HostelRoomAllocationWhereInput = {
           institutionId,
           ...(status ? { status: status as Prisma.HostelRoomAllocationWhereInput["status"] } : {}),
           ...(roomId ? { roomId } : {}),
+          ...(buildingId ? { room: { buildingId } } : {}),
         };
         const [total, allocations] = await Promise.all([
           tx.hostelRoomAllocation.count({ where }),
@@ -731,6 +821,11 @@ export async function hostelRoutes(app: FastifyInstance) {
             orderBy: [{ allocatedAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            // G-HOS3: additive display projections (student + room/building names).
+            include: {
+              student: { select: studentDisplaySelect },
+              room: { select: roomDisplaySelect },
+            },
           }),
         ]);
         return { total, allocations };
@@ -955,6 +1050,8 @@ export async function hostelRoutes(app: FastifyInstance) {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            // G-HOS3: additive room/building display projection.
+            include: { room: { select: roomDisplaySelect } },
           }),
         ]);
         return { total, requests };
@@ -1054,6 +1151,8 @@ export async function hostelRoutes(app: FastifyInstance) {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: (page - 1) * pageSize,
             take: pageSize,
+            // G-HOS3: additive student display projection for the approval queue.
+            include: { student: { select: studentDisplaySelect } },
           }),
         ]);
         return { total, applications };
@@ -1063,6 +1162,112 @@ export async function hostelRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── G-HOS4. GET /check-events — append-only check-in/out history (hostel.view) ─
+  app.get(
+    "/check-events",
+    { preHandler: [requirePermission("hostel.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hostelCheckEventsQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { page, pageSize, allocationId, studentId } = parsed.data;
+      const result = await withTenant(institutionId, async (tx) => {
+        const where: Prisma.HostelCheckEventWhereInput = {
+          institutionId,
+          ...(allocationId ? { allocationId } : {}),
+          ...(studentId ? { studentId } : {}),
+        };
+        const [total, events] = await Promise.all([
+          tx.hostelCheckEvent.count({ where }),
+          tx.hostelCheckEvent.findMany({
+            where,
+            orderBy: [{ occurredAt: "desc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            include: {
+              student: { select: studentDisplaySelect },
+              allocation: { select: { id: true, room: { select: roomDisplaySelect } } },
+            },
+          }),
+        ]);
+        return { total, events };
+      });
+      return reply.send({ events: result.events, total: result.total, page, pageSize });
+    },
+  );
+  // ─── G-HOS5. GET /students/lookup — warden-scoped student picker ───────────────
+  // Gated by hostel.allocations.manage (NOT students.view, which WARDEN lacks):
+  // returns only id/name/enrollmentNo/program, excludes un-enrolled APPLICANTs
+  // (the library G3 precedent) and flags students who already hold an ACTIVE bed.
+  app.get(
+    "/students/lookup",
+    { preHandler: [requirePermission("hostel.allocations.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hostelStudentLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const students = await withTenant(institutionId, async (tx) => {
+        const rows = await tx.studentProfile.findMany({
+          where: {
+            institutionId,
+            status: { not: "APPLICANT" },
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { enrollmentNo: { contains: q, mode: "insensitive" } },
+            ],
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: limit,
+          select: {
+            ...studentDisplaySelect,
+            hostelRoomAllocations: {
+              where: { institutionId, status: "ACTIVE" },
+              select: { id: true },
+              take: 1,
+            },
+          },
+        });
+        return rows.map(({ hostelRoomAllocations, ...s }) => ({
+          ...s,
+          hasActiveAllocation: hostelRoomAllocations.length > 0,
+        }));
+      });
+      return reply.send({ students });
+    },
+  );
+  // ─── G-HOS6. GET /users/lookup — staff picker for the building warden ───────────
+  // Gated by hostel.buildings.manage (the key that sets wardenUserId). WARDEN has
+  // no admin.users.view. Returns only id/email/name of tenant users who are NOT
+  // student profiles, so a warden cannot enumerate students through this route.
+  app.get(
+    "/users/lookup",
+    { preHandler: [requirePermission("hostel.buildings.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hostelUserLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const users = await withTenant(institutionId, (tx) =>
+        tx.user.findMany({
+          where: {
+            institutionId,
+            studentProfile: null,
+            OR: [
+              { email: { contains: q, mode: "insensitive" } },
+              { facultyProfile: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+          orderBy: [{ email: "asc" }],
+          take: limit,
+          select: { id: true, email: true, facultyProfile: { select: { name: true } } },
+        }),
+      );
+      return reply.send({
+        users: users.map((u) => ({ id: u.id, email: u.email, name: u.facultyProfile?.name ?? null })),
+      });
+    },
+  );
   // ─── 19. GET /allocations/export — XLSX export (row 19, §C.8) ────────────────
   app.get(
     "/allocations/export",
@@ -1139,8 +1344,20 @@ export async function hostelRoutes(app: FastifyInstance) {
       const outcome = await withTenant(institutionId, async (tx) => {
         const self = await resolveSelf(tx, institutionId, userId);
         if (!self) return { noProfile: true as const };
+        // G-HOS7: additive room/building display (a student holds no hostel.view,
+        // so they could not otherwise resolve roomId to a room number/building).
         const allocation = await tx.hostelRoomAllocation.findFirst({
           where: { institutionId, studentId: self.id, status: "ACTIVE" },
+          include: {
+            room: {
+              select: {
+                id: true,
+                roomNumber: true,
+                floor: true,
+                building: { select: { id: true, name: true, type: true } },
+              },
+            },
+          },
         });
         return { allocation };
       });

@@ -119,6 +119,14 @@ const studentProfile3 = id("sp_3");
 // StudentProfile row — exercises the self-service no-profile branch, which must
 // return 200 + an empty list (NEVER 404), the DELIBERATE departure from hostel.
 const noProfileUser = id("u_noprofile");
+// Frontend-read additions (setup step): a TRANSPORT_MANAGER-membership staff user
+// plus a second tenant (B) with its own student, used to prove tenant isolation of
+// the new lookup / enriched reads.
+const tmUser = id("u_tm");
+const instB = id("instB");
+const deptB = id("deptB");
+const studentUserB = id("u_studentB");
+const studentProfileB = id("sp_B");
 
 let app: FastifyInstance;
 
@@ -333,9 +341,29 @@ async function assignedRoute(seatCapacity: number): Promise<{ routeId: string; s
   return { routeId, stopId };
 }
 
+// TRANSPORT_MANAGER user (template role -> the seven transport staff keys only) in A,
+// and tenant B with one student. B transport rows are created inside the tests
+// (the per-test clearTransport removes every PFX-prefixed transport row).
+async function seedExtra(): Promise<void> {
+  await withRetry(() => adminClient.user.create({ data: { id: tmUser, email: `${PFX.toLowerCase()}tm@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instA } }));
+  await ensureMembership(tmUser, "TRANSPORT_MANAGER");
+  await withRetry(() => adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }));
+  await withRetry(() => adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.user.create({
+      data: { id: studentUserB, email: `${studentUserB.toLowerCase()}@b.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instB },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.studentProfile.create({
+      data: { id: studentProfileB, userId: studentUserB, institutionId: instB, enrollmentNo: id("ENR_B"), name: `${PFX}Student B`, departmentId: deptB, program: "TEST", semester: 1, status: "ACTIVE" },
+    }),
+  );
+}
 beforeAll(async () => {
   await teardown();
   await seed();
+  await seedExtra();
 
   const { transportRoutes } = await import("../transport.js");
 
@@ -736,4 +764,117 @@ describe("Phase-9.4 transport management behavioral (real DB, real routes, real 
     });
     expect(exported).toBeGreaterThanOrEqual(1);
   }, 120_000);
+});
+
+describe("Frontend reads/lookups (TRANSPORT_MANAGER role, tenant isolation, role denial; real DB, real RLS)", () => {
+  const tmToken = () => tokenFor(tmUser, "GUARD");
+  const get = (url: string, token: string) =>
+    app.inject({ method: "GET", url: `/api/transport${url}`, headers: authHeader(token) });
+  // Tenant-B transport rows: vehicle + driver + route + stop + ACTIVE assignment + enrollment.
+  async function seedTenantBTransport(): Promise<{ routeId: string; enrollmentId: string }> {
+    const vehicle = await withRetry(() =>
+      adminClient.transportVehicle.create({ data: { institutionId: instB, registrationNo: id("VB"), type: "BUS", seatCapacity: 10, createdByUserId: "x" } }),
+    );
+    const driver = await withRetry(() =>
+      adminClient.transportDriver.create({ data: { institutionId: instB, name: "B Driver", licenseNo: id("LB"), createdByUserId: "x" } }),
+    );
+    const route = await withRetry(() =>
+      adminClient.transportRoute.create({ data: { institutionId: instB, name: "B Route", code: id("RB"), createdByUserId: "x" } }),
+    );
+    const stop = await withRetry(() =>
+      adminClient.transportRouteStop.create({ data: { institutionId: instB, routeId: route.id, name: "B Stop", sequence: 1, createdByUserId: "x" } }),
+    );
+    await withRetry(() =>
+      adminClient.transportRouteAssignment.create({
+        data: { institutionId: instB, routeId: route.id, vehicleId: vehicle.id, driverId: driver.id, effectiveFrom: new Date(), createdByUserId: "x" },
+      }),
+    );
+    const enrollment = await withRetry(() =>
+      adminClient.transportEnrollment.create({
+        data: { institutionId: instB, studentId: studentProfileB, routeId: route.id, stopId: stop.id, enrolledAt: new Date(), createdByUserId: "x" },
+      }),
+    );
+    return { routeId: route.id, enrollmentId: enrollment.id };
+  }
+
+  it("TRANSPORT_MANAGER reads: assignments/enrollments/roster/maintenance carry names; tenant B never leaks", async () => {
+    const b = await seedTenantBTransport();
+    const { routeId, stopId } = await assignedRoute(3);
+    const enr = await app.inject({
+      method: "POST",
+      url: "/api/transport/enrollments",
+      headers: authHeader(tmToken()),
+      payload: { routeId, stopId, studentId: studentProfile1 },
+    });
+    expect(enr.statusCode).toBe(201);
+    const vehicleRow = await adminClient.transportRouteAssignment.findFirst({ where: { routeId, institutionId: instA, status: "ACTIVE" } });
+    const mnt = await app.inject({
+      method: "POST",
+      url: "/api/transport/maintenance",
+      headers: authHeader(tmToken()),
+      payload: { vehicleId: vehicleRow!.vehicleId, issue: "brakes" },
+    });
+    expect(mnt.statusCode).toBe(201);
+
+    const assignments = await get(`/routes/${routeId}/assignments`, tmToken());
+    expect(assignments.statusCode).toBe(200);
+    expect(assignments.json().assignments[0]).toMatchObject({
+      vehicleId: vehicleRow!.vehicleId,
+      vehicle: { id: vehicleRow!.vehicleId, seatCapacity: 3 },
+      driver: { id: vehicleRow!.driverId },
+    });
+    // B's route is a 404 from A (RLS + tenant filter), never its assignments.
+    expect((await get(`/routes/${b.routeId}/assignments`, tmToken())).statusCode).toBe(404);
+
+    const list = await get("/enrollments", tmToken());
+    expect(list.statusCode).toBe(200);
+    const rows = list.json().enrollments as Array<{ id: string; student: { id: string }; route: { id: string }; stop: { id: string } }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ student: { id: studentProfile1 }, route: { id: routeId }, stop: { id: stopId } });
+    expect(rows.some((r) => r.id === b.enrollmentId)).toBe(false);
+    expect((await get(`/enrollments?routeId=${b.routeId}`, tmToken())).json().enrollments).toEqual([]);
+
+    const roster = await get("/reports/roster", tmToken());
+    expect(roster.statusCode).toBe(200);
+    expect(roster.json().roster).toHaveLength(1);
+    expect(roster.json().roster[0]).toMatchObject({ student: { id: studentProfile1 }, route: { id: routeId } });
+
+    const maint = await get("/maintenance", tmToken());
+    expect(maint.json().requests[0].vehicle).toMatchObject({ id: vehicleRow!.vehicleId });
+  }, 180_000);
+
+  it("student lookup: tenant-scoped, minimal fields, applicants excluded; short q 400", async () => {
+    await seedTenantBTransport();
+    const res = await get(`/students/lookup?q=${encodeURIComponent(PFX + "Student")}&limit=25`, tmToken());
+    expect(res.statusCode).toBe(200);
+    const students = res.json().students as Array<{ id: string }>;
+    expect(students.map((s) => s.id).sort()).toEqual([studentProfile1, studentProfile2, studentProfile3].sort());
+    expect(Object.keys(students[0]).sort()).toEqual(["enrollmentNo", "id", "name", "program"]);
+    expect((await get("/students/lookup?q=a", tmToken())).statusCode).toBe(400);
+    // Tenant B's student is unreachable by its enrollment number from tenant A.
+    const byB = await get(`/students/lookup?q=${encodeURIComponent(id("ENR_B"))}`, tmToken());
+    expect(byB.json().students).toEqual([]);
+  }, 180_000);
+
+  it("role denial + module gate: STUDENT cannot use staff reads/lookup, TRANSPORT_MANAGER cannot use /me/*; /me/enrollments carries route + stop", async () => {
+    const { routeId, stopId } = await assignedRoute(3);
+    expect((await enroll(routeId, stopId, studentProfile1)).statusCode).toBe(201);
+    for (const url of ["/students/lookup?q=ab", "/enrollments", "/reports/roster", "/maintenance", "/vehicles"]) {
+      expect((await get(url, student1Token())).statusCode).toBe(403);
+    }
+    expect((await get("/me/enrollments", tmToken())).statusCode).toBe(403);
+    const mine = await get("/me/enrollments", student1Token());
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json().enrollments).toHaveLength(1);
+    expect(mine.json().enrollments[0]).toMatchObject({ routeId, stopId, route: { id: routeId }, stop: { id: stopId } });
+
+    // module inactive -> the new lookup fails closed (403).
+    await withRetry(() => adminClient.institutionModule.update({ where: { id: id("imod_A") }, data: { state: "SUSPENDED" } }));
+    try {
+      expect((await get("/students/lookup?q=ab", tmToken())).statusCode).toBe(403);
+      expect((await get("/enrollments", tmToken())).statusCode).toBe(403);
+    } finally {
+      await withRetry(() => adminClient.institutionModule.update({ where: { id: id("imod_A") }, data: { state: "ACTIVE" } }));
+    }
+  }, 180_000);
 });

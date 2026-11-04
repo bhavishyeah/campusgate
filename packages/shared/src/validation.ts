@@ -1805,6 +1805,28 @@ export type LeaveDecisionInput = z.infer<typeof leaveDecisionSchema>;
 export type CreateMaintenanceInput = z.infer<typeof createMaintenanceSchema>;
 export type MaintenanceTransitionInput = z.infer<typeof maintenanceTransitionSchema>;
 export type HostelListQueryInput = z.infer<typeof hostelListQuerySchema>;
+// 7. Frontend read support (setup step G-HOS1..G-HOS5): room list, check-event
+// list and the two narrowly gated pickers (students for allocation, staff users
+// for the building warden). Existing permission keys only.
+export const hostelRoomsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  buildingId: hostelCuidLike.optional(),
+  status: hostelRoomStatusEnum.optional(),
+});
+export const hostelCheckEventsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  allocationId: hostelCuidLike.optional(),
+  studentId: hostelCuidLike.optional(),
+});
+export const hostelStudentLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+export const hostelUserLookupQuerySchema = hostelStudentLookupQuerySchema;
+export type HostelRoomsQueryInput = z.infer<typeof hostelRoomsQuerySchema>;
+export type HostelCheckEventsQueryInput = z.infer<typeof hostelCheckEventsQuerySchema>;
 
 // ─── Phase 9.4 Transport Management ──────────────────────────────────────────
 // institutionId / userId / studentId (for /me/*) are NEVER accepted from the
@@ -2003,6 +2025,12 @@ export type TransportMaintenanceTransitionInput = z.infer<
   typeof transportMaintenanceTransitionSchema
 >;
 export type TransportListQueryInput = z.infer<typeof transportListQuerySchema>;
+// 10. Frontend read support (setup step G-TRN1): narrowly gated student picker
+// for the enrollment form (transport.enrollments.manage).
+export const transportStudentLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
 
 // ─── Phase 9.5 Inventory & Assets Management ─────────────────────────────────
 // institutionId / userId (for /me/*) are NEVER accepted from the body — always
