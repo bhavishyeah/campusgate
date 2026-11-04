@@ -101,11 +101,16 @@ const employeeUser = id("u_emp"); // becomes an hr_employees row (H1 role grant)
 const employeeUserB = id("u_empB"); // a SECOND employee (RLS-scoping of /me/*)
 const studentUser = id("u_student"); // STUDENT — must be 403 on HR
 const facultyUser = id("u_faculty"); // FACULTY-only — must be 403 on HR
+const instB = id("instB");
+const deptB = id("deptB");
+const adminUserB = id("u_adminB");
+const freeUserB = id("u_freeB"); // tenant-B user with no employee row
+const empUserB2 = id("u_empB2"); // tenant-B employee user
 
 let app: FastifyInstance;
 
-function tokenFor(userId: string, legacyRole: string): string {
-  return app.jwt.sign({ userId, role: legacyRole, institutionId: instA });
+function tokenFor(userId: string, legacyRole: string, institutionId: string = instA): string {
+  return app.jwt.sign({ userId, role: legacyRole, institutionId });
 }
 const authHeader = (t: string) => ({ authorization: `Bearer ${t}` });
 const adminToken = () => tokenFor(adminUser, "ADMIN");
@@ -256,6 +261,45 @@ async function seed(): Promise<void> {
     adminClient.user.create({ data: { id: facultyUser, email: `${PFX.toLowerCase()}fac@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instA } }),
   );
   await ensureMembership(facultyUser, "FACULTY");
+
+  // ── Tenant B (isolation fixtures for the lookups / lists / queue / roster) ──
+  await withRetry(() =>
+    adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }),
+  );
+  await withRetry(() =>
+    adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }),
+  );
+  await withRetry(() =>
+    adminClient.institutionModule.create({
+      data: {
+        id: id("imod_B"),
+        institutionId: instB,
+        moduleKey: "hr_management",
+        state: "ACTIVE",
+        entitledAt: new Date(),
+        activatedAt: new Date(),
+      },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.user.create({ data: { id: adminUserB, email: `${PFX.toLowerCase()}admin@b.test`, role: "ADMIN", accountStatus: "ACTIVE", institutionId: instB } }),
+  );
+  {
+    const mId = id(`mbr_${adminUserB}`);
+    const roleId = await templateRoleId("ADMIN");
+    await withRetry(() =>
+      adminClient.institutionMembership.create({ data: { id: mId, userId: adminUserB, institutionId: instB, membershipStatus: "ACTIVE", permissionsVersion: 0 } }),
+    );
+    await withRetry(() =>
+      adminClient.membershipRole.create({ data: { id: id(`mrl_${adminUserB}`), membershipId: mId, roleId, institutionId: instB } }),
+    );
+  }
+  await withRetry(() =>
+    adminClient.user.create({ data: { id: freeUserB, email: `${PFX.toLowerCase()}free@b.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instB } }),
+  );
+  await withRetry(() =>
+    adminClient.user.create({ data: { id: empUserB2, email: `${PFX.toLowerCase()}empb2@b.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instB } }),
+  );
 }
 
 // ─── route helpers ───────────────────────────────────────────────────────────
@@ -631,5 +675,182 @@ describe("Phase-9.2 HR management behavioral (real DB, real routes, real RLS)", 
     const rejected = r1.statusCode === 422 ? r1 : r2;
     expect(rejected.json().error).toBe("insufficient leave balance");
     expect(rejected.json()).toHaveProperty("requested");
+  }, 120_000);
+});
+
+describe("HR staff lookups, lists, approval queue and roster (frontend reads; real DB, real RLS)", () => {
+  const adminBToken = () => tokenFor(adminUserB, "ADMIN", instB);
+
+  async function createEmployeeB(userId: string, employeeNo: string): Promise<string> {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/hr/employees`,
+      headers: authHeader(adminBToken()),
+      payload: { userId, employeeNo, employmentType: "PERMANENT", joiningDate: "2026-01-01", departmentId: deptB },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().id as string;
+  }
+
+  it("GET /users/lookup: tenant-scoped, excludes users who already have an employee row, never leaks credentials", async () => {
+    const before = await app.inject({ method: "GET", url: `/api/hr/users/lookup?q=${PFX.toLowerCase()}emp`, headers: authHeader(adminToken()) });
+    expect(before.statusCode).toBe(200);
+    const beforeIds = (before.json().users as Array<{ id: string }>).map((u) => u.id);
+    expect(beforeIds).toEqual(expect.arrayContaining([employeeUser, employeeUserB]));
+    // tenant B's users never appear in tenant A's lookup
+    expect(beforeIds).not.toContain(empUserB2);
+    expect(beforeIds).not.toContain(freeUserB);
+    for (const u of before.json().users as Array<Record<string, unknown>>) {
+      expect(Object.keys(u).sort()).toEqual(["email", "id", "name", "role"]);
+    }
+
+    await createEmployee(employeeUser, "E-0001");
+    const after = await app.inject({ method: "GET", url: `/api/hr/users/lookup?q=${PFX.toLowerCase()}emp`, headers: authHeader(adminToken()) });
+    const afterIds = (after.json().users as Array<{ id: string }>).map((u) => u.id);
+    expect(afterIds).not.toContain(employeeUser);
+    expect(afterIds).toContain(employeeUserB);
+
+    const inB = await app.inject({ method: "GET", url: `/api/hr/users/lookup?q=${PFX.toLowerCase()}`, headers: authHeader(adminBToken()) });
+    const bIds = (inB.json().users as Array<{ id: string }>).map((u) => u.id);
+    expect(bIds).toEqual(expect.arrayContaining([freeUserB, empUserB2, adminUserB]));
+    expect(bIds).not.toContain(employeeUser);
+  }, 120_000);
+
+  it("role denial: EMPLOYEE, STUDENT and FACULTY are 403 on every new staff read", async () => {
+    const empId = await createEmployee(employeeUser, "E-0001");
+    expect(empId).toBeTruthy();
+    const urls = [
+      `/api/hr/users/lookup?q=ab`,
+      `/api/hr/lookups`,
+      `/api/hr/leave`,
+      `/api/hr/attendance/roster?date=2026-02-02`,
+      `/api/hr/employees`,
+    ];
+    const tokens = [tokenFor(employeeUser, "GUARD"), studentToken(), facultyToken()];
+    for (const t of tokens) {
+      for (const url of urls) {
+        const res = await app.inject({ method: "GET", url, headers: authHeader(t) });
+        expect(res.statusCode, url).toBe(403);
+      }
+    }
+  }, 120_000);
+
+  it("GET /lookups returns only the caller's departments", async () => {
+    const a = await app.inject({ method: "GET", url: `/api/hr/lookups`, headers: authHeader(adminToken()) });
+    expect(a.statusCode).toBe(200);
+    expect((a.json().departments as Array<{ id: string }>).map((d) => d.id)).toEqual([deptA]);
+    const b = await app.inject({ method: "GET", url: `/api/hr/lookups`, headers: authHeader(adminBToken()) });
+    expect((b.json().departments as Array<{ id: string }>).map((d) => d.id)).toEqual([deptB]);
+  }, 120_000);
+
+  it("GET /employees + /employees/:id: display fields, filters, paging and tenant isolation", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/hr/employees`,
+      headers: authHeader(adminToken()),
+      payload: { userId: employeeUser, employeeNo: "E-0001", designation: "Registrar", employmentType: "PERMANENT", joiningDate: "2026-01-01", departmentId: deptA },
+    });
+    expect(created.statusCode).toBe(201);
+    const empId = created.json().id as string;
+    const empIdB = await createEmployeeB(empUserB2, "B-0001");
+
+    const list = await app.inject({ method: "GET", url: `/api/hr/employees?pageSize=10`, headers: authHeader(adminToken()) });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().total).toBe(1);
+    expect(list.json().employees[0]).toMatchObject({ id: empId, employeeNo: "E-0001", designation: "Registrar", email: `${PFX.toLowerCase()}emp@a.test`, name: null });
+
+    // search by email substring and by employeeNo; non-match is empty
+    const byEmail = await app.inject({ method: "GET", url: `/api/hr/employees?q=${PFX.toLowerCase()}emp@a`, headers: authHeader(adminToken()) });
+    expect(byEmail.json().employees).toHaveLength(1);
+    const miss = await app.inject({ method: "GET", url: `/api/hr/employees?q=zzz-none`, headers: authHeader(adminToken()) });
+    expect(miss.json().employees).toHaveLength(0);
+    expect(miss.json().total).toBe(0);
+
+    // tenant B sees only its own employee; A's id is 404 for B and vice versa
+    const listB = await app.inject({ method: "GET", url: `/api/hr/employees`, headers: authHeader(adminBToken()) });
+    expect((listB.json().employees as Array<{ id: string }>).map((e) => e.id)).toEqual([empIdB]);
+    expect((await app.inject({ method: "GET", url: `/api/hr/employees/${empId}`, headers: authHeader(adminBToken()) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/hr/employees/${empIdB}`, headers: authHeader(adminToken()) })).statusCode).toBe(404);
+
+    const detail = await app.inject({ method: "GET", url: `/api/hr/employees/${empId}`, headers: authHeader(adminToken()) });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({
+      id: empId,
+      userId: employeeUser,
+      user: { id: employeeUser, email: `${PFX.toLowerCase()}emp@a.test`, name: null },
+      department: { id: deptA, name: `${PFX}Dept` },
+    });
+
+    // self-service read carries the same display projection
+    const mine = await app.inject({ method: "GET", url: `/api/hr/me/employee`, headers: authHeader(tokenFor(employeeUser, "GUARD")) });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json().department).toEqual({ id: deptA, name: `${PFX}Dept` });
+    expect(mine.json().user.email).toBe(`${PFX.toLowerCase()}emp@a.test`);
+  }, 120_000);
+
+  it("GET /leave: cross-employee approval queue with employee display, status filter, tenant isolation", async () => {
+    const empId = await createEmployee(employeeUser, "E-0001");
+    const empIdB = await createEmployeeB(empUserB2, "B-0001");
+    await putLeavePolicy("CASUAL", 10);
+    const appId = await applyLeave(empId, "CASUAL", "2026-04-01", "2026-04-02");
+    const appId2 = await applyLeave(empId, "CASUAL", "2026-05-01", "2026-05-01");
+
+    const pending = await app.inject({ method: "GET", url: `/api/hr/leave?status=REQUESTED`, headers: authHeader(adminToken()) });
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json().total).toBe(2);
+    const row = (pending.json().leaveApplications as Array<{ id: string; employee: { id: string; employeeNo: string; email: string } }>).find((a) => a.id === appId)!;
+    expect(row.employee).toMatchObject({ id: empId, employeeNo: "E-0001", email: `${PFX.toLowerCase()}emp@a.test` });
+
+    // approve one -> it leaves the REQUESTED queue and appears under APPROVED
+    expect((await app.inject({ method: "POST", url: `/api/hr/leave/${appId}/approve`, headers: authHeader(adminToken()), payload: {} })).statusCode).toBe(200);
+    const stillPending = await app.inject({ method: "GET", url: `/api/hr/leave?status=REQUESTED`, headers: authHeader(adminToken()) });
+    expect((stillPending.json().leaveApplications as Array<{ id: string }>).map((a) => a.id)).toEqual([appId2]);
+    const approved = await app.inject({ method: "GET", url: `/api/hr/leave?status=APPROVED&employeeId=${empId}`, headers: authHeader(adminToken()) });
+    expect((approved.json().leaveApplications as Array<{ id: string }>).map((a) => a.id)).toEqual([appId]);
+
+    // tenant B's queue never contains tenant A's applications (and vice versa)
+    const inB = await app.inject({ method: "GET", url: `/api/hr/leave`, headers: authHeader(adminBToken()) });
+    expect(inB.statusCode).toBe(200);
+    expect(inB.json().total).toBe(0);
+    const aSeesB = await app.inject({ method: "GET", url: `/api/hr/leave?employeeId=${empIdB}`, headers: authHeader(adminToken()) });
+    expect(aSeesB.json().total).toBe(0);
+    // approving tenant A's application with a tenant B token is a 404 (RLS), not a state change
+    expect((await app.inject({ method: "POST", url: `/api/hr/leave/${appId2}/approve`, headers: authHeader(adminBToken()), payload: {} })).statusCode).toBe(404);
+
+    // 400 on a bad status
+    expect((await app.inject({ method: "GET", url: `/api/hr/leave?status=PENDING`, headers: authHeader(adminToken()) })).statusCode).toBe(400);
+  }, 120_000);
+
+  it("GET /attendance/roster: merges the day's record per employee; tenant B roster excludes tenant A", async () => {
+    const empId = await createEmployee(employeeUser, "E-0001");
+    const empId2 = await createEmployee(employeeUserB, "E-0002");
+    await createEmployeeB(empUserB2, "B-0001");
+    const rec = await app.inject({
+      method: "POST",
+      url: `/api/hr/employees/${empId}/attendance`,
+      headers: authHeader(adminToken()),
+      payload: { attendanceDate: "2026-02-02", status: "PRESENT" },
+    });
+    expect(rec.statusCode).toBe(201);
+
+    const roster = await app.inject({ method: "GET", url: `/api/hr/attendance/roster?date=2026-02-02`, headers: authHeader(adminToken()) });
+    expect(roster.statusCode).toBe(200);
+    const rows = roster.json().roster as Array<{ employee: { id: string }; attendance: { status: string } | null }>;
+    expect(roster.json().total).toBe(2);
+    expect(rows.find((r) => r.employee.id === empId)!.attendance).toMatchObject({ status: "PRESENT" });
+    expect(rows.find((r) => r.employee.id === empId2)!.attendance).toBeNull();
+
+    // a different day has no records
+    const other = await app.inject({ method: "GET", url: `/api/hr/attendance/roster?date=2026-02-03`, headers: authHeader(adminToken()) });
+    expect((other.json().roster as Array<{ attendance: unknown }>).every((r) => r.attendance === null)).toBe(true);
+
+    // tenant B sees only its own employee, with no attendance leaking from A
+    const rosterB = await app.inject({ method: "GET", url: `/api/hr/attendance/roster?date=2026-02-02`, headers: authHeader(adminBToken()) });
+    expect(rosterB.json().total).toBe(1);
+    expect((rosterB.json().roster as Array<{ employee: { id: string } }>).some((r) => r.employee.id === empId)).toBe(false);
+    expect((rosterB.json().roster as Array<{ attendance: unknown }>)[0].attendance).toBeNull();
+
+    // bad date -> 400
+    expect((await app.inject({ method: "GET", url: `/api/hr/attendance/roster?date=02-02-2026`, headers: authHeader(adminToken()) })).statusCode).toBe(400);
   }, 120_000);
 });

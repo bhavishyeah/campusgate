@@ -17,6 +17,10 @@ import {
   hrReportRangeQuerySchema,
   hrDatePathSchema,
   hrLeaveTypeEnum,
+  hrEmployeeListQuerySchema,
+  hrLeaveListQuerySchema,
+  hrAttendanceRosterQuerySchema,
+  hrUserLookupQuerySchema,
   type HrLeaveTypeValue,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
@@ -158,6 +162,63 @@ export async function hrRoutes(app: FastifyInstance) {
       createdAt: e.createdAt.toISOString(),
       updatedAt: e.updatedAt.toISOString(),
     };
+  }
+
+  // Display projections (G-H1): the base HrEmployee row carries only a userId,
+  // so a directory/queue table could render nothing but an opaque id. `User` has
+  // no name column (email only); a display name is available only when the user
+  // also has a Faculty/Student profile, so `name` is nullable. Read-only,
+  // tenant-scoped through the surrounding withTenant tx.
+  const userDisplaySelect = {
+    id: true,
+    email: true,
+    studentProfile: { select: { name: true } },
+    facultyProfile: { select: { name: true } },
+  } as const;
+  const employeeDetailInclude = {
+    user: { select: userDisplaySelect },
+    department: { select: { id: true, name: true } },
+  } as const;
+  const employeeBriefSelect = {
+    id: true,
+    employeeNo: true,
+    designation: true,
+    status: true,
+    user: { select: userDisplaySelect },
+  } as const;
+  type UserDisplay = {
+    id: string;
+    email: string;
+    studentProfile: { name: string } | null;
+    facultyProfile: { name: string } | null;
+  };
+  function userDisplay(u: UserDisplay) {
+    return { id: u.id, email: u.email, name: u.studentProfile?.name ?? u.facultyProfile?.name ?? null };
+  }
+  function employeeBrief(e: {
+    id: string;
+    employeeNo: string;
+    designation: string | null;
+    status: string;
+    user: UserDisplay;
+  }) {
+    const u = userDisplay(e.user);
+    return {
+      id: e.id,
+      employeeNo: e.employeeNo,
+      designation: e.designation,
+      status: e.status,
+      email: u.email,
+      name: u.name,
+    };
+  }
+  function serializeEmployeeDetail(
+    e: Parameters<typeof serializeEmployee>[0] & {
+      user: UserDisplay;
+      department: { id: string; name: string } | null;
+    },
+  ) {
+    return { ...serializeEmployee(e), user: userDisplay(e.user), department: e.department };
   }
 
   function serializeContract(c: {
@@ -554,19 +615,138 @@ export async function hrRoutes(app: FastifyInstance) {
   );
 
   // ─── 3. GET /employees (hr.directory.view) ───────────────────────────────────
+  // G-H1: added q/status/departmentId/employmentType filters + pagination (the
+  // list endpoint had none — a directory screen cannot page or search without
+  // this). Response shape is additive: `employees` stays an array, `total` /
+  // `page` / `pageSize` are new fields (the library/admissions list idiom).
   app.get(
     "/employees",
     { preHandler: [requirePermission("hr.directory.view"), requireModuleActive(gate)] },
     async (request, reply) => {
       const { institutionId } = request.user;
-      const rows = await withTenant(institutionId, (tx) =>
-        tx.hrEmployee.findMany({ where: { institutionId }, orderBy: [{ createdAt: "desc" }] }),
+      const parsed = hrEmployeeListQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, status, departmentId, employmentType, page, pageSize } = parsed.data;
+
+      const where: Prisma.HrEmployeeWhereInput = {
+        institutionId,
+        ...(status ? { status } : {}),
+        ...(departmentId ? { departmentId } : {}),
+        ...(employmentType ? { employmentType } : {}),
+        ...(q
+          ? {
+              OR: [
+                { employeeNo: { contains: q, mode: "insensitive" } },
+                { designation: { contains: q, mode: "insensitive" } },
+              ],
+            }
+          : {}),
+      };
+
+      const whereWithName: Prisma.HrEmployeeWhereInput = q
+        ? {
+            institutionId,
+            ...(status ? { status } : {}),
+            ...(departmentId ? { departmentId } : {}),
+            ...(employmentType ? { employmentType } : {}),
+            OR: [
+              { employeeNo: { contains: q, mode: "insensitive" } },
+              { designation: { contains: q, mode: "insensitive" } },
+              { user: { email: { contains: q, mode: "insensitive" } } },
+              { user: { studentProfile: { name: { contains: q, mode: "insensitive" } } } },
+              { user: { facultyProfile: { name: { contains: q, mode: "insensitive" } } } },
+            ],
+          }
+        : where;
+
+      const [rows, total] = await withTenant(institutionId, (tx) =>
+        Promise.all([
+          tx.hrEmployee.findMany({
+            where: whereWithName,
+            orderBy: [{ createdAt: "desc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            select: employeeBriefSelect,
+          }),
+          tx.hrEmployee.count({ where: whereWithName }),
+        ]),
       );
-      return reply.send({ employees: rows.map(serializeEmployee) });
+      return reply.send({ employees: rows.map(employeeBrief), total, page, pageSize });
+    },
+  );
+
+  // ─── G-H2. GET /users/lookup (hr.employees.manage) ───────────────────────────
+  // HR_MANAGER needs to pick the User to bind when creating an employee, but
+  // does NOT hold admin.users.view (that is an ADMIN-only key — granting it
+  // would hand HR_MANAGER the entire user-admin surface). A narrowly scoped
+  // lookup mirrors the library G3 `students/lookup` precedent: excludes users
+  // who already have an hr_employees row (can't double-bind) and returns only
+  // display fields, gated by the WRITE key for this screen (hr.employees.manage).
+  app.get(
+    "/users/lookup",
+    { preHandler: [requirePermission("hr.employees.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hrUserLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+
+      const users = await withTenant(institutionId, (tx) =>
+        tx.user.findMany({
+          where: {
+            institutionId,
+            hrEmployees: { none: {} },
+            OR: [
+              { email: { contains: q, mode: "insensitive" } },
+              { studentProfile: { name: { contains: q, mode: "insensitive" } } },
+              { facultyProfile: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+          orderBy: [{ email: "asc" }],
+          take: limit,
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            studentProfile: { select: { name: true } },
+            facultyProfile: { select: { name: true } },
+          },
+        }),
+      );
+      return reply.send({
+        users: users.map((u) => ({
+          id: u.id,
+          email: u.email,
+          role: u.role,
+          name: u.studentProfile?.name ?? u.facultyProfile?.name ?? null,
+        })),
+      });
+    },
+  );
+
+  // ─── G-H3. GET /lookups (hr.employees.manage) ────────────────────────────────
+  // The employee create/edit form needs a department picker. HR_MANAGER does
+  // NOT hold admin.departments.manage (ADMIN-only); a narrowly gated read-only
+  // lookup is added instead of broadening that key (the faculty G2 precedent).
+  app.get(
+    "/lookups",
+    { preHandler: [requirePermission("hr.employees.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const departments = await withTenant(institutionId, (tx) =>
+        tx.department.findMany({
+          where: { institutionId },
+          orderBy: [{ name: "asc" }],
+          select: { id: true, name: true, code: true },
+        }),
+      );
+      return reply.send({ departments });
     },
   );
 
   // ─── 4. GET /employees/:id (hr.directory.view) ───────────────────────────────
+  // G-H1: now also returns `user` (email/name display) and `department` so the
+  // detail screen never has to issue a second lookup for the referenced ids.
   app.get(
     "/employees/:id",
     { preHandler: [requirePermission("hr.directory.view"), requireModuleActive(gate)] },
@@ -574,12 +754,15 @@ export async function hrRoutes(app: FastifyInstance) {
       const { institutionId } = request.user;
       const { id } = request.params as { id: string };
       const outcome = await withTenant(institutionId, async (tx) => {
-        const employee = await findEmployee(tx, institutionId, id);
+        const employee = await tx.hrEmployee.findFirst({
+          where: { id, institutionId },
+          include: employeeDetailInclude,
+        });
         if (!employee) return deny("employee not found", 404);
         return { employee };
       });
       if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
-      return reply.send(serializeEmployee(outcome.employee));
+      return reply.send(serializeEmployeeDetail(outcome.employee));
     },
   );
 
@@ -922,6 +1105,55 @@ export async function hrRoutes(app: FastifyInstance) {
       });
 
       return reply.send(serializePolicy(policy));
+    },
+  );
+
+  // ─── G-H4. GET /leave (hr.leave.manage) ──────────────────────────────────────
+  // The approve/reject screen (routes #12/#13) needs a cross-employee queue to
+  // find pending application ids — there was no list endpoint, only the
+  // per-employee `GET /employees/:id/leave` (route #14, hr.directory.view).
+  // Gated by the WRITE key (hr.leave.manage) since this is the approval queue,
+  // not a general directory read; each row carries `employee` display fields
+  // so the table never needs a second round-trip per row.
+  app.get(
+    "/leave",
+    { preHandler: [requirePermission("hr.leave.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hrLeaveListQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { status, leaveType, employeeId, page, pageSize } = parsed.data;
+
+      const where: Prisma.HrLeaveApplicationWhereInput = {
+        institutionId,
+        ...(status ? { status } : {}),
+        ...(leaveType ? { leaveType } : {}),
+        ...(employeeId ? { employeeId } : {}),
+      };
+
+      const { rows, total } = await withTenant(institutionId, async (tx) => {
+        const [rows, total] = await Promise.all([
+          tx.hrLeaveApplication.findMany({
+            where,
+            orderBy: [{ createdAt: "desc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            include: { employee: { select: employeeBriefSelect } },
+          }),
+          tx.hrLeaveApplication.count({ where }),
+        ]);
+        return { rows, total };
+      });
+
+      return reply.send({
+        leaveApplications: rows.map((r) => ({
+          ...serializeLeaveApp(r),
+          employee: employeeBrief(r.employee),
+        })),
+        total,
+        page,
+        pageSize,
+      });
     },
   );
 
@@ -1575,6 +1807,54 @@ export async function hrRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── G-H5. GET /attendance/roster?date= (hr.attendance.manage) ───────────────
+  // The record/correct screens (routes #18/#19) are per-employee; without a
+  // day roster the UI would need one request per employee to show who is still
+  // unmarked. Returns every non-TERMINATED employee (paged, employeeNo order)
+  // with that calendar day's attendance row or null. Gated by the WRITE key.
+  app.get(
+    "/attendance/roster",
+    { preHandler: [requirePermission("hr.attendance.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = hrAttendanceRosterQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { date, page, pageSize } = parsed.data;
+      const day = new Date(date);
+
+      const where: Prisma.HrEmployeeWhereInput = { institutionId, status: { not: "TERMINATED" } };
+      const { employees, total, records } = await withTenant(institutionId, async (tx) => {
+        const [employees, total] = await Promise.all([
+          tx.hrEmployee.findMany({
+            where,
+            orderBy: [{ employeeNo: "asc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            select: employeeBriefSelect,
+          }),
+          tx.hrEmployee.count({ where }),
+        ]);
+        const records = employees.length
+          ? await tx.hrEmployeeAttendance.findMany({
+              where: { institutionId, attendanceDate: day, employeeId: { in: employees.map((e) => e.id) } },
+            })
+          : [];
+        return { employees, total, records };
+      });
+      const byEmployee = new Map(records.map((r) => [r.employeeId, r]));
+      return reply.send({
+        date,
+        roster: employees.map((e) => ({
+          employee: employeeBrief(e),
+          attendance: byEmployee.has(e.id) ? serializeAttendance(byEmployee.get(e.id)!) : null,
+        })),
+        total,
+        page,
+        pageSize,
+      });
+    },
+  );
+
   // ─── 20. GET /employees/:id/attendance (hr.directory.view) ───────────────────
   app.get(
     "/employees/:id/attendance",
@@ -1822,12 +2102,15 @@ export async function hrRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { institutionId, userId } = request.user;
       const outcome = await withTenant(institutionId, async (tx) => {
-        const self = await resolveSelf(tx, institutionId, userId);
+        const self = await tx.hrEmployee.findFirst({
+          where: { institutionId, userId },
+          include: employeeDetailInclude,
+        });
         if (!self) return deny("employee record not found", 404);
         return { self };
       });
       if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
-      return reply.send(serializeEmployee(outcome.self));
+      return reply.send(serializeEmployeeDetail(outcome.self));
     },
   );
 

@@ -104,11 +104,19 @@ const adminUser = id("u_admin");
 const facultyUser = id("u_faculty"); // in-scope faculty (ACTIVE profile)
 const facultyProfileA = id("fac_A");
 const nonFacultyUser = id("u_nonfac"); // holds FACULTY role but NO FacultyProfile
+// Tenant B fixtures (cross-tenant isolation for the directory list / lookups).
+const instB = id("instB");
+const deptB = id("deptB");
+const sessionB = id("sessB");
+const termB = id("termB");
+const adminUserB = id("u_adminB");
+const facultyUserB = id("u_facultyB");
+const facultyProfileB = id("fac_B");
 
 let app: FastifyInstance;
 
-function tokenFor(userId: string, legacyRole: string): string {
-  return app.jwt.sign({ userId, role: legacyRole, institutionId: instA });
+function tokenFor(userId: string, legacyRole: string, institutionId: string = instA): string {
+  return app.jwt.sign({ userId, role: legacyRole, institutionId });
 }
 const authHeader = (t: string) => ({ authorization: `Bearer ${t}` });
 const adminToken = () => tokenFor(adminUser, "ADMIN");
@@ -276,6 +284,40 @@ async function seed(): Promise<void> {
   // A user with the FACULTY role but NO FacultyProfile (self-service 403 case).
   await withRetry(() => adminClient.user.create({ data: { id: nonFacultyUser, email: `${PFX.toLowerCase()}nonfac@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instA } }));
   await ensureMembership(nonFacultyUser, "FACULTY");
+
+  // ── Tenant B (isolation fixtures for the directory list / lookups) ──
+  await withRetry(() => adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }));
+  await withRetry(() => adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.institutionModule.create({
+      data: { id: id("imod_B"), institutionId: instB, moduleKey: "faculty_management", state: "ACTIVE", entitledAt: new Date(), activatedAt: new Date() },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.academicSession.create({
+      data: { id: sessionB, institutionId: instB, name: `${PFX}SessionB`, structureType: "SEMESTER", status: "ACTIVE", startDate: new Date("2026-07-01T00:00:00.000Z"), endDate: new Date("2027-06-30T00:00:00.000Z") },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.academicTerm.create({
+      data: { id: termB, institutionId: instB, academicSessionId: sessionB, name: `${PFX}TermB`, ordinal: 1, status: "ACTIVE", startDate: new Date("2026-07-01T00:00:00.000Z"), endDate: new Date("2026-12-31T00:00:00.000Z") },
+    }),
+  );
+  await withRetry(() => adminClient.user.create({ data: { id: adminUserB, email: `${PFX.toLowerCase()}admin@b.test`, role: "ADMIN", accountStatus: "ACTIVE", institutionId: instB } }));
+  {
+    const mId = id(`mbr_${adminUserB}`);
+    const roleId = await templateRoleId("ADMIN");
+    await withRetry(() =>
+      adminClient.institutionMembership.create({ data: { id: mId, userId: adminUserB, institutionId: instB, membershipStatus: "ACTIVE", permissionsVersion: 0 } }),
+    );
+    await withRetry(() =>
+      adminClient.membershipRole.create({ data: { id: id(`mrl_${adminUserB}`), membershipId: mId, roleId, institutionId: instB } }),
+    );
+  }
+  await withRetry(() => adminClient.user.create({ data: { id: facultyUserB, email: `${PFX.toLowerCase()}fac@b.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.facultyProfile.create({ data: { id: facultyProfileB, institutionId: instB, userId: facultyUserB, name: `${PFX}FacultyB`, departmentId: deptB, status: "ACTIVE" } }),
+  );
 }
 
 beforeAll(async () => {
@@ -480,5 +522,89 @@ describe("Phase-9.1 faculty management behavioral (real DB, real routes, real RL
     });
     expect(notFaculty.statusCode).toBe(403);
     expect(notFaculty.json().error).toBe("not a faculty member");
+  });
+});
+
+describe("Faculty directory list + lookups + name projections (frontend reads; real DB, real RLS)", () => {
+  const adminBToken = () => tokenFor(adminUserB, "ADMIN", instB);
+
+  it("GET /api/faculty lists ONLY the caller's tenant with department names; tenant B never sees tenant A", async () => {
+    const a = await app.inject({ method: "GET", url: `/api/faculty?pageSize=100`, headers: authHeader(adminToken()) });
+    expect(a.statusCode).toBe(200);
+    const aIds = (a.json().faculty as Array<{ id: string }>).map((f) => f.id);
+    expect(aIds).toContain(facultyProfileA);
+    expect(aIds).not.toContain(facultyProfileB);
+    const rowA = (a.json().faculty as Array<{ id: string; department: { id: string; name: string } | null }>).find(
+      (f) => f.id === facultyProfileA,
+    );
+    expect(rowA!.department).toEqual({ id: deptA, name: `${PFX}Dept` });
+
+    const b = await app.inject({ method: "GET", url: `/api/faculty?pageSize=100`, headers: authHeader(adminBToken()) });
+    expect(b.statusCode).toBe(200);
+    const bIds = (b.json().faculty as Array<{ id: string }>).map((f) => f.id);
+    expect(bIds).toEqual([facultyProfileB]);
+    expect(b.json().total).toBe(1);
+  });
+
+  it("GET /api/faculty supports q and department filters", async () => {
+    const hit = await app.inject({ method: "GET", url: `/api/faculty?q=facultyb`, headers: authHeader(adminBToken()) });
+    expect(hit.json().faculty).toHaveLength(1);
+    const miss = await app.inject({ method: "GET", url: `/api/faculty?q=zzz-none`, headers: authHeader(adminToken()) });
+    expect(miss.json().faculty).toHaveLength(0);
+    expect(miss.json().total).toBe(0);
+    // A foreign department id filters to nothing inside tenant A (no cross-tenant leak).
+    const foreign = await app.inject({ method: "GET", url: `/api/faculty?departmentId=${deptB}`, headers: authHeader(adminToken()) });
+    expect(foreign.json().faculty).toHaveLength(0);
+  });
+
+  it("GET /api/faculty is 403 for FACULTY (self-scope only) and for a user with no staff key", async () => {
+    expect((await app.inject({ method: "GET", url: `/api/faculty`, headers: authHeader(facultyToken()) })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/faculty`, headers: authHeader(nonFacultyToken()) })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/faculty/lookups`, headers: authHeader(facultyToken()) })).statusCode).toBe(403);
+  });
+
+  it("GET /api/faculty/lookups returns only the caller's terms and departments", async () => {
+    const a = await app.inject({ method: "GET", url: `/api/faculty/lookups`, headers: authHeader(adminToken()) });
+    expect(a.statusCode).toBe(200);
+    const termIds = (a.json().terms as Array<{ id: string }>).map((t) => t.id);
+    expect(termIds).toEqual([termA]);
+    expect(a.json().terms[0].session).toEqual({ id: sessionA, name: `${PFX}Session` });
+    expect((a.json().departments as Array<{ id: string }>).map((d) => d.id)).toEqual([deptA]);
+
+    const b = await app.inject({ method: "GET", url: `/api/faculty/lookups`, headers: authHeader(adminBToken()) });
+    expect((b.json().terms as Array<{ id: string }>).map((t) => t.id)).toEqual([termB]);
+  });
+
+  it("another tenant's faculty id is 404 on the profile read (names never leak across tenants)", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/faculty/${facultyProfileB}/profile`, headers: authHeader(adminToken()) });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("teaching-history and profile reads carry term/subject/section names after reconcile", async () => {
+    const rec = await app.inject({
+      method: "POST",
+      url: `/api/faculty/${facultyProfileA}/teaching-history/reconcile`,
+      headers: authHeader(adminToken()),
+    });
+    expect(rec.statusCode).toBe(200);
+
+    const hist = await app.inject({ method: "GET", url: `/api/faculty/${facultyProfileA}/teaching-history`, headers: authHeader(adminToken()) });
+    expect(hist.statusCode).toBe(200);
+    const rows = hist.json().teachingHistory as Array<{
+      subject: { name: string } | null;
+      academicTerm: { id: string; name: string } | null;
+      classSection: { label: string | null } | null;
+    }>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r.academicTerm).toEqual({ id: termA, name: `${PFX}Term` });
+      expect(r.subject!.name.startsWith(PFX)).toBe(true);
+      expect(r.classSection!.label!.startsWith(PFX)).toBe(true);
+    }
+
+    const prof = await app.inject({ method: "GET", url: `/api/faculty/me/profile`, headers: authHeader(facultyToken()) });
+    expect(prof.statusCode).toBe(200);
+    expect(prof.json().identity.department).toEqual({ id: deptA, name: `${PFX}Dept` });
+    expect(prof.json().teachingHistory[0].subject.name.startsWith(PFX)).toBe(true);
   });
 });

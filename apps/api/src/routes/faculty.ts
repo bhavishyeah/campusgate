@@ -5,6 +5,7 @@ import {
   patchFacultyQualificationSchema,
   putWorkloadPolicySchema,
   patchFacultyWorkloadSchema,
+  facultyListQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
@@ -109,6 +110,65 @@ export async function facultyRoutes(app: FastifyInstance) {
     };
   }
 
+  // Display-name lookups for the ids carried by workload / history rows so the
+  // UI never has to render raw ids. Tenant-scoped (institutionId in every where,
+  // plus RLS via the surrounding withTenant tx); read-only; additive projections.
+  interface NameMaps {
+    terms: Map<string, { id: string; name: string }>;
+    subjects: Map<string, { id: string; name: string; code: string }>;
+    sections: Map<string, { id: string; label: string | null }>;
+    departments: Map<string, { id: string; name: string }>;
+  }
+  async function loadNameMaps(
+    tx: Prisma.TransactionClient,
+    institutionId: string,
+    ids: {
+      termIds?: Array<string | null>;
+      subjectIds?: Array<string | null>;
+      sectionIds?: Array<string | null>;
+      departmentIds?: Array<string | null>;
+    },
+  ): Promise<NameMaps> {
+    const uniq = (a: Array<string | null | undefined> | undefined) =>
+      Array.from(new Set((a ?? []).filter((x): x is string => !!x)));
+    const termIds = uniq(ids.termIds);
+    const subjectIds = uniq(ids.subjectIds);
+    const sectionIds = uniq(ids.sectionIds);
+    const departmentIds = uniq(ids.departmentIds);
+    const [terms, subjects, sections, departments] = await Promise.all([
+      termIds.length
+        ? tx.academicTerm.findMany({
+            where: { institutionId, id: { in: termIds } },
+            select: { id: true, name: true },
+          })
+        : [],
+      subjectIds.length
+        ? tx.subject.findMany({
+            where: { institutionId, id: { in: subjectIds } },
+            select: { id: true, name: true, code: true },
+          })
+        : [],
+      sectionIds.length
+        ? tx.classSection.findMany({
+            where: { institutionId, id: { in: sectionIds } },
+            select: { id: true, label: true },
+          })
+        : [],
+      departmentIds.length
+        ? tx.department.findMany({
+            where: { institutionId, id: { in: departmentIds } },
+            select: { id: true, name: true },
+          })
+        : [],
+    ]);
+    return {
+      terms: new Map(terms.map((t) => [t.id, t])),
+      subjects: new Map(subjects.map((s) => [s.id, s])),
+      sections: new Map(sections.map((s) => [s.id, s])),
+      departments: new Map(departments.map((d) => [d.id, d])),
+    };
+  }
+
   function serializeWorkload(
     w: {
       id: string;
@@ -142,6 +202,21 @@ export async function facultyRoutes(app: FastifyInstance) {
       updatedByUserId: w.updatedByUserId,
       createdAt: w.createdAt.toISOString(),
       updatedAt: w.updatedAt.toISOString(),
+    };
+  }
+
+  // Additive display projections (names for the ids a workload / history row
+  // carries). Existing fields are unchanged.
+  function withTermName<T extends { academicTermId: string }>(row: T, names: NameMaps) {
+    return { ...row, academicTerm: names.terms.get(row.academicTermId) ?? null };
+  }
+  function withHistoryNames<
+    T extends { academicTermId: string; subjectId: string; classSectionId: string | null },
+  >(row: T, names: NameMaps) {
+    return {
+      ...withTermName(row, names),
+      subject: names.subjects.get(row.subjectId) ?? null,
+      classSection: row.classSectionId ? (names.sections.get(row.classSectionId) ?? null) : null,
     };
   }
 
@@ -750,11 +825,16 @@ export async function facultyRoutes(app: FastifyInstance) {
           where: { institutionId, facultyId },
           orderBy: [{ createdAt: "desc" }],
         });
-        return { rows, policyMax };
+        const names = await loadNameMaps(tx, institutionId, {
+          termIds: rows.map((r) => r.academicTermId),
+        });
+        return { rows, policyMax, names };
       });
       if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
       return reply.send({
-        workloads: outcome.rows.map((w) => serializeWorkload(w, outcome.policyMax)),
+        workloads: outcome.rows.map((w) =>
+          withTermName(serializeWorkload(w, outcome.policyMax), outcome.names),
+        ),
       });
     },
   );
@@ -853,10 +933,17 @@ export async function facultyRoutes(app: FastifyInstance) {
           where: { institutionId, facultyId },
           orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }],
         });
-        return { rows };
+        const names = await loadNameMaps(tx, institutionId, {
+          termIds: rows.map((r) => r.academicTermId),
+          subjectIds: rows.map((r) => r.subjectId),
+          sectionIds: rows.map((r) => r.classSectionId),
+        });
+        return { rows, names };
       });
       if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
-      return reply.send({ teachingHistory: outcome.rows.map(serializeHistory) });
+      return reply.send({
+        teachingHistory: outcome.rows.map((h) => withHistoryNames(serializeHistory(h), outcome.names)),
+      });
     },
   );
 
@@ -896,19 +983,27 @@ export async function facultyRoutes(app: FastifyInstance) {
       }),
     ]);
 
+    const names = await loadNameMaps(tx, institutionId, {
+      termIds: [...workloads.map((w) => w.academicTermId), ...teachingHistory.map((h) => h.academicTermId)],
+      subjectIds: teachingHistory.map((h) => h.subjectId),
+      sectionIds: teachingHistory.map((h) => h.classSectionId),
+      departmentIds: [faculty.departmentId],
+    });
+
     return {
       identity: {
         id: faculty.id,
         userId: faculty.userId,
         name: faculty.name,
         departmentId: faculty.departmentId,
+        department: faculty.departmentId ? (names.departments.get(faculty.departmentId) ?? null) : null,
         status: faculty.status,
         createdAt: faculty.createdAt.toISOString(),
         updatedAt: faculty.updatedAt.toISOString(),
       },
       qualifications: qualifications.map(serializeQualification),
-      workloads: workloads.map((w) => serializeWorkload(w, policyMax)),
-      teachingHistory: teachingHistory.map(serializeHistory),
+      workloads: workloads.map((w) => withTermName(serializeWorkload(w, policyMax), names)),
+      teachingHistory: teachingHistory.map((h) => withHistoryNames(serializeHistory(h), names)),
     };
   }
 
@@ -924,6 +1019,117 @@ export async function facultyRoutes(app: FastifyInstance) {
       );
       if (!profile) return reply.status(404).send({ error: "faculty not found" });
       return reply.send(profile);
+    },
+  );
+
+  // ─── G1. List faculty directory (faculty.directory.view) ────────────────────
+  // There was no list endpoint at all — every other route takes a :facultyId the
+  // UI has no way to discover. Staff-only (not view_own); tenant-scoped; search
+  // by name, filter by department/status, paginated (the library/admissions
+  // list idiom). Returns identity only (no qualifications/workload/history —
+  // those stay on the consolidated profile read, route #12).
+  app.get(
+    "/",
+    { preHandler: [requirePermission("faculty.directory.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = facultyListQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, departmentId, status, page, pageSize } = parsed.data;
+
+      const where: Prisma.FacultyProfileWhereInput = {
+        institutionId,
+        ...(departmentId ? { departmentId } : {}),
+        ...(status ? { status } : {}),
+        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+      };
+
+      const { rows, total, departments } = await withTenant(institutionId, async (tx) => {
+        const [rows, total] = await Promise.all([
+          tx.facultyProfile.findMany({
+            where,
+            orderBy: [{ name: "asc" }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+            select: {
+              id: true,
+              userId: true,
+              name: true,
+              departmentId: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          }),
+          tx.facultyProfile.count({ where }),
+        ]);
+        const { departments } = await loadNameMaps(tx, institutionId, {
+          departmentIds: rows.map((r) => r.departmentId),
+        });
+        return { rows, total, departments };
+      });
+
+      return reply.send({
+        faculty: rows.map((r) => ({
+          id: r.id,
+          userId: r.userId,
+          name: r.name,
+          departmentId: r.departmentId,
+          department: r.departmentId ? (departments.get(r.departmentId) ?? null) : null,
+          status: r.status,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+        total,
+        page,
+        pageSize,
+      });
+    },
+  );
+
+  // ─── G2. Lookups for the faculty screens (faculty.directory.view) ───────────
+  // The workload screens need an academic-term picker and the directory a
+  // department filter. HOD holds NO academics.* key (terms live behind
+  // academics.sessions.manage, ADMIN-only) and no admin.departments.manage, so a
+  // narrowly gated read-only lookup is added instead of granting a broad key.
+  app.get(
+    "/lookups",
+    { preHandler: [requirePermission("faculty.directory.view"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const result = await withTenant(institutionId, async (tx) => {
+        const [terms, departments] = await Promise.all([
+          tx.academicTerm.findMany({
+            where: { institutionId },
+            orderBy: [{ startDate: "desc" }, { id: "asc" }],
+            select: {
+              id: true,
+              name: true,
+              status: true,
+              startDate: true,
+              endDate: true,
+              academicSession: { select: { id: true, name: true } },
+            },
+          }),
+          tx.department.findMany({
+            where: { institutionId },
+            orderBy: [{ name: "asc" }],
+            select: { id: true, name: true, code: true },
+          }),
+        ]);
+        return { terms, departments };
+      });
+      return reply.send({
+        terms: result.terms.map((t) => ({
+          id: t.id,
+          name: t.name,
+          status: t.status,
+          startDate: t.startDate.toISOString(),
+          endDate: t.endDate.toISOString(),
+          session: t.academicSession ? { id: t.academicSession.id, name: t.academicSession.name } : null,
+        })),
+        departments: result.departments,
+      });
     },
   );
 

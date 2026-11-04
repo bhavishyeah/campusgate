@@ -1639,6 +1639,45 @@ export type CorrectAttendanceInput = z.infer<typeof correctAttendanceSchema>;
 export type LeaveBalanceQueryInput = z.infer<typeof leaveBalanceQuerySchema>;
 export type HrReportRangeQueryInput = z.infer<typeof hrReportRangeQuerySchema>;
 
+// ── Frontend read/lookup queries (G-H1..G-H5) ──
+// Staff list of employees with optional filters + paging (GET /employees).
+export const hrEmployeeListQuerySchema = z.object({
+  q: z.string().trim().min(1).max(100).optional(),
+  status: hrEmployeeStatusEnum.optional(),
+  departmentId: z.string().min(1).max(100).optional(),
+  employmentType: hrEmploymentTypeEnum.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+// Cross-employee leave queue (GET /leave).
+export const hrLeaveListQuerySchema = z.object({
+  status: z.enum(["REQUESTED", "APPROVED", "REJECTED", "CANCELLED"]).optional(),
+  leaveType: hrLeaveTypeEnum.optional(),
+  employeeId: z.string().min(1).max(100).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+// Daily attendance roster (GET /attendance/roster?date=YYYY-MM-DD).
+export const hrAttendanceRosterQuerySchema = z.object({
+  date: hrDatePathSchema,
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+});
+// User picker for creating an employee (GET /users/lookup).
+export const hrUserLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+
+// Faculty directory list (GET /api/faculty).
+export const facultyListQuerySchema = z.object({
+  q: z.string().trim().min(1).max(100).optional(),
+  departmentId: z.string().min(1).max(100).optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 // ─── Phase 9.3 Hostel Management ─────────────────────────────────────────────
 // institutionId / userId / studentId (for /me/*) are NEVER accepted from the
 // body — always derived from the verified token / the caller's StudentProfile.

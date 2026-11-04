@@ -673,6 +673,9 @@ describe("Phase-9 HR routes (permission + module + validation + lifecycle + audi
       updatedByUserId: "u-admin",
       createdAt: new Date(),
       updatedAt: new Date(),
+      // Display projections added for the frontend (include: user + department).
+      user: { id: "u-emp", email: "emp@a.test", studentProfile: null, facultyProfile: null },
+      department: null,
     });
     const app = await makeApp();
     const res = await app.inject({
