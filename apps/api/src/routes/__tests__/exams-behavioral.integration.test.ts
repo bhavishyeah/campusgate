@@ -347,9 +347,73 @@ async function createActiveScheme(): Promise<string> {
   return res.json().id as string;
 }
 
+// ─── marking-read fixtures (marks-sheet / my-marking) ────────────────────────
+const sectionB = id("sectB"); // faculty is NOT assigned to this section
+const studentUserB = id("u_studentB");
+const studentProfileB = id("sp_B"); // enrolled in sectionB only
+const noAssignUser = id("u_fac_none"); // ACTIVE faculty, no assignments
+const inactiveUser = id("u_fac_inactive"); // INACTIVE profile with a stale ACTIVE assignment
+const instB = id("instB");
+
+const noAssignToken = () => tokenFor(noAssignUser, "GUARD");
+const inactiveToken = () => tokenFor(inactiveUser, "GUARD");
+
+async function seedMarkingExtras(): Promise<void> {
+  await withRetry(() =>
+    adminClient.classSection.create({
+      data: { id: sectionB, institutionId: instA, programId: programA, academicSessionId: sessionA, academicTermId: termA, label: `${PFX}SecB`, capacity: 60, status: "ACTIVE" },
+    }),
+  );
+  await withRetry(() => adminClient.user.create({ data: { id: studentUserB, email: `${PFX.toLowerCase()}stub@a.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA } }));
+  await withRetry(() =>
+    adminClient.studentProfile.create({
+      data: { id: studentProfileB, userId: studentUserB, institutionId: instA, enrollmentNo: id("ENR_B"), name: `${PFX}StudentB`, departmentId: deptA, program: "TEST", semester: 1, status: "ACTIVE" },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.classEnrollment.create({ data: { id: id("enroll_B"), institutionId: instA, classSectionId: sectionB, studentId: studentProfileB, status: "ENROLLED" } }),
+  );
+  for (const [uid, fid, status, withAssignment] of [
+    [noAssignUser, id("fac_none"), "ACTIVE", false],
+    [inactiveUser, id("fac_inactive"), "INACTIVE", true],
+  ] as const) {
+    await withRetry(() => adminClient.user.create({ data: { id: uid, email: `${uid.toLowerCase()}@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instA } }));
+    await ensureMembership(uid, "FACULTY");
+    await withRetry(() =>
+      adminClient.facultyProfile.create({ data: { id: fid, institutionId: instA, userId: uid, name: `${PFX}${uid}`, departmentId: deptA, status } }),
+    );
+    if (withAssignment) {
+      await withRetry(() =>
+        adminClient.facultyAssignment.create({
+          data: { id: `${fid}_assign`, institutionId: instA, facultyId: fid, subjectId: subjectA, classSectionId: sectionA, academicTermId: termA, role: "PRIMARY", status: "ACTIVE" },
+        }),
+      );
+    }
+  }
+  // A second tenant with a bare exam, for the cross-tenant 404 case.
+  await withRetry(() => adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }));
+  await withRetry(() => adminClient.department.create({ data: { id: id("deptB"), name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.academicSession.create({
+      data: { id: id("sessB"), institutionId: instB, name: `${PFX}SessionB`, structureType: "SEMESTER", status: "ACTIVE", startDate: new Date("2026-07-01T00:00:00.000Z"), endDate: new Date("2027-06-30T00:00:00.000Z") },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.academicTerm.create({
+      data: { id: id("termB"), institutionId: instB, academicSessionId: id("sessB"), name: `${PFX}TermB`, ordinal: 1, status: "ACTIVE", startDate: new Date("2026-07-01T00:00:00.000Z"), endDate: new Date("2026-12-31T00:00:00.000Z") },
+    }),
+  );
+  await withRetry(() =>
+    adminClient.program.create({
+      data: { id: id("progB"), institutionId: instB, departmentId: id("deptB"), name: `${PFX}BCAB`, code: id("BCAB"), duration: 6, durationUnit: "TERMS" },
+    }),
+  );
+}
+
 beforeAll(async () => {
   await teardown();
   await seed();
+  await seedMarkingExtras();
 
   const { examsRoutes } = await import("../exams.js");
   const { mfaRoutes } = await import("../mfa.js");
@@ -941,4 +1005,124 @@ describe("Phase-8 exams behavioral (real DB, real routes, real RLS)", () => {
     });
     expect(res.statusCode).toBe(404);
   }, 120_000);
+
+  // ─── faculty marking reads (GET /my-marking, GET /:id/marks-sheet) ─────────
+  describe("faculty marking reads", () => {
+    const sheet = (examId: string, token: string) =>
+      app.inject({ method: "GET", url: `/api/exams/${examId}/marks-sheet`, headers: authHeader(token) });
+    const putMark = (examId: string, token: string, assessmentId: string, candidateId: string, marks: number) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/exams/${examId}/marks`,
+        headers: authHeader(token),
+        payload: { marks: [{ assessmentId, candidateId, marks }] },
+      });
+
+    // Exam with an in-scope assessment (subjectA), an out-of-scope one
+    // (subjectOther), candidate A (sectionA, in scope) and candidate B (sectionB,
+    // not assigned). Returns the ids.
+    async function scenario() {
+      const examId = await createExam();
+      const aIn = await createAssessment(examId, subjectA, 100, 100);
+      const aOut = await createAssessment(examId, subjectOther, 100, 100);
+      const candA = await registerCandidate(examId, studentProfileA);
+      const candB = await registerCandidate(examId, studentProfileB);
+      await toMarksOpen(examId);
+      return { examId, aIn, aOut, candA, candB };
+    }
+
+    it("(a)+(b) pure FACULTY gets only in-scope cells, and every returned cell is writable while a non-returned pair is 403", async () => {
+      const { examId, aIn, aOut, candA, candB } = await scenario();
+      const res = await sheet(examId, facultyToken());
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.editable).toBe(true);
+      expect(body.exam.id).toBe(examId);
+      expect(body.assessments.map((a: { id: string }) => a.id)).toEqual([aIn]);
+      expect(body.rows.map((r: { candidateId: string }) => r.candidateId)).toEqual([candA]);
+      expect(body.rows[0].cells).toEqual([{ assessmentId: aIn, marksRecordId: null, marks: null }]);
+      expect(body.rows[0].enrollmentNo).toBe(id("ENR_A"));
+
+      // Parity: every returned cell is writable.
+      for (const row of body.rows) {
+        for (const cell of row.cells) {
+          expect((await putMark(examId, facultyToken(), cell.assessmentId, row.candidateId, 40)).statusCode).toBe(200);
+        }
+      }
+      // Pairs NOT returned are rejected by PUT.
+      expect((await putMark(examId, facultyToken(), aIn, candB, 40)).statusCode).toBe(403);
+      expect((await putMark(examId, facultyToken(), aOut, candA, 40)).statusCode).toBe(403);
+    }, 120_000);
+
+    it("(g)+(h) written marks appear in the sheet; editable flips false once MARKS_LOCKED", async () => {
+      const { examId, aIn, candA } = await scenario();
+      expect((await putMark(examId, facultyToken(), aIn, candA, 63)).statusCode).toBe(200);
+      const open = (await sheet(examId, facultyToken())).json();
+      const cell = open.rows[0].cells[0];
+      expect(cell.marks).toBe(63);
+      expect(typeof cell.marksRecordId).toBe("string");
+      expect(open.editable).toBe(true);
+
+      expect(await advance(examId, "MARKS_LOCKED")).toBe(200);
+      const locked = await sheet(examId, facultyToken());
+      expect(locked.statusCode).toBe(200);
+      expect(locked.json().editable).toBe(false);
+      expect(locked.json().rows[0].cells[0].marks).toBe(63);
+    }, 120_000);
+
+    it("(c) ACTIVE faculty with no assignment gets 200 empty", async () => {
+      const { examId } = await scenario();
+      const res = await sheet(examId, noAssignToken());
+      expect(res.statusCode).toBe(200);
+      expect(res.json().assessments).toEqual([]);
+      expect(res.json().rows).toEqual([]);
+      const mine = await app.inject({ method: "GET", url: "/api/exams/my-marking", headers: authHeader(noAssignToken()) });
+      expect(mine.statusCode).toBe(200);
+      expect(mine.json()).toEqual({ exams: [] });
+    }, 120_000);
+
+    it("(d) deactivated faculty -> 403 on both reads", async () => {
+      const { examId } = await scenario();
+      expect((await sheet(examId, inactiveToken())).statusCode).toBe(403);
+      const mine = await app.inject({ method: "GET", url: "/api/exams/my-marking", headers: authHeader(inactiveToken()) });
+      expect(mine.statusCode).toBe(403);
+    }, 120_000);
+
+    it("(e) ADMIN (results.view, no marks.enter) -> 403 on both reads", async () => {
+      const { examId } = await scenario();
+      expect((await sheet(examId, adminToken())).statusCode).toBe(403);
+      const mine = await app.inject({ method: "GET", url: "/api/exams/my-marking", headers: authHeader(adminToken()) });
+      expect(mine.statusCode).toBe(403);
+    }, 120_000);
+
+    it("(f) an exam id from another tenant -> 404", async () => {
+      const foreign = await adminClient.examination.create({
+        data: {
+          institutionId: instB,
+          academicSessionId: id("sessB"),
+          academicTermId: id("termB"),
+          programId: id("progB"),
+          name: `${PFX}foreign`,
+          type: "FINAL",
+          createdByUserId: adminUser,
+        },
+      });
+      expect((await sheet(foreign.id, facultyToken())).statusCode).toBe(404);
+    }, 120_000);
+
+    it("my-marking lists only exams with an in-scope subject in MARKS_OPEN/LOCKED/MODERATION", async () => {
+      const { examId } = await scenario(); // MARKS_OPEN, has subjectA assessment
+      const draft = await createExam(); // DRAFT: excluded by status
+      await createAssessment(draft, subjectA, 100, 100);
+      const other = await createExam(); // MARKS_OPEN but only subjectOther: excluded
+      await createAssessment(other, subjectOther, 100, 100);
+      await toMarksOpen(other);
+      const res = await app.inject({ method: "GET", url: "/api/exams/my-marking", headers: authHeader(facultyToken()) });
+      expect(res.statusCode).toBe(200);
+      const ids = res.json().exams.map((e: { id: string }) => e.id);
+      expect(ids).toContain(examId);
+      expect(ids).not.toContain(draft);
+      expect(ids).not.toContain(other);
+    }, 120_000);
+  });
 });

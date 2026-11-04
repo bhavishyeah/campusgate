@@ -296,6 +296,50 @@ export async function examsRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── Faculty marking reads (exams.marks.enter, FACULTY) ─────────────────────
+  // FACULTY never holds exams.results.view (it would expose all unpublished
+  // results unscoped), so these two read-only endpoints give the marks-entry UI
+  // its own scoped read path. Scope mirrors PUT /:id/marks exactly.
+
+  app.get(
+    "/my-marking",
+    { preHandler: [requirePermission("exams.marks.enter"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const marking = await resolveMarkingFaculty(tx, institutionId, userId);
+        if (!marking) return deny("not a faculty member", 403);
+        const assignments = await tx.facultyAssignment.findMany({
+          where: { institutionId, facultyId: marking.facultyId, status: "ACTIVE" },
+          select: { subjectId: true, academicTermId: true },
+        });
+        const subjectsByTerm = new Map<string, Set<string>>();
+        for (const a of assignments) {
+          const set = subjectsByTerm.get(a.academicTermId) ?? new Set<string>();
+          set.add(a.subjectId);
+          subjectsByTerm.set(a.academicTermId, set);
+        }
+        if (subjectsByTerm.size === 0) return { exams: [] };
+        const exams = await tx.examination.findMany({
+          where: {
+            institutionId,
+            status: { in: ["MARKS_OPEN", "MARKS_LOCKED", "MODERATION"] },
+            OR: [...subjectsByTerm.entries()].map(([academicTermId, subjects]) => ({
+              academicTermId,
+              assessments: { some: { institutionId, subjectId: { in: [...subjects] } } },
+            })),
+          },
+          orderBy: [{ createdAt: "desc" }],
+          take: 100,
+          select: { id: true, name: true, type: true, status: true, academicTermId: true },
+        });
+        return { exams };
+      });
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.send(outcome);
+    },
+  );
+
   app.get(
     "/:id",
     { preHandler: [requirePermission("exams.results.view"), requireModuleActive(gate)] },
@@ -931,6 +975,137 @@ export async function examsRoutes(app: FastifyInstance) {
         tx.marksRecord.findMany({ where: { institutionId, examId }, orderBy: [{ createdAt: "asc" }] }),
       );
       return reply.send({ marks: rows });
+    },
+  );
+
+  // The faculty's in-scope marks grid. A (assessment, candidate) pair is in scope
+  // iff the faculty has an ACTIVE assignment for the assessment's subject in the
+  // exam term with classSectionId NULL (subject-wide) or equal to one of the
+  // candidate's sections for that term — the same rule PUT /:id/marks applies,
+  // computed in memory from a handful of batched queries.
+  app.get(
+    "/:id/marks-sheet",
+    { preHandler: [requirePermission("exams.marks.enter"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId, userId } = request.user;
+      const { id: examId } = request.params as { id: string };
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const exam = await tx.examination.findFirst({
+          where: { id: examId, institutionId },
+          select: { id: true, name: true, type: true, status: true, academicTermId: true },
+        });
+        if (!exam) return deny("examination not found", 404);
+        const marking = await resolveMarkingFaculty(tx, institutionId, userId);
+        if (!marking) return deny("not a faculty member", 403);
+
+        const assignments = await tx.facultyAssignment.findMany({
+          where: {
+            institutionId,
+            facultyId: marking.facultyId,
+            academicTermId: exam.academicTermId,
+            status: "ACTIVE",
+          },
+          select: { subjectId: true, classSectionId: true },
+        });
+        // subjectId -> { wide: subject-wide assignment, sections: assigned section ids }
+        const bySubject = new Map<string, { wide: boolean; sections: Set<string> }>();
+        for (const a of assignments) {
+          const entry = bySubject.get(a.subjectId) ?? { wide: false, sections: new Set<string>() };
+          if (a.classSectionId === null) entry.wide = true;
+          else entry.sections.add(a.classSectionId);
+          bySubject.set(a.subjectId, entry);
+        }
+
+        const examOut = {
+          id: exam.id,
+          name: exam.name,
+          type: exam.type,
+          status: exam.status,
+          academicTermId: exam.academicTermId,
+        };
+        const editable = exam.status === "MARKS_OPEN";
+        if (bySubject.size === 0) return { exam: examOut, editable, assessments: [], rows: [] };
+
+        const assessments = await tx.assessment.findMany({
+          where: { institutionId, examId, subjectId: { in: [...bySubject.keys()] } },
+          orderBy: [{ createdAt: "asc" }],
+          select: { id: true, name: true, subjectId: true, maxMarks: true, weight: true },
+        });
+        if (assessments.length === 0) return { exam: examOut, editable, assessments: [], rows: [] };
+
+        const candidates = await tx.candidate.findMany({
+          where: { institutionId, examId },
+          orderBy: [{ createdAt: "asc" }],
+          select: {
+            id: true,
+            studentId: true,
+            student: { select: { enrollmentNo: true, name: true } },
+          },
+        });
+        const enrollments =
+          candidates.length === 0
+            ? []
+            : await tx.classEnrollment.findMany({
+                where: {
+                  institutionId,
+                  studentId: { in: candidates.map((c) => c.studentId) },
+                  classSection: { academicTermId: exam.academicTermId },
+                },
+                select: { studentId: true, classSectionId: true },
+              });
+        const sectionsByStudent = new Map<string, string[]>();
+        for (const e of enrollments) {
+          const list = sectionsByStudent.get(e.studentId) ?? [];
+          list.push(e.classSectionId);
+          sectionsByStudent.set(e.studentId, list);
+        }
+        const records = await tx.marksRecord.findMany({
+          where: { institutionId, examId },
+          select: { id: true, assessmentId: true, candidateId: true, marks: true },
+        });
+        const recordByPair = new Map(records.map((r) => [`${r.assessmentId}:${r.candidateId}`, r]));
+
+        const inScope = (subjectId: string, studentId: string): boolean => {
+          const entry = bySubject.get(subjectId);
+          if (!entry) return false;
+          if (entry.wide) return true;
+          return (sectionsByStudent.get(studentId) ?? []).some((s) => entry.sections.has(s));
+        };
+
+        const rows: Array<{
+          candidateId: string;
+          studentId: string;
+          enrollmentNo: string;
+          studentName: string;
+          cells: Array<{ assessmentId: string; marksRecordId: string | null; marks: number | null }>;
+        }> = [];
+        const usedAssessments = new Set<string>();
+        for (const c of candidates) {
+          const cells = [];
+          for (const a of assessments) {
+            if (!inScope(a.subjectId, c.studentId)) continue;
+            const rec = recordByPair.get(`${a.id}:${c.id}`);
+            cells.push({ assessmentId: a.id, marksRecordId: rec?.id ?? null, marks: rec?.marks ?? null });
+            usedAssessments.add(a.id);
+          }
+          if (cells.length === 0) continue;
+          rows.push({
+            candidateId: c.id,
+            studentId: c.studentId,
+            enrollmentNo: c.student.enrollmentNo,
+            studentName: c.student.name,
+            cells,
+          });
+        }
+        return {
+          exam: examOut,
+          editable,
+          assessments: assessments.filter((a) => usedAssessments.has(a.id)),
+          rows,
+        };
+      });
+      if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
+      return reply.send(outcome);
     },
   );
 

@@ -489,6 +489,13 @@ green (`turbo build` 3/3 successful); `npm test -w @campusgate/api` **484/484** 
 7/7, extended `tenant-escape` 82/82 with teardown total 0). The frontend remains deferred
 (see the deferred-frontend scope list above).
 
+**Phase 8 follow-up — faculty marking read endpoints.** `GET /api/exams/my-marking` and
+`GET /api/exams/:id/marks-sheet` (both `exams.marks.enter`) were added because FACULTY had no
+read path to render the marks grid: every existing exam GET needs `exams.results.view`, which
+only ADMIN/HOD hold (and they never hold `exams.marks.enter`, by separation of duties). The
+new reads return only the faculty's in-scope (assessment, candidate) cells, using the same
+FacultyAssignment scope rule as `PUT /:id/marks`. No permission, migration or audit changes.
+
 **Slice 8.2 — SHIPPED (backend only) → PHASE 8 COMPLETE.** The remaining Phase-8 scope
 landed additively on top of 8.1: **re-evaluation**, **supplementary exams**, and
 **cross-session result history**, via the hand-authored migration
