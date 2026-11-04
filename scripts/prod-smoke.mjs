@@ -18,7 +18,7 @@
  */
 import { createHash } from "node:crypto";
 
-const API = (process.env.API ?? "https://campusgate-production-9182.up.railway.app").replace(/\/$/, "");
+const API = (process.env.API ?? "https://campusgate.up.railway.app").replace(/\/$/, "");
 
 const ADMIN = { email: "admin@demo.edu", password: "admin123" };
 const STUDENT = { email: "bhavishya@demo.edu", password: "student123" };
