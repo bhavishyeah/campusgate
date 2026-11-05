@@ -50,6 +50,7 @@ function DetailInner({ id }: { id: string }) {
   const canManage =
     doc !== undefined && can("documents.grants.manage", perms) && canManageDocument(doc, detail.data?.grants ?? [], me);
   const canRetention = can("documents.retention.manage", perms);
+  const canAudit = can("documents.audit.view", perms);
 
   async function download(vid: string) {
     try {
@@ -217,10 +218,13 @@ function DetailInner({ id }: { id: string }) {
             <section className="space-y-2">
               <h2 className="text-lg font-semibold text-gray-900">Lifecycle</h2>
               <LifecycleActions documentId={id} status={doc.status} />
-              <Link href={`/documents/${id}/access-log`} className="text-sm text-primary-600 underline">
-                View access log
-              </Link>
             </section>
+          ) : null}
+
+          {canAudit ? (
+            <Link href={`/documents/${id}/access-log`} className="text-sm text-primary-600 underline">
+              View access log
+            </Link>
           ) : null}
 
           {canManage && doc.status === "ACTIVE" && versionDialog ? (
