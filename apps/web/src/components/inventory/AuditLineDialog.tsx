@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import type { z } from "zod";
 import { zodFormResolver } from "@/components/forms/zodFormResolver";
@@ -8,10 +8,12 @@ import { FormDialog } from "@/components/forms/FormDialog";
 import { PickerError, SelectField, TextareaField, TextField } from "@/components/forms/Fields";
 import { handleServerError } from "@/components/forms/serverErrors";
 import { SimpleSelect } from "@/components/ui-ext/SimpleSelect";
+import { Button } from "@/components/ui/button";
 import { AssetPicker } from "@/components/inventory/AssetPicker";
-import { useAddAuditLine, useStockItems } from "@/features/inventory/hooks";
+import { useAddAuditLine, useStockItemOptions } from "@/features/inventory/hooks";
+import { mergeStockPages, stockOptionLabel } from "@/features/inventory/format";
 import { auditLineSchema, buildAuditLine, type AuditLineValues } from "@/features/inventory/formSchemas";
-import type { AuditLine } from "@/features/inventory/types";
+import type { AuditLine, StockItem } from "@/features/inventory/types";
 
 const REF_OPTIONS = [
   { value: "asset", label: "Asset" },
@@ -39,7 +41,23 @@ export function AuditLineDialog({
   const ref = form.watch("ref");
   const assetId = form.watch("assetId");
   const stockItemId = form.watch("stockItemId");
-  const stock = useStockItems(1);
+
+  // Stock picker: OPTION_PAGE_SIZE per page with "Load more" so every stock item
+  // is reachable on an audit line (mirrors AssetPicker's page accumulation).
+  const [stockPage, setStockPage] = useState(1);
+  const [loadedStock, setLoadedStock] = useState<StockItem[]>([]);
+  const stock = useStockItemOptions(stockPage);
+  useEffect(() => {
+    const data = stock.data;
+    if (!data || stock.isPlaceholderData) return;
+    setLoadedStock((prev) => mergeStockPages(prev, data.stockItems));
+  }, [stock.data, stock.isPlaceholderData]);
+  const stockTotal = stock.data && !stock.isPlaceholderData ? stock.data.total : undefined;
+  const stockHasMore = stockTotal !== undefined && loadedStock.length < stockTotal;
+  const stockOptions = useMemo(
+    () => loadedStock.map((s) => ({ value: s.id, label: stockOptionLabel(s) })),
+    [loadedStock],
+  );
 
   const onSubmit = form.handleSubmit(async (values) => {
     setError(null);
@@ -79,11 +97,19 @@ export function AuditLineDialog({
             value={String(stockItemId ?? "")}
             onChange={(id) => form.setValue("stockItemId", id, { shouldValidate: form.formState.isSubmitted })}
             placeholder={stock.isLoading ? "Loading..." : "Select a stock item"}
-            options={(stock.data?.stockItems ?? []).map((s) => ({
-              value: s.id,
-              label: s.assetTag ? `${s.assetTag} (on-hand ${s.onHandQuantity})` : `${s.id} (on-hand ${s.onHandQuantity})`,
-            }))}
+            options={stockOptions}
           />
+          {stockHasMore ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={stock.isFetching}
+              onClick={() => setStockPage((p) => p + 1)}
+            >
+              {stock.isFetching ? "Loading..." : "Load more"}
+            </Button>
+          ) : null}
           <PickerError message={form.formState.errors.assetId?.message as string | undefined} />
         </>
       )}

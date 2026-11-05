@@ -54,3 +54,24 @@ export function filterByText(assets: readonly Asset[], text: string): Asset[] {
   if (t === "") return [...assets];
   return assets.filter((a) => a.assetTag.toLowerCase().includes(t));
 }
+
+/**
+ * Concatenate stock-item option pages, de-duplicating by id (a refetch may
+ * overlap). The AuditLine stock picker accumulates pages so every stock item is
+ * reachable, not just the first page (the AssetPicker precedent).
+ */
+export function mergeStockPages(existing: readonly StockItem[], next: readonly StockItem[]): StockItem[] {
+  const seen = new Set(existing.map((s) => s.id));
+  const out = [...existing];
+  for (const s of next) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
+}
+
+/** "TAG (on-hand N)" / "ID (on-hand N)" option label for the stock picker. */
+export function stockOptionLabel(s: Pick<StockItem, "id" | "assetTag" | "onHandQuantity">): string {
+  return s.assetTag ? `${s.assetTag} (on-hand ${s.onHandQuantity})` : `${s.id} (on-hand ${s.onHandQuantity})`;
+}

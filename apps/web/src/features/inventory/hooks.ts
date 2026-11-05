@@ -217,6 +217,19 @@ export function useStockItems(page: number) {
   return withAllowed(q, allowed);
 }
 
+// Picker-oriented stock list: OPTION_PAGE_SIZE per page with "Load more" so every
+// stock item is reachable (mirrors useAssetOptions — the AssetPicker precedent).
+export function useStockItemOptions(page: number) {
+  const allowed = can("inventory.view", usePerms());
+  const q = useQuery<{ stockItems: StockItem[] } & Paged, ApiError>({
+    queryKey: inventoryKeys.stockOptions({ page }),
+    queryFn: () => api.get(`/api/inventory/stock${qs({ page, pageSize: OPTION_PAGE_SIZE })}`),
+    enabled: allowed,
+    placeholderData: keepPreviousData,
+  });
+  return withAllowed(q, allowed);
+}
+
 export function useStockItem(assetId: string) {
   const allowed = can("inventory.view", usePerms());
   const q = useQuery<{ stockItem: StockItem; movements: StockMovement[] }, ApiError>({

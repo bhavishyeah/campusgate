@@ -11,6 +11,7 @@ export const inventoryKeys = {
   maintenance: (f: { status?: string; assetId?: string; page: number }) => ["inventory", "maintenance", f] as const,
   maintenanceAll: () => ["inventory", "maintenance"] as const,
   stockItems: (f: { page: number }) => ["inventory", "stock", "list", f] as const,
+  stockOptions: (f: { page: number }) => ["inventory", "stock", "options", f] as const,
   stockItem: (assetId: string) => ["inventory", "stock", "detail", assetId] as const,
   stockAll: () => ["inventory", "stock"] as const,
   audits: (f: { page: number }) => ["inventory", "audits", "list", f] as const,
