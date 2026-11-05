@@ -8,6 +8,13 @@ import { api, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
 import { can } from "@/lib/authz";
 import { sisKeys } from "./keys";
+import {
+  BULK_IMPORT_MAX,
+  aggregateResults,
+  chunkRows,
+  type BulkImportResult,
+  type BulkImportStudentRow,
+} from "./importCsv";
 import type {
   StudentProfile,
   StudentListParams,
@@ -101,6 +108,39 @@ export function useDeactivateStudent(id: string) {
     mutationFn: (body) => api.post(`/api/students/${id}/deactivate`, body),
     onSuccess: (updated) => {
       qc.setQueryData(sisKeys.detail(id), updated);
+      qc.invalidateQueries({ queryKey: ["students"] });
+    },
+    onError: toastError,
+  });
+}
+
+/**
+ * useBulkImportStudents — admin CSV bulk import over the EXISTING backend.
+ *
+ * Posts valid rows to POST /api/admin/students/bulk-import as { students: Row[] },
+ * CHUNKED at <=500 rows per request (the server cap), and sums the
+ * {created,updated,skipped} counts + concatenates errors across chunks. On
+ * success the students list query key is invalidated so new/updated students
+ * show immediately. Chunks run sequentially to stay gentle on the API; a 4xx
+ * (e.g. the cap/empty-array 400) surfaces its ApiError (the { error } string)
+ * verbatim to the caller.
+ */
+export function useBulkImportStudents() {
+  const qc = useQueryClient();
+  return useMutation<BulkImportResult, ApiError, BulkImportStudentRow[]>({
+    mutationFn: async (rows) => {
+      const chunks = chunkRows(rows, BULK_IMPORT_MAX);
+      const results: BulkImportResult[] = [];
+      for (const chunk of chunks) {
+        const res = await api.post<BulkImportResult>(
+          "/api/admin/students/bulk-import",
+          { students: chunk },
+        );
+        results.push(res);
+      }
+      return aggregateResults(results);
+    },
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["students"] });
     },
     onError: toastError,

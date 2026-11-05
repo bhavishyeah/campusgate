@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Users, Search } from "lucide-react";
 import Link from "next/link";
+import { Upload } from "lucide-react";
 import { RouteGuard } from "@/components/auth/RouteGuard";
+import { Can } from "@/components/auth/Can";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -80,11 +82,20 @@ function StudentsInner() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Students</h1>
-        <p className="text-sm text-gray-500">
-          Search and manage student records.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Students</h1>
+          <p className="text-sm text-gray-500">
+            Search and manage student records.
+          </p>
+        </div>
+        <Can permission="admin.students.import">
+          <Button asChild>
+            <Link href="/sis/students/import">
+              <Upload className="w-4 h-4" aria-hidden="true" /> Import students
+            </Link>
+          </Button>
+        </Can>
       </div>
 
       {/* Search + filters */}
