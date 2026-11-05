@@ -1,0 +1,4 @@
+email,name,enrollmentNo,department,program,semester,section,rollNumber,dob,phone,address,admissionDate
+aarav.sharma@demo.edu,Aarav Sharma,BCA2026001,Bachelor of Computer Applications (BCA),BCA,1,A,BCA-A-01,2007-04-12,9876500001,"12 MG Road, Pune",2026-07-01
+diya.patel@demo.edu,Diya Patel,BCA2026002,512,BCA,1,A,BCA-A-02,2007-06-23,9876500002,"44 FC Road, Pune",2026-07-01
+kabir.singh@demo.edu,Kabir Singh,BBA2026003,Bachelor of Business Administration (BBA),BBA,3,B,BBA-B-07,2006-01-09,9876500003,"8 JM Road, Pune",2025-07-01
