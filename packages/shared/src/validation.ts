@@ -897,6 +897,15 @@ export const bulkChargeSchema = z
   })
   .strict();
 
+// Fees-scoped student picker for the charge form (GET /students/lookup). Mirrors
+// the library/hostel/transport lookups: gated by fees.charges.manage (NOT
+// students.view, which ACCOUNTANT does not hold), returns only minimal display
+// fields, excludes un-enrolled APPLICANTs, and requires a min-2 q.
+export const feesStudentLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+
 // Stage-1 create-order body (§D.5): the charges the student elects to pay.
 // No client-supplied amount is ever trusted — the server recomputes the sum.
 export const createPaymentSchema = z
@@ -1159,6 +1168,7 @@ export type PatchFeeStructureInput = z.infer<typeof patchFeeStructureSchema>;
 export type AddFeeComponentInput = z.infer<typeof addFeeComponentSchema>;
 export type PostChargeInput = z.infer<typeof postChargeSchema>;
 export type BulkChargeInput = z.infer<typeof bulkChargeSchema>;
+export type FeesStudentLookupQueryInput = z.infer<typeof feesStudentLookupQuerySchema>;
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 export type VerifyPaymentInput = z.infer<typeof verifyPaymentSchema>;
 export type ReconciliationQueryInput = z.infer<typeof reconciliationQuerySchema>;

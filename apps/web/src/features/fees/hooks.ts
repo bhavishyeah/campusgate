@@ -2,6 +2,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type UseQueryResult,
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
@@ -119,6 +120,14 @@ export interface ReconciliationQuery {
   thresholdMinutes: number;
   page: number;
   pageSize: number;
+}
+
+/** Minimal student display row returned by the fees-scoped student lookup. */
+export interface StudentSummary {
+  id: string;
+  name: string;
+  enrollmentNo: string | null;
+  program: string | null;
 }
 
 export interface RunReconciliationSummary {
@@ -260,6 +269,26 @@ export function useReconciliation(query: ReconciliationQuery) {
     queryFn: () => api.get(`/api/fees/reconciliation?${qs}`),
     enabled: can("fees.view", currentPermissions()),
   });
+}
+
+/**
+ * Debounced student picker for the charge form. Gated by fees.charges.manage
+ * (the key the charge screen already requires) — NOT students.view, which the
+ * ACCOUNTANT role does not hold. Enabled only when the caller can manage charges
+ * AND q is 2–100 chars, matching the server's min-2 validation.
+ */
+export function useFeesStudentLookup(
+  q: string,
+): UseQueryResult<{ students: StudentSummary[] }, ApiError> & { allowed: boolean } {
+  const allowed = can("fees.charges.manage", currentPermissions());
+  const trimmed = q.trim();
+  const query = useQuery<{ students: StudentSummary[] }, ApiError>({
+    queryKey: feesKeys.studentLookup(trimmed),
+    queryFn: () =>
+      api.get(`/api/fees/students/lookup?q=${encodeURIComponent(trimmed)}&limit=10`),
+    enabled: allowed && trimmed.length >= 2 && trimmed.length <= 100,
+  });
+  return Object.assign(query, { allowed });
 }
 
 // ─── Student self-service (fees.view_own) ────────────────────────────────────

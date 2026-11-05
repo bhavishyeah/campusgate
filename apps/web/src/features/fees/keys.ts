@@ -10,4 +10,5 @@ export const feesKeys = {
   meCharges: () => ["fees", "me", "charges"] as const,
   meReceipts: () => ["fees", "me", "receipts"] as const,
   meOutstanding: () => ["fees", "me", "outstanding"] as const,
+  studentLookup: (q: string) => ["fees", "student-lookup", q] as const,
 } as const;

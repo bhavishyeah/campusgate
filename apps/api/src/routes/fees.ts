@@ -7,6 +7,7 @@ import {
   addFeeComponentSchema,
   postChargeSchema,
   bulkChargeSchema,
+  feesStudentLookupQuerySchema,
   createPaymentSchema,
   verifyPaymentSchema,
   reconciliationQuerySchema,
@@ -491,6 +492,39 @@ export async function feesRoutes(app: FastifyInstance) {
 
       if (isDeny(outcome)) return reply.status(outcome.status).send({ error: outcome.deny });
       return reply.status(201).send({ charges: outcome.posted, students: outcome.students });
+    },
+  );
+
+  // GET /students/lookup?q= — fees-scoped student picker for the charge form.
+  // Gated by fees.charges.manage (NOT students.view, which ACCOUNTANT does not
+  // hold); returns only id/name/enrollmentNo/program and excludes un-enrolled
+  // APPLICANTs (the library/hostel/transport precedent).
+  app.get(
+    "/students/lookup",
+    { preHandler: [requirePermission("fees.charges.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = feesStudentLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+
+      const students = await withTenant(institutionId, (tx) =>
+        tx.studentProfile.findMany({
+          where: {
+            institutionId,
+            status: { not: "APPLICANT" },
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { enrollmentNo: { contains: q, mode: "insensitive" } },
+            ],
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: limit,
+          select: { id: true, name: true, enrollmentNo: true, program: true },
+        }),
+      );
+
+      return reply.send({ students });
     },
   );
 

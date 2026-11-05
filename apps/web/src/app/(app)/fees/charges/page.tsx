@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -33,7 +34,12 @@ import {
   postChargeFormSchema,
   type PostChargeFormValues,
 } from "@/features/fees/formSchemas";
-import { usePostCharge, useBulkCharge } from "@/features/fees/hooks";
+import {
+  usePostCharge,
+  useBulkCharge,
+  type StudentSummary,
+} from "@/features/fees/hooks";
+import { StudentPicker } from "@/components/fees/StudentPicker";
 
 const CATEGORY_OPTIONS = feeComponentCategoryEnum.options;
 
@@ -66,6 +72,7 @@ export default function ChargesPage() {
 
 function SingleChargeCard() {
   const postCharge = usePostCharge();
+  const [student, setStudent] = useState<StudentSummary | null>(null);
   const form = useForm<PostChargeFormValues>({
     resolver: zodResolver(postChargeFormSchema),
     defaultValues: {
@@ -99,6 +106,7 @@ function SingleChargeCard() {
         onSuccess: () => {
           toast.success("Charge posted.");
           form.reset();
+          setStudent(null);
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status === 404) {
@@ -119,11 +127,19 @@ function SingleChargeCard() {
           <FormField
             control={form.control}
             name="studentId"
-            render={({ field }) => (
+            render={() => (
               <FormItem>
-                <FormLabel>Student ID</FormLabel>
+                <FormLabel>Student</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <StudentPicker
+                    value={student}
+                    onChange={(s) => {
+                      setStudent(s);
+                      form.setValue("studentId", s?.id ?? "", {
+                        shouldValidate: form.formState.isSubmitted,
+                      });
+                    }}
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>

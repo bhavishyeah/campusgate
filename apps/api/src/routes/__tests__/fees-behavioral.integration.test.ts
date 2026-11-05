@@ -1395,4 +1395,65 @@ describe("Phase-7 fees behavioral (real DB, real routes, real RLS)", () => {
     });
     expect(outXlsx.statusCode).toBe(200);
   }, 180_000);
+
+  // ─── Fees-scoped student picker (GET /students/lookup) ───────────────────────
+
+  it("LOOKUP: tenant-scoped + minimal fields + APPLICANT excluded; short-q 400; a non-fees role (STUDENT) is 403", async () => {
+    // Seed an APPLICANT profile in tenant A — it must never appear in the picker.
+    const applicantUser = id("u_applicant");
+    const applicantProfile = id("sp_applicant");
+    await withRetry(() =>
+      adminClient.user.create({
+        data: { id: applicantUser, email: `${applicantUser.toLowerCase()}@test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA },
+      }),
+    );
+    await withRetry(() =>
+      adminClient.studentProfile.create({
+        data: {
+          id: applicantProfile,
+          userId: applicantUser,
+          institutionId: instA,
+          enrollmentNo: id("ENR_APPLICANT"),
+          name: `${PFX}Student applicant`,
+          departmentId: deptA,
+          program: "TEST",
+          semester: 1,
+          status: "APPLICANT",
+        },
+      }),
+    );
+
+    // The ACCOUNTANT (fees.charges.manage) searches tenant A by the shared PFX
+    // name prefix: sees the two ACTIVE students, never the APPLICANT.
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/fees/students/lookup?q=${encodeURIComponent(PFX + "Student")}&limit=25`,
+      headers: authHeader(acctToken()),
+    });
+    expect(res.statusCode).toBe(200);
+    const students = res.json().students as Array<{ id: string }>;
+    expect(students.map((s) => s.id).sort()).toEqual([studentProfileA, otherStudentProfileA].sort());
+    expect(students.some((s) => s.id === applicantProfile)).toBe(false);
+    expect(Object.keys(students[0]).sort()).toEqual(["enrollmentNo", "id", "name", "program"]);
+
+    // Tenant isolation: tenant B's student is unreachable from tenant A by its
+    // enrollment number.
+    const byB = await app.inject({
+      method: "GET",
+      url: `/api/fees/students/lookup?q=${encodeURIComponent(id("ENR_" + studentProfileB))}`,
+      headers: authHeader(acctToken()),
+    });
+    expect(byB.statusCode).toBe(200);
+    expect(byB.json().students).toEqual([]);
+
+    // Short q -> 400.
+    expect(
+      (await app.inject({ method: "GET", url: "/api/fees/students/lookup?q=a", headers: authHeader(acctToken()) })).statusCode,
+    ).toBe(400);
+
+    // A non-fees role (STUDENT holds only fees.view_own) -> 403.
+    expect(
+      (await app.inject({ method: "GET", url: "/api/fees/students/lookup?q=ab", headers: authHeader(studentToken()) })).statusCode,
+    ).toBe(403);
+  }, 180_000);
 });
