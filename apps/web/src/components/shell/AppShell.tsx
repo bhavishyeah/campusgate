@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, Boxes, PackageSearch, ListChecks, Megaphone, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, Boxes, PackageSearch, ListChecks, Megaphone, FileText, FolderOpen, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -125,6 +125,9 @@ const NAV: NavItem[] = [
   { href: "/service-requests", label: "Service Requests", icon: ClipboardList, anyOf: ["service_requests.view"], module: "service_requests" },
   { href: "/service-requests/me", label: "My Requests", icon: ListChecks, anyOf: ["service_requests.request_own"], module: "service_requests" },
   { href: "/service-requests/raise", label: "Raise a Request", icon: Megaphone, anyOf: ["service_requests.request_own"], module: "service_requests" },
+  // ── Documents — module-gated. Each anyOf holds only keys that open the target page.
+  { href: "/documents", label: "Documents", icon: FileText, anyOf: ["documents.view_own", "documents.admin.view_all"], module: "documents" },
+  { href: "/documents/retention-policies", label: "Document Admin", icon: FolderOpen, anyOf: ["documents.retention.manage"], module: "documents" },
 ];
 
 /** Returns whether a nav item should render, respecting permission + module state. */

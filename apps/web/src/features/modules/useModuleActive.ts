@@ -70,6 +70,11 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     if (can("service_requests.view", permissions)) probePath = "/api/service-requests/types";
     else if (can("service_requests.request_own", permissions)) probePath = "/api/service-requests/me/requests?pageSize=1";
   }
+  if (moduleKey === "documents") {
+    if (can("documents.admin.view_all", permissions)) probePath = "/api/documents?pageSize=1";
+    else if (can("documents.view_own", permissions)) probePath = "/api/documents?pageSize=1";
+    else if (can("documents.retention.manage", permissions)) probePath = "/api/documents/retention-policies";
+  }
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,

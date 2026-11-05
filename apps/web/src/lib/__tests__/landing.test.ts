@@ -169,4 +169,26 @@ describe("landingRoute", () => {
   it("falls back to /app for a holder of only inventory.assets.manage (no inventory.view)", () => {
     expect(landingRoute([], ["inventory.assets.manage"])).toBe("/app");
   });
+
+  // ── 3f. Documents landings (APPEND-only; no existing role's landing changes) ──
+  it("sends the real DOCUMENT_MANAGER permissions to /documents", () => {
+    expect(landingRoute(["DOCUMENT_MANAGER"], [...(ROLE_PERMISSIONS.DOCUMENT_MANAGER ?? [])])).toBe("/documents");
+  });
+  it("sends a bare documents.admin.view_all holder to /documents", () => {
+    expect(landingRoute([], ["documents.admin.view_all"])).toBe("/documents");
+  });
+  it("sends a bare documents.view_own holder to /documents", () => {
+    expect(landingRoute([], ["documents.view_own"])).toBe("/documents");
+  });
+  it("does NOT land on /documents for the baseline documents.download key alone", () => {
+    expect(landingRoute([], ["documents.download"])).toBe("/app");
+  });
+  it("keeps every existing role's landing unchanged by the documents block", () => {
+    // FACULTY holds documents.view_own but is resolved earlier (3c) to its faculty home.
+    expect(landingRoute(["FACULTY"], [...(ROLE_PERMISSIONS.FACULTY ?? [])])).toBe("/faculty-mgmt/me");
+    expect(landingRoute(["STUDENT"], [...(ROLE_PERMISSIONS.STUDENT ?? [])])).toBe("/student");
+    expect(landingRoute(["ADMIN"], [...(ROLE_PERMISSIONS.ADMIN ?? [])])).toBe("/admin");
+    // ACCOUNTANT carries the baseline documents.download yet stays on /fees.
+    expect(landingRoute(["ACCOUNTANT"], ["fees.view", "documents.download"])).toBe("/fees");
+  });
 });

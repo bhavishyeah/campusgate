@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ROLE_PERMISSIONS, type PermissionKey } from "@campusgate/shared";
 import {
+  DOCUMENTS_STAFF_NAV,
   FACULTY_STAFF_NAV,
   HOSTEL_STAFF_NAV,
   HR_STAFF_NAV,
@@ -112,6 +113,21 @@ export const PAGE_ACCESS: PageAccessRow[] = [
   { route: "/service-requests/me", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
   { route: "/service-requests/me/[id]", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
   { route: "/service-requests/raise", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
+  // Documents — single-key-guarded staff pages (DOCUMENT_MANAGER, ADMIN).
+  ...(["DOCUMENT_MANAGER", "ADMIN"] as const).flatMap((role): PageAccessRow[] => [
+    { route: "/documents/retention-policies", guard: "documents.retention.manage", queryKeys: ["documents.retention.manage"], role },
+    { route: "/documents/report", guard: "documents.admin.view_all", queryKeys: ["documents.admin.view_all"], role },
+    { route: "/documents/[id]/access-log", guard: "documents.audit.view", queryKeys: ["documents.audit.view"], role },
+  ]),
+  // Documents list/detail — OR-gated (self-rendered NoAccess, no single-key guard).
+  // Each row asserts the role holds ONE of the coarse OR keys it reaches the page with.
+  { route: "/documents", guard: "documents.view_own", queryKeys: ["documents.view_own"], role: "FACULTY" },
+  { route: "/documents", guard: "documents.admin.view_all", queryKeys: ["documents.admin.view_all"], role: "DOCUMENT_MANAGER" },
+  { route: "/documents", guard: "documents.admin.view_all", queryKeys: ["documents.admin.view_all"], role: "ADMIN" },
+  { route: "/documents/[id]", guard: "documents.view_own", queryKeys: ["documents.view_own"], role: "FACULTY" },
+  { route: "/documents/[id]", guard: "documents.admin.view_all", queryKeys: ["documents.admin.view_all"], role: "DOCUMENT_MANAGER" },
+  // A grantee role reaches the detail via the baseline download key.
+  { route: "/documents/[id]", guard: "documents.download", queryKeys: ["documents.download"], role: "WARDEN" },
 ];
 
 // SectionNav items (every <Can permission> key used by the nav bars).
@@ -126,6 +142,12 @@ const SECTION_NAV_KEYS: { key: PermissionKey; role: string }[] = [
   ...TRANSPORT_STAFF_NAV.map((i) => ({ key: i.permission, role: "TRANSPORT_MANAGER" })),
   ...INVENTORY_STAFF_NAV.map((i) => ({ key: i.permission, role: "INVENTORY_MANAGER" })),
   ...SERVICE_REQUESTS_STAFF_NAV.map((i) => ({ key: i.permission, role: "SERVICE_AGENT" })),
+  // Documents section nav: the Documents (view_own) tab is the FACULTY owner tab;
+  // the Retention/Report tabs belong to DOCUMENT_MANAGER (which lacks view_own).
+  ...DOCUMENTS_STAFF_NAV.map((i) => ({
+    key: i.permission,
+    role: i.permission === "documents.view_own" ? "FACULTY" : "DOCUMENT_MANAGER",
+  })),
 ];
 
 // AppShell NAV anyOf keys.
@@ -146,6 +168,10 @@ const NAV_KEYS: { key: PermissionKey; role: string }[] = [
   { key: "inventory.view_own", role: "INVENTORY_MANAGER" },
   { key: "service_requests.view", role: "SERVICE_AGENT" },
   { key: "service_requests.request_own", role: "STUDENT" },
+  // Documents AppShell nav anyOf keys.
+  { key: "documents.view_own", role: "FACULTY" },
+  { key: "documents.admin.view_all", role: "DOCUMENT_MANAGER" },
+  { key: "documents.retention.manage", role: "DOCUMENT_MANAGER" },
 ];
 
 describe("PAGE_ACCESS table", () => {

@@ -49,6 +49,12 @@ export function landingRoute(roles: string[], permissions: string[]): string {
   if (permissions.includes("service_requests.view")) return "/service-requests";
   if (permissions.includes("inventory.view_own")) return "/inventory/me";
   if (permissions.includes("service_requests.request_own")) return "/service-requests/me";
+  // 3f. Documents landings. Appended AFTER 3e. documents.download is a baseline
+  // key held by every non-applicant role, so it is NEVER used here (it would
+  // hijack fees/library/hr/etc. users). Only the admin-view and owner keys land,
+  // and only for holders not already captured above (e.g. DOCUMENT_MANAGER).
+  if (permissions.includes("documents.admin.view_all")) return "/documents";
+  if (permissions.includes("documents.view_own")) return "/documents";
 
   // 4. Authenticated but no known landing.
   return "/app";

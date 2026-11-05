@@ -42,6 +42,15 @@ function isActive(pathname: string, href: string): boolean {
     return true;
   }
   if (href === "/service-requests/types" && pathname.startsWith("/service-requests/types/")) return true;
+  // Documents: the Documents tab owns the detail + access-log routes; Retention and Report own their own.
+  if (
+    href === "/documents" &&
+    pathname.startsWith("/documents/") &&
+    !pathname.startsWith("/documents/retention-policies") &&
+    !pathname.startsWith("/documents/report")
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -132,4 +141,10 @@ export const SERVICE_REQUESTS_STAFF_NAV: SectionNavItem[] = [
   { href: "/service-requests", label: "Queue", permission: "service_requests.view" },
   { href: "/service-requests/types", label: "Types", permission: "service_requests.view" },
   { href: "/service-requests/reports", label: "Reports", permission: "service_requests.view" },
+];
+
+export const DOCUMENTS_STAFF_NAV: SectionNavItem[] = [
+  { href: "/documents", label: "Documents", permission: "documents.view_own" },
+  { href: "/documents/retention-policies", label: "Retention", permission: "documents.retention.manage" },
+  { href: "/documents/report", label: "Report", permission: "documents.admin.view_all" },
 ];
