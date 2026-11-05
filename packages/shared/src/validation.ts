@@ -2519,3 +2519,13 @@ export type CreateDocumentGrantInput = z.infer<typeof createDocumentGrantSchema>
 export type UpsertDocumentRetentionPolicyInput = z.infer<typeof upsertDocumentRetentionPolicySchema>;
 export type PatchDocumentRetentionPolicyInput = z.infer<typeof patchDocumentRetentionPolicySchema>;
 export type DocumentListQueryInput = z.infer<typeof documentListQuerySchema>;
+
+// 6. Grantee user lookup (the grant-management screen's user picker). q >= 2
+// chars; limit 1..25 default 10. Gated by documents.grants.manage; returns only
+// non-student tenant users so a grant manager cannot enumerate students through
+// it (the inventory/service_requests/hostel /users/lookup precedent).
+export const documentsUserLookupQuerySchema = z.object({
+  q: z.string().trim().min(2, "Enter at least 2 characters").max(100),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+export type DocumentsUserLookupQueryInput = z.infer<typeof documentsUserLookupQuerySchema>;

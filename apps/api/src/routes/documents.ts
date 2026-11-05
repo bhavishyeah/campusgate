@@ -10,6 +10,7 @@ import {
   upsertDocumentRetentionPolicySchema,
   patchDocumentRetentionPolicySchema,
   documentListQuerySchema,
+  documentsUserLookupQuerySchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive, can } from "../services/authz-engine.js";
@@ -804,6 +805,43 @@ export async function documentsRoutes(app: FastifyInstance) {
       if ("grantNotFound" in outcome) return reply.status(404).send({ error: "grant not found" });
       if (isDeny(outcome)) return reply.status(outcome.deny.status).send({ error: outcome.deny.deny });
       return reply.send({ status: "revoked" });
+    },
+  );
+
+  // ─── 7b. GET /users/lookup — grantee picker for the grant-management screen ──
+  // Gated by documents.grants.manage (the key the grant form uses to set
+  // granteeUserId). FACULTY (the document-owning role) holds grants.manage but
+  // has NO admin.users.view (strict least privilege), so without this the grant
+  // form would have no way to resolve a user id. Returns ONLY non-student tenant
+  // users (id/email/name) — a grant manager cannot enumerate students through it
+  // (the inventory G-INV1 / hostel G-HOS6 / service-requests G-SR1 precedent).
+  // Read-only, no audit.
+  app.get(
+    "/users/lookup",
+    { preHandler: [requirePermission("documents.grants.manage"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const parsed = documentsUserLookupQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+      const { q, limit } = parsed.data;
+      const users = await withTenant(institutionId, (tx) =>
+        tx.user.findMany({
+          where: {
+            institutionId,
+            studentProfile: null,
+            OR: [
+              { email: { contains: q, mode: "insensitive" } },
+              { facultyProfile: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+          orderBy: [{ email: "asc" }],
+          take: limit,
+          select: { id: true, email: true, facultyProfile: { select: { name: true } } },
+        }),
+      );
+      return reply.send({
+        users: users.map((u) => ({ id: u.id, email: u.email, name: u.facultyProfile?.name ?? null })),
+      });
     },
   );
 

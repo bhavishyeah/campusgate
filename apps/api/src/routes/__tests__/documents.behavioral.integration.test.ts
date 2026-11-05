@@ -97,18 +97,25 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
 
 // ─── tenant / users ──────────────────────────────────────────────────────────
 const instA = id("instA");
+const instB = id("instB"); // second tenant — proves /users/lookup is tenant-scoped
 const financeDept = id("deptFinance");
 const otherDept = id("deptOther");
+const deptB = id("deptB");
 const facultyUser = id("u_faculty"); // FACULTY -> document owner (upload_own, view_own, download, grants.manage)
 const managerUser = id("u_manager"); // DOCUMENT_MANAGER -> admin keys + download
 const studentUser = id("u_student"); // STUDENT -> download only (user-grant grantee)
 const accountantUser = id("u_accountant"); // ACCOUNTANT in Finance -> download only (dept-grant grantee)
 const applicantUser = id("u_applicant"); // APPLICANT -> NO documents.* key
+const studentProfileUser = id("u_student_profile"); // STUDENT with a real StudentProfile -> excluded from /users/lookup
+const tenantBUser = id("u_tenantB"); // FACULTY in tenant B -> must NOT leak into tenant A lookup
 
 let app: FastifyInstance;
 
 function tokenFor(userId: string): string {
   return app.jwt.sign({ userId, role: "ADMIN", institutionId: instA });
+}
+function tokenForInst(userId: string, institutionId: string): string {
+  return app.jwt.sign({ userId, role: "ADMIN", institutionId });
 }
 const authHeader = (t: string) => ({ authorization: `Bearer ${t}` });
 
@@ -118,17 +125,22 @@ async function templateRoleId(key: string): Promise<string> {
   return role.id;
 }
 
-async function ensureMembership(userId: string, roleKey: string, departmentScope: string | null = null): Promise<void> {
+async function ensureMembership(
+  userId: string,
+  roleKey: string,
+  departmentScope: string | null = null,
+  institutionId: string = instA,
+): Promise<void> {
   const mId = id(`mbr_${userId}`);
   const roleId = await templateRoleId(roleKey);
   await withRetry(() =>
     adminClient.institutionMembership.create({
-      data: { id: mId, userId, institutionId: instA, membershipStatus: "ACTIVE", permissionsVersion: 0, departmentScope },
+      data: { id: mId, userId, institutionId, membershipStatus: "ACTIVE", permissionsVersion: 0, departmentScope },
     }),
   );
   await withRetry(() =>
     adminClient.membershipRole.create({
-      data: { id: id(`mrl_${userId}`), membershipId: mId, roleId, institutionId: instA },
+      data: { id: id(`mrl_${userId}`), membershipId: mId, roleId, institutionId },
     }),
   );
 }
@@ -169,6 +181,7 @@ async function teardown(): Promise<void> {
   await withRetry(() => adminClient.membershipRole.deleteMany({ where }));
   await withRetry(() => adminClient.institutionMembership.deleteMany({ where }));
   await withRetry(() => adminClient.institutionModule.deleteMany({ where }));
+  await withRetry(() => adminClient.studentProfile.deleteMany({ where }));
   await withRetry(() => adminClient.user.deleteMany({ where }));
   await withRetry(() => adminClient.department.deleteMany({ where }));
   await withRetry(() => adminClient.institution.deleteMany({ where: { id: { startsWith: PFX } } }));
@@ -199,6 +212,39 @@ async function seed(): Promise<void> {
   await ensureMembership(accountantUser, "ACCOUNTANT", financeDept);
   await withRetry(() => adminClient.user.create({ data: { id: applicantUser, email: `${PFX.toLowerCase()}app@a.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA } }));
   await ensureMembership(applicantUser, "APPLICANT");
+
+  // A STUDENT user with a REAL StudentProfile — the /users/lookup grantee picker
+  // must EXCLUDE it (studentProfile: null filter), so a grant manager cannot
+  // enumerate students through the picker.
+  await withRetry(() =>
+    adminClient.user.create({ data: { id: studentProfileUser, email: `${PFX.toLowerCase()}pupil@a.test`, role: "STUDENT", accountStatus: "ACTIVE", institutionId: instA } }),
+  );
+  await withRetry(() =>
+    adminClient.studentProfile.create({
+      data: {
+        id: id("sp_pupil"),
+        userId: studentProfileUser,
+        institutionId: instA,
+        enrollmentNo: id("ENR_PUPIL"),
+        name: "Lookup Pupil",
+        departmentId: financeDept,
+        program: "BSc",
+        semester: 1,
+      },
+    }),
+  );
+
+  // Tenant B — a FACULTY user whose email also matches the lookup term; it must
+  // NEVER appear in tenant A's /users/lookup (withTenant/RLS tenant scoping).
+  await withRetry(() => adminClient.institution.create({ data: { id: instB, name: `${PFX}B`, code: id("CODE_B"), status: "ACTIVE" } }));
+  await withRetry(() => adminClient.department.create({ data: { id: deptB, name: `${PFX}DeptB`, code: id("D_B"), institutionId: instB } }));
+  await withRetry(() =>
+    adminClient.institutionModule.create({
+      data: { id: id("imod_B"), institutionId: instB, moduleKey: "documents", state: "ACTIVE", entitledAt: new Date(), activatedAt: new Date() },
+    }),
+  );
+  await withRetry(() => adminClient.user.create({ data: { id: tenantBUser, email: `${PFX.toLowerCase()}lookup-b@a.test`, role: "GUARD", accountStatus: "ACTIVE", institutionId: instB } }));
+  await ensureMembership(tenantBUser, "FACULTY", null, instB);
 }
 
 // ─── scenario helpers through the REAL routes (infra-transient retry) ────────
@@ -490,5 +536,57 @@ describe("documents behavioral (live DB + injected in-memory ObjectStore)", () =
     expect(report.totalVersions).toBeGreaterThanOrEqual(1);
     expect(report.accessLog.totalDownloadUrlMints).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(report.purgeQueue)).toBe(true);
+  });
+
+  // ─── /users/lookup — grantee picker (documents.grants.manage) ──────────────
+  it("users/lookup: a grants.manage holder resolves a non-student tenant user", { timeout: 60000 }, async () => {
+    const res = await inject({
+      method: "GET",
+      url: "/api/documents/users/lookup?q=fac@a.test",
+      headers: authHeader(tokenFor(facultyUser)),
+    });
+    expect(res.statusCode).toBe(200);
+    const users = res.json().users as Array<{ id: string; email: string }>;
+    expect(users.some((u) => u.id === facultyUser)).toBe(true);
+  });
+
+  it("users/lookup: role-denial — a STUDENT (no grants.manage) gets 403", { timeout: 60000 }, async () => {
+    const res = await inject({
+      method: "GET",
+      url: "/api/documents/users/lookup?q=fac@a.test",
+      headers: authHeader(tokenFor(studentUser)),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("users/lookup: excludes users with a StudentProfile (no student enumeration)", { timeout: 60000 }, async () => {
+    const res = await inject({
+      method: "GET",
+      url: "/api/documents/users/lookup?q=pupil",
+      headers: authHeader(tokenFor(facultyUser)),
+    });
+    expect(res.statusCode).toBe(200);
+    const users = res.json().users as Array<{ id: string }>;
+    expect(users.some((u) => u.id === studentProfileUser)).toBe(false);
+  });
+
+  it("users/lookup: tenant-isolation — a tenant B user never appears in tenant A's lookup", { timeout: 60000 }, async () => {
+    // From tenant A: the only "lookup-b" match lives in tenant B → empty.
+    const fromA = await inject({
+      method: "GET",
+      url: "/api/documents/users/lookup?q=lookup-b",
+      headers: authHeader(tokenFor(facultyUser)),
+    });
+    expect(fromA.statusCode).toBe(200);
+    expect((fromA.json().users as Array<{ id: string }>).some((u) => u.id === tenantBUser)).toBe(false);
+
+    // The same FACULTY user, scoped to tenant B, DOES see its own tenant's match.
+    const fromB = await inject({
+      method: "GET",
+      url: "/api/documents/users/lookup?q=lookup-b",
+      headers: authHeader(tokenForInst(tenantBUser, instB)),
+    });
+    expect(fromB.statusCode).toBe(200);
+    expect((fromB.json().users as Array<{ id: string }>).some((u) => u.id === tenantBUser)).toBe(true);
   });
 });
