@@ -7,6 +7,12 @@ describe("landingRoute", () => {
     expect(landingRoute(["SUPER_ADMIN"], [])).toBe("/platform");
   });
 
+  it("never sends a normal tenant user to /platform (STUDENT lands on /student)", () => {
+    const landing = landingRoute(["STUDENT"], [...(ROLE_PERMISSIONS.STUDENT ?? [])]);
+    expect(landing).toBe("/student");
+    expect(landing).not.toBe("/platform");
+  });
+
   it("keeps a GatePass STUDENT on /student even with fees.view_own (ordering fix)", () => {
     expect(landingRoute(["STUDENT"], ["fees.view_own"])).toBe("/student");
   });

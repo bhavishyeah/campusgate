@@ -128,6 +128,13 @@ export const PAGE_ACCESS: PageAccessRow[] = [
   { route: "/documents/[id]", guard: "documents.admin.view_all", queryKeys: ["documents.admin.view_all"], role: "DOCUMENT_MANAGER" },
   // A grantee role reaches the detail via the baseline download key.
   { route: "/documents/[id]", guard: "documents.download", queryKeys: ["documents.download"], role: "WARDEN" },
+  // Platform / Super Admin surface (SUPER_ADMIN holds exactly the 7 platform.* keys).
+  { route: "/platform", guard: "platform.analytics.view", queryKeys: ["platform.analytics.view"], role: "SUPER_ADMIN" },
+  { route: "/platform/institutions", guard: "platform.institutions.manage", queryKeys: ["platform.institutions.manage"], role: "SUPER_ADMIN" },
+  { route: "/platform/institutions/[id]/modules", guard: "platform.entitlements.manage", queryKeys: ["platform.entitlements.manage"], role: "SUPER_ADMIN" },
+  { route: "/platform/support-grants", guard: "platform.support.grant", queryKeys: ["platform.support.grant"], role: "SUPER_ADMIN" },
+  { route: "/platform/support-grants/[id]/overview", guard: "platform.support.grant", queryKeys: ["platform.support.grant"], role: "SUPER_ADMIN" },
+  { route: "/platform/audit", guard: "platform.security.respond", queryKeys: ["platform.security.respond"], role: "SUPER_ADMIN" },
 ];
 
 // SectionNav items (every <Can permission> key used by the nav bars).
