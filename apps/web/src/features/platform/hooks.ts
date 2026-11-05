@@ -175,10 +175,21 @@ export function useCreateSupportGrant() {
   });
 }
 
+export interface RevokeSupportGrantBody {
+  /** Optional free-text reason. The server records it on the grant (revokedReason). */
+  reason?: string;
+}
+
 export function useRevokeSupportGrant(id: string) {
   const qc = useQueryClient();
-  return useMutation<SupportGrant, ApiError, void>({
-    mutationFn: () => api.delete(`/api/platform/support-grants/${id}`),
+  return useMutation<SupportGrant, ApiError, RevokeSupportGrantBody | void>({
+    mutationFn: (vars) => {
+      const reason = vars?.reason?.trim();
+      return api.delete(
+        `/api/platform/support-grants/${id}`,
+        reason ? { reason } : undefined,
+      );
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: platformKeys.grants() });
     },

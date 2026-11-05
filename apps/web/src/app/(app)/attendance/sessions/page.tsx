@@ -46,7 +46,7 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
-import { can } from "@/lib/authz";
+import { attendanceSessionsAccess } from "@/features/attendance/gating";
 import {
   useAttendanceSessions,
   useSubmitSession,
@@ -61,7 +61,6 @@ import {
   createSessionSchema,
   type CreateSessionInput,
 } from "@/features/attendance/formSchemas";
-import { todayISO } from "@/features/attendance/utils";
 
 const STATUS_VARIANT: Record<SessionStatus, "outline" | "default" | "secondary" | "destructive"> = {
   OPEN: "default",
@@ -85,17 +84,18 @@ function AttendanceSessionsInner() {
   const [statusTab, setStatusTab] = useState<StatusTab>("ALL");
 
   const permissions = useAuthStore((s) => s.permissions);
-  // attendance.view ALWAYS takes precedence. Only attendance.mark WITHOUT attendance.view
-  // sees today-filtered results (FACULTY role).
-  const canViewAll = can("attendance.view", permissions);
+  // The server gates the sessions list on attendance.view only. A mark-only
+  // FACULTY (attendance.mark without attendance.view) cannot list sessions and
+  // gets a clean guidance state instead of a 403 error banner — they mark
+  // attendance from their class roster.
+  const { markOnly: canMarkOnly } = attendanceSessionsAccess(permissions);
 
   const { data, isLoading, isError, error } = useAttendanceSessions();
 
   const displayed = useMemo(() => {
     if (!data?.sessions) return [];
-    if (canViewAll) return data.sessions;
-    return data.sessions.filter((s) => s.date === todayISO());
-  }, [data, canViewAll]);
+    return data.sessions;
+  }, [data]);
 
   const filtered =
     statusTab === "ALL"
@@ -108,7 +108,7 @@ function AttendanceSessionsInner() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Attendance Sessions</h1>
           <p className="text-sm text-gray-500">
-            {canViewAll ? "All sessions" : "Today's sessions"}
+            {canMarkOnly ? "Mark attendance from your class roster" : "All sessions"}
           </p>
         </div>
         <Can permission="attendance.mark">
@@ -135,7 +135,13 @@ function AttendanceSessionsInner() {
         ))}
       </div>
 
-      {isLoading ? (
+      {canMarkOnly ? (
+        <EmptyState
+          icon={ClipboardList}
+          label="Mark attendance from your class roster"
+          description="You can mark attendance for your assigned classes. Open a class from your roster to record attendance — the full session list is available to staff with attendance view access."
+        />
+      ) : isLoading ? (
         <div className="space-y-2">
           {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
         </div>
@@ -147,7 +153,7 @@ function AttendanceSessionsInner() {
         <EmptyState
           icon={ClipboardList}
           label="No sessions"
-          description={canViewAll ? "No attendance sessions found." : "No sessions for today."}
+          description="No attendance sessions found."
         />
       ) : (
         <div className="card p-0 overflow-hidden">

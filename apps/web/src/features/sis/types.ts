@@ -24,6 +24,10 @@ export interface StudentProfile {
   status: StudentStatus;
   semester: number;
   departmentId: string;
+  // Free-text program label captured at enrolment. Always present (required
+  // column) and returned by the LIST endpoint; the structured Program relation
+  // (structuredProgram) is only hydrated on the detail endpoint.
+  program: string;
   programId: string | null;
   academicSessionId: string | null;
   currentTermId: string | null;

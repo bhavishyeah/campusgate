@@ -61,6 +61,7 @@ import type {
   AcademicSession,
   AcademicTerm,
 } from "@/features/academics/types";
+import { formatDate } from "@/features/academics/format";
 import {
   createSessionSchema,
   addTermSchema,
@@ -158,11 +159,11 @@ function SessionDetailInner() {
           </div>
           <div>
             <span className="text-gray-500">Start: </span>
-            <span className="text-gray-900">{session.startDate}</span>
+            <span className="text-gray-900">{formatDate(session.startDate)}</span>
           </div>
           <div>
             <span className="text-gray-500">End: </span>
-            <span className="text-gray-900">{session.endDate}</span>
+            <span className="text-gray-900">{formatDate(session.endDate)}</span>
           </div>
         </div>
       </div>
@@ -275,8 +276,8 @@ function TermRow({
           {term.status}
         </Badge>
       </TableCell>
-      <TableCell className="text-gray-600">{term.startDate}</TableCell>
-      <TableCell className="text-gray-600">{term.endDate}</TableCell>
+      <TableCell className="text-gray-600">{formatDate(term.startDate)}</TableCell>
+      <TableCell className="text-gray-600">{formatDate(term.endDate)}</TableCell>
       <TableCell className="text-right">
         <Can permission="academics.sessions.manage">
           <div className="flex gap-2 justify-end">

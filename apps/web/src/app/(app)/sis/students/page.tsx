@@ -28,6 +28,7 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { ApiError } from "@/lib/api";
 import { useStudents } from "@/features/sis/hooks";
+import { programLabel } from "@/features/sis/format";
 import type { StudentListParams, StudentStatus } from "@/features/sis/types";
 
 const STATUS_VARIANT: Record<
@@ -183,7 +184,7 @@ function StudentsInner() {
                     </TableCell>
                     <TableCell className="text-gray-600">{s.email}</TableCell>
                     <TableCell className="text-gray-600">
-                      {s.structuredProgram?.name ?? "—"}
+                      {programLabel(s)}
                     </TableCell>
                     <TableCell>
                       <Badge variant={STATUS_VARIANT[s.status] ?? "outline"}>

@@ -41,12 +41,15 @@ function RevokeButton({ grant }: { grant: SupportGrant }) {
   const [reason, setReason] = useState("");
 
   const onConfirm = () => {
-    revoke.mutate(undefined, {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: platformKeys.grants() });
-        setOpen(false);
+    revoke.mutate(
+      { reason },
+      {
+        onSuccess: () => {
+          qc.invalidateQueries({ queryKey: platformKeys.grants() });
+          setOpen(false);
+        },
       },
-    });
+    );
   };
 
   const revocable = grant.status === "ACTIVE" || grant.status === "REQUESTED";
@@ -83,7 +86,7 @@ function RevokeButton({ grant }: { grant: SupportGrant }) {
             id={`revoke-reason-${grant.id}`}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Noted locally for your records."
+            placeholder="Recorded on the grant for the audit trail."
           />
         </div>
         {revoke.isError && <InlineError message={describeApiError(revoke.error)} />}

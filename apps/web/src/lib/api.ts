@@ -63,8 +63,11 @@ export const api = {
       method: "PATCH",
       body: body !== undefined ? JSON.stringify(body) : undefined,
     }),
-  delete: <T>(endpoint: string) =>
-    request<T>(endpoint, { method: "DELETE" }),
+  delete: <T>(endpoint: string, body?: any) =>
+    request<T>(endpoint, {
+      method: "DELETE",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
 };
 
 export { ApiError };

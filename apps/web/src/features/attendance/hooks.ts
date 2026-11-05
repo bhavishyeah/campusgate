@@ -7,6 +7,7 @@ import { api, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
 import { can } from "@/lib/authz";
 import { attendanceKeys } from "./keys";
+import { attendanceSessionsAccess } from "./gating";
 import type {
   AttendanceSession,
   AttendanceCorrection,
@@ -82,10 +83,15 @@ interface SessionsResponse { sessions: AttendanceSession[]; }
  */
 export function useAttendanceSessions() {
   const perms = currentPermissions();
+  // The server gates GET /sessions on `attendance.view` ONLY — there is no
+  // mark-scoped fallback (see attendance.ts). Firing this query for a mark-only
+  // FACULTY produced a 403 that rendered as an error banner. Gate `enabled` on
+  // `attendance.view` so mark-only users never hit that 403; the page shows a
+  // clean guidance state instead (they mark attendance from their class roster).
   return useQuery<SessionsResponse>({
     queryKey: attendanceKeys.sessions(),
     queryFn: () => api.get("/api/attendance/sessions"),
-    enabled: can("attendance.view", perms) || can("attendance.mark", perms),
+    enabled: attendanceSessionsAccess(perms).canList,
   });
 }
 

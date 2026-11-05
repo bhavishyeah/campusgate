@@ -53,6 +53,7 @@ import {
   type CreateSessionBody,
 } from "@/features/academics/hooks";
 import type { AcademicSession } from "@/features/academics/types";
+import { formatDate } from "@/features/academics/format";
 import {
   createSessionSchema,
   type CreateSessionInput,
@@ -252,8 +253,8 @@ function SessionRow({
           {session.status}
         </Badge>
       </TableCell>
-      <TableCell className="text-gray-600">{session.startDate}</TableCell>
-      <TableCell className="text-gray-600">{session.endDate}</TableCell>
+      <TableCell className="text-gray-600">{formatDate(session.startDate)}</TableCell>
+      <TableCell className="text-gray-600">{formatDate(session.endDate)}</TableCell>
       <TableCell className="text-right">
         <Can permission="academics.sessions.manage">
           <div className="flex gap-2 justify-end">
