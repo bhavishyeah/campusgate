@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { ROLE_PERMISSIONS, type PermissionKey } from "@campusgate/shared";
-import { FACULTY_STAFF_NAV, HOSTEL_STAFF_NAV, HR_STAFF_NAV, TRANSPORT_STAFF_NAV } from "@/components/ui-ext/SectionNav";
+import {
+  FACULTY_STAFF_NAV,
+  HOSTEL_STAFF_NAV,
+  HR_STAFF_NAV,
+  INVENTORY_STAFF_NAV,
+  SERVICE_REQUESTS_STAFF_NAV,
+  TRANSPORT_STAFF_NAV,
+} from "@/components/ui-ext/SectionNav";
 
 interface PageAccessRow {
   route: string;
@@ -77,7 +84,35 @@ export const PAGE_ACCESS: PageAccessRow[] = [
     { route: "/transport/reports", guard: "transport.view", queryKeys: ["transport.view"], role },
   ]),
   // Transport self (STUDENT)
-  { route: "/transport/me", guard: "transport.view_own", queryKeys: ["transport.view_own"], role: "STUDENT" },];
+  { route: "/transport/me", guard: "transport.view_own", queryKeys: ["transport.view_own"], role: "STUDENT" },
+  // Inventory staff (ADMIN, INVENTORY_MANAGER)
+  ...(["ADMIN", "INVENTORY_MANAGER"] as const).flatMap((role): PageAccessRow[] => [
+    { route: "/inventory", guard: "inventory.view", queryKeys: ["inventory.view"], role },
+    { route: "/inventory/categories", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.categories.manage"], role },
+    { route: "/inventory/assets", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.assets.manage"], role },
+    { route: "/inventory/assets/[id]", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.assets.manage", "inventory.maintenance.manage", "inventory.disposals.manage", "inventory.stock.manage"], role },
+    { route: "/inventory/maintenance", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.maintenance.manage"], role },
+    { route: "/inventory/stock", guard: "inventory.view", queryKeys: ["inventory.view"], role },
+    { route: "/inventory/stock/[assetId]", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.stock.manage"], role },
+    { route: "/inventory/audits", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.audits.manage"], role },
+    { route: "/inventory/audits/[id]", guard: "inventory.view", queryKeys: ["inventory.view", "inventory.audits.manage"], role },
+    { route: "/inventory/reports", guard: "inventory.view", queryKeys: ["inventory.view"], role },
+  ]),
+  // Inventory self (INVENTORY_MANAGER only — ADMIN excluded by design)
+  { route: "/inventory/me", guard: "inventory.view_own", queryKeys: ["inventory.view_own"], role: "INVENTORY_MANAGER" },
+  // Service Requests staff (ADMIN, SERVICE_AGENT)
+  ...(["ADMIN", "SERVICE_AGENT"] as const).flatMap((role): PageAccessRow[] => [
+    { route: "/service-requests", guard: "service_requests.view", queryKeys: ["service_requests.view"], role },
+    { route: "/service-requests/[id]", guard: "service_requests.view", queryKeys: ["service_requests.view", "service_requests.assign.manage", "service_requests.requests.handle", "service_requests.requests.approve"], role },
+    { route: "/service-requests/types", guard: "service_requests.view", queryKeys: ["service_requests.view", "service_requests.types.manage"], role },
+    { route: "/service-requests/types/[id]", guard: "service_requests.view", queryKeys: ["service_requests.view", "service_requests.types.manage"], role },
+    { route: "/service-requests/reports", guard: "service_requests.view", queryKeys: ["service_requests.view"], role },
+  ]),
+  // Service Requests self (STUDENT)
+  { route: "/service-requests/me", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
+  { route: "/service-requests/me/[id]", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
+  { route: "/service-requests/raise", guard: "service_requests.request_own", queryKeys: ["service_requests.request_own"], role: "STUDENT" },
+];
 
 // SectionNav items (every <Can permission> key used by the nav bars).
 const SECTION_NAV_KEYS: { key: PermissionKey; role: string }[] = [
@@ -89,6 +124,8 @@ const SECTION_NAV_KEYS: { key: PermissionKey; role: string }[] = [
   ...HR_STAFF_NAV.map((i) => ({ key: i.permission, role: "HR_MANAGER" })),
   ...HOSTEL_STAFF_NAV.map((i) => ({ key: i.permission, role: "WARDEN" })),
   ...TRANSPORT_STAFF_NAV.map((i) => ({ key: i.permission, role: "TRANSPORT_MANAGER" })),
+  ...INVENTORY_STAFF_NAV.map((i) => ({ key: i.permission, role: "INVENTORY_MANAGER" })),
+  ...SERVICE_REQUESTS_STAFF_NAV.map((i) => ({ key: i.permission, role: "SERVICE_AGENT" })),
 ];
 
 // AppShell NAV anyOf keys.
@@ -105,6 +142,10 @@ const NAV_KEYS: { key: PermissionKey; role: string }[] = [
   { key: "hostel.view_own", role: "STUDENT" },
   { key: "transport.view", role: "TRANSPORT_MANAGER" },
   { key: "transport.view_own", role: "STUDENT" },
+  { key: "inventory.view", role: "INVENTORY_MANAGER" },
+  { key: "inventory.view_own", role: "INVENTORY_MANAGER" },
+  { key: "service_requests.view", role: "SERVICE_AGENT" },
+  { key: "service_requests.request_own", role: "STUDENT" },
 ];
 
 describe("PAGE_ACCESS table", () => {
@@ -205,6 +246,38 @@ describe("PAGE_ACCESS table", () => {
       for (const key of ROLE_PERMISSIONS[role] ?? []) {
         expect(key.startsWith("hostel.") || key.startsWith("transport."), `${role} must not hold ${key}`).toBe(false);
       }
+    }
+  });
+
+  it("ADMIN lacks inventory.view_own and service_requests.request_own", () => {
+    const admin = ROLE_PERMISSIONS.ADMIN ?? [];
+    expect(admin).not.toContain("inventory.view_own");
+    expect(admin).not.toContain("service_requests.request_own");
+  });
+  it("INVENTORY_MANAGER holds no service_requests key", () => {
+    for (const key of ROLE_PERMISSIONS.INVENTORY_MANAGER ?? []) {
+      expect(key.startsWith("service_requests."), `INVENTORY_MANAGER must not hold ${key}`).toBe(false);
+    }
+  });
+  it("SERVICE_AGENT holds no inventory key and no request_own", () => {
+    const held = ROLE_PERMISSIONS.SERVICE_AGENT ?? [];
+    expect(held).not.toContain("service_requests.request_own");
+    for (const key of held) expect(key.startsWith("inventory."), `SERVICE_AGENT must not hold ${key}`).toBe(false);
+  });
+  it("STUDENT holds no inventory/service-request key other than request_own", () => {
+    const keys = (ROLE_PERMISSIONS.STUDENT ?? []).filter((k) => k.startsWith("inventory.") || k.startsWith("service_requests."));
+    expect([...keys].sort()).toEqual(["service_requests.request_own"]);
+  });
+  it("other roles hold no inventory or service_requests key", () => {
+    for (const role of ["HOD", "FACULTY", "ACCOUNTANT", "LIBRARIAN", "WARDEN", "TRANSPORT_MANAGER", "HR_MANAGER", "EMPLOYEE"]) {
+      for (const key of ROLE_PERMISSIONS[role] ?? []) {
+        expect(key.startsWith("inventory.") || key.startsWith("service_requests."), `${role} must not hold ${key}`).toBe(false);
+      }
+    }
+  });
+  it("every ADMIN inventory/service-request SectionNav key is held by ADMIN", () => {
+    for (const item of [...INVENTORY_STAFF_NAV, ...SERVICE_REQUESTS_STAFF_NAV]) {
+      expect(ROLE_PERMISSIONS.ADMIN ?? [], `ADMIN must hold ${item.permission}`).toContain(item.permission);
     }
   });
 });

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, type LucideIcon } from "lucide-react";
+import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, Boxes, PackageSearch, ListChecks, Megaphone, type LucideIcon } from "lucide-react";
 import type { ModuleKey, PermissionKey } from "@campusgate/shared";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
@@ -119,6 +119,12 @@ const NAV: NavItem[] = [
   { href: "/hostel/me", label: "My Hostel", icon: BedDouble, anyOf: ["hostel.view_own"], module: "hostel" },
   { href: "/transport", label: "Transport", icon: BusFront, anyOf: ["transport.view"], module: "transport" },
   { href: "/transport/me", label: "My Transport", icon: Bus, anyOf: ["transport.view_own"], module: "transport" },
+  // ── Inventory / Service Requests — module-gated. Each anyOf holds only the key that opens the target page.
+  { href: "/inventory", label: "Inventory", icon: Boxes, anyOf: ["inventory.view"], module: "inventory" },
+  { href: "/inventory/me", label: "My Assets", icon: PackageSearch, anyOf: ["inventory.view_own"], module: "inventory" },
+  { href: "/service-requests", label: "Service Requests", icon: ClipboardList, anyOf: ["service_requests.view"], module: "service_requests" },
+  { href: "/service-requests/me", label: "My Requests", icon: ListChecks, anyOf: ["service_requests.request_own"], module: "service_requests" },
+  { href: "/service-requests/raise", label: "Raise a Request", icon: Megaphone, anyOf: ["service_requests.request_own"], module: "service_requests" },
 ];
 
 /** Returns whether a nav item should render, respecting permission + module state. */

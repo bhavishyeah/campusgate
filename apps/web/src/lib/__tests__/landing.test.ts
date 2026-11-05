@@ -137,4 +137,36 @@ describe("landingRoute", () => {
   it("falls back to /app for a holder of only hostel.allocations.manage", () => {
     expect(landingRoute([], ["hostel.allocations.manage"])).toBe("/app");
   });
+
+  // ── 3e. Inventory / Service Requests landings ──
+  it("sends the real INVENTORY_MANAGER permissions to /inventory", () => {
+    expect(landingRoute(["INVENTORY_MANAGER"], [...(ROLE_PERMISSIONS.INVENTORY_MANAGER ?? [])])).toBe("/inventory");
+  });
+  it("sends the real SERVICE_AGENT permissions to /service-requests", () => {
+    expect(landingRoute(["SERVICE_AGENT"], [...(ROLE_PERMISSIONS.SERVICE_AGENT ?? [])])).toBe("/service-requests");
+  });
+  it("prefers /inventory when both inventory.view and service_requests.view are held", () => {
+    expect(landingRoute([], ["service_requests.view", "inventory.view"])).toBe("/inventory");
+  });
+  it("sends non-legacy own/self-only holders to the self pages", () => {
+    expect(landingRoute(["PARENT"], ["inventory.view_own"])).toBe("/inventory/me");
+    expect(landingRoute(["PARENT"], ["service_requests.request_own"])).toBe("/service-requests/me");
+  });
+  it("keeps STUDENT on /student even holding service_requests.request_own (real perms)", () => {
+    expect(landingRoute(["STUDENT"], [...(ROLE_PERMISSIONS.STUDENT ?? [])])).toBe("/student");
+  });
+  it("keeps ADMIN on /admin even holding all inventory + service_requests staff keys", () => {
+    expect(landingRoute(["ADMIN"], [...(ROLE_PERMISSIONS.ADMIN ?? [])])).toBe("/admin");
+  });
+  it("keeps earlier landings ahead of inventory/service_requests", () => {
+    expect(landingRoute(["ACCOUNTANT"], ["fees.view", "inventory.view"])).toBe("/fees");
+    expect(landingRoute(["LIBRARIAN"], ["library.books.view", "service_requests.view"])).toBe("/library");
+    expect(landingRoute([], ["hr.directory.view", "inventory.view"])).toBe("/hr");
+    expect(landingRoute([], ["faculty.view_own", "service_requests.view"])).toBe("/faculty-mgmt/me");
+    expect(landingRoute(["WARDEN"], ["hostel.view", "inventory.view"])).toBe("/hostel");
+    expect(landingRoute(["TRANSPORT_MANAGER"], ["transport.view", "service_requests.view"])).toBe("/transport");
+  });
+  it("falls back to /app for a holder of only inventory.assets.manage (no inventory.view)", () => {
+    expect(landingRoute([], ["inventory.assets.manage"])).toBe("/app");
+  });
 });

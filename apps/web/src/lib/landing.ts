@@ -44,6 +44,11 @@ export function landingRoute(roles: string[], permissions: string[]): string {
   if (permissions.includes("transport.view")) return "/transport";
   if (permissions.includes("hostel.view_own")) return "/hostel/me";
   if (permissions.includes("transport.view_own")) return "/transport/me";
+  // 3e. Inventory / Service Requests landings (INVENTORY_MANAGER, SERVICE_AGENT, custom roles). Appended AFTER 3d.
+  if (permissions.includes("inventory.view")) return "/inventory";
+  if (permissions.includes("service_requests.view")) return "/service-requests";
+  if (permissions.includes("inventory.view_own")) return "/inventory/me";
+  if (permissions.includes("service_requests.request_own")) return "/service-requests/me";
 
   // 4. Authenticated but no known landing.
   return "/app";

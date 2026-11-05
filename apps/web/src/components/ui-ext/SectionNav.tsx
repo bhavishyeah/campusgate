@@ -26,6 +26,22 @@ function isActive(pathname: string, href: string): boolean {
   if (href === "/hr" && pathname.startsWith("/hr/employees")) return true;
   // Route detail pages belong to the Routes tab; /hostel is exact-only (every other page has its own link).
   if (href === "/transport" && pathname.startsWith("/transport/routes")) return true;
+  // Inventory: each section tab matches its own detail routes.
+  if (href === "/inventory/assets" && pathname.startsWith("/inventory/assets/")) return true;
+  if (href === "/inventory/stock" && pathname.startsWith("/inventory/stock/")) return true;
+  if (href === "/inventory/audits" && pathname.startsWith("/inventory/audits/")) return true;
+  // Service Requests: the Queue tab owns the triage detail; Types owns its field-config detail.
+  if (
+    href === "/service-requests" &&
+    pathname.startsWith("/service-requests/") &&
+    !pathname.startsWith("/service-requests/types") &&
+    !pathname.startsWith("/service-requests/reports") &&
+    !pathname.startsWith("/service-requests/me") &&
+    !pathname.startsWith("/service-requests/raise")
+  ) {
+    return true;
+  }
+  if (href === "/service-requests/types" && pathname.startsWith("/service-requests/types/")) return true;
   return false;
 }
 
@@ -100,4 +116,20 @@ export const TRANSPORT_STAFF_NAV: SectionNavItem[] = [
   { href: "/transport/enrollments", label: "Enrollments", permission: "transport.view" },
   { href: "/transport/maintenance", label: "Maintenance", permission: "transport.view" },
   { href: "/transport/reports", label: "Reports", permission: "transport.view" },
+];
+
+export const INVENTORY_STAFF_NAV: SectionNavItem[] = [
+  { href: "/inventory", label: "Overview", permission: "inventory.view" },
+  { href: "/inventory/categories", label: "Categories", permission: "inventory.view" },
+  { href: "/inventory/assets", label: "Assets", permission: "inventory.view" },
+  { href: "/inventory/maintenance", label: "Maintenance", permission: "inventory.view" },
+  { href: "/inventory/stock", label: "Stock", permission: "inventory.view" },
+  { href: "/inventory/audits", label: "Audits", permission: "inventory.view" },
+  { href: "/inventory/reports", label: "Reports", permission: "inventory.view" },
+];
+
+export const SERVICE_REQUESTS_STAFF_NAV: SectionNavItem[] = [
+  { href: "/service-requests", label: "Queue", permission: "service_requests.view" },
+  { href: "/service-requests/types", label: "Types", permission: "service_requests.view" },
+  { href: "/service-requests/reports", label: "Reports", permission: "service_requests.view" },
 ];

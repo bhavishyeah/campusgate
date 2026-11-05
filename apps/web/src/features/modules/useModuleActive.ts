@@ -61,6 +61,15 @@ export function useModuleActive(moduleKey: ModuleKey): ModuleActiveStatus {
     if (can("transport.view", permissions)) probePath = "/api/transport/vehicles?pageSize=1";
     else if (can("transport.view_own", permissions)) probePath = "/api/transport/me/enrollments";
   }
+
+  if (moduleKey === "inventory") {
+    if (can("inventory.view", permissions)) probePath = "/api/inventory/categories?pageSize=1";
+    else if (can("inventory.view_own", permissions)) probePath = "/api/inventory/me/assets";
+  }
+  if (moduleKey === "service_requests") {
+    if (can("service_requests.view", permissions)) probePath = "/api/service-requests/types";
+    else if (can("service_requests.request_own", permissions)) probePath = "/api/service-requests/me/requests?pageSize=1";
+  }
   const query = useQuery<ModuleActiveStatus, never>({
     queryKey: ["module-active", moduleKey],
     enabled: probePath !== null,
