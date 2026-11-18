@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -66,6 +67,7 @@ export default function FeeStructuresPage() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Fee Structures</h1>

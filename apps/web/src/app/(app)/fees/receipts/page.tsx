@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { Receipt as ReceiptIcon } from "lucide-react";
 import {
@@ -21,6 +22,7 @@ export default function ReceiptsPage() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Receipts</h1>
         <p className="text-sm text-gray-500">Issued receipts, newest first.</p>

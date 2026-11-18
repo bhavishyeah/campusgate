@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { toast } from "sonner";
@@ -51,6 +52,7 @@ export default function ReconciliationPage() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">

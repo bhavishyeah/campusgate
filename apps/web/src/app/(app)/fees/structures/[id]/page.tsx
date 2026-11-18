@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { use, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -72,6 +73,7 @@ export default function StructureDetailPage({
 
   return (
     <div className="space-y-6">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div className="flex items-start justify-between">
         <div>
           {structureQuery.isLoading ? (

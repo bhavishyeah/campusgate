@@ -11,7 +11,7 @@ export interface SectionNavItem {
   permission: PermissionKey;
 }
 
-function isActive(pathname: string, href: string): boolean {
+export function isActive(pathname: string, href: string): boolean {
   if (pathname === href) return true;
   if (href === "/library" && pathname.startsWith("/library/titles")) return true;
   if (href === "/admissions" && pathname.startsWith("/admissions/applications")) return true;
@@ -51,6 +51,12 @@ function isActive(pathname: string, href: string): boolean {
   ) {
     return true;
   }
+  // Fees: the Structures tab (/fees) owns its detail routes.
+  if (href === "/fees" && pathname.startsWith("/fees/structures/")) return true;
+  // Academics / Attendance: each tab owns its detail routes.
+  if (href === "/academics/sessions" && pathname.startsWith("/academics/sessions/")) return true;
+  if (href === "/academics/programs" && pathname.startsWith("/academics/programs/")) return true;
+  if (href === "/attendance/sessions" && pathname.startsWith("/attendance/sessions/")) return true;
   return false;
 }
 
@@ -147,4 +153,21 @@ export const DOCUMENTS_STAFF_NAV: SectionNavItem[] = [
   { href: "/documents", label: "Documents", permission: "documents.view_own" },
   { href: "/documents/retention-policies", label: "Retention", permission: "documents.retention.manage" },
   { href: "/documents/report", label: "Report", permission: "documents.admin.view_all" },
+];
+export const FEES_STAFF_NAV: SectionNavItem[] = [
+  { href: "/fees", label: "Structures", permission: "fees.view" },
+  { href: "/fees/charges", label: "Charges", permission: "fees.charges.manage" },
+  { href: "/fees/ledger", label: "Ledger", permission: "fees.view" },
+  { href: "/fees/payments", label: "Payments", permission: "fees.view" },
+  { href: "/fees/receipts", label: "Receipts", permission: "fees.view" },
+  { href: "/fees/reconciliation", label: "Reconciliation", permission: "fees.view" },
+];
+export const ACADEMICS_STAFF_NAV: SectionNavItem[] = [
+  { href: "/academics/sessions", label: "Sessions", permission: "academics.sessions.manage" },
+  { href: "/academics/programs", label: "Programs", permission: "academics.programs.manage" },
+];
+export const ATTENDANCE_STAFF_NAV: SectionNavItem[] = [
+  { href: "/attendance/sessions", label: "Sessions", permission: "attendance.view" },
+  { href: "/attendance/corrections", label: "Corrections", permission: "attendance.correct" },
+  { href: "/attendance/report", label: "Report", permission: "attendance.view" },
 ];

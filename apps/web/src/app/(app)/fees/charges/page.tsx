@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -46,6 +47,7 @@ const CATEGORY_OPTIONS = feeComponentCategoryEnum.options;
 export default function ChargesPage() {
   return (
     <div className="space-y-8">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Charges</h1>
         <p className="text-sm text-gray-500">

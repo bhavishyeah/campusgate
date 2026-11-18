@@ -1,4 +1,5 @@
 "use client";
+import { ATTENDANCE_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -96,6 +97,7 @@ function CorrectionsReviewView() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={ATTENDANCE_STAFF_NAV} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Attendance Corrections</h1>
         <p className="text-sm text-gray-500">Review and manage correction requests.</p>

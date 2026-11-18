@@ -1,4 +1,5 @@
 "use client";
+import { ATTENDANCE_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { BarChart2 } from "lucide-react";
@@ -25,6 +26,7 @@ export default function AttendanceReportPage() {
   return (
     <RouteGuard>
       <div className="space-y-6">
+        <SectionNav items={ATTENDANCE_STAFF_NAV} />
         <h1 className="text-2xl font-semibold text-gray-900">Attendance Report</h1>
         <Can
           permission="attendance.view"

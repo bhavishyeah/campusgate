@@ -1,4 +1,5 @@
 "use client";
+import { ATTENDANCE_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -104,6 +105,7 @@ function AttendanceSessionsInner() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={ATTENDANCE_STAFF_NAV} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Attendance Sessions</h1>

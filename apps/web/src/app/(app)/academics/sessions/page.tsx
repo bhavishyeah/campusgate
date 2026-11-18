@@ -1,4 +1,5 @@
 "use client";
+import { ACADEMICS_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -92,6 +93,7 @@ function AcademicSessionsInner() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={ACADEMICS_STAFF_NAV} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">

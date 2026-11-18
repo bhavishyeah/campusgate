@@ -1,4 +1,5 @@
 "use client";
+import { FEES_STAFF_NAV, SectionNav } from "@/components/ui-ext/SectionNav";
 
 import { CreditCard } from "lucide-react";
 import {
@@ -22,6 +23,7 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-6">
+      <SectionNav items={FEES_STAFF_NAV} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Payments</h1>
         <p className="text-sm text-gray-500">
