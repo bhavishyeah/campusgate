@@ -44,11 +44,17 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 
 const API = (process.env.API ?? "https://campusgate.up.railway.app").replace(/\/$/, "");
+// After rotating seed passwords, the new admin password is picked up from the
+// git-ignored scripts/.seed-credentials.local.json when ADMIN_PASSWORD is unset.
+let rotated = {};
+try { rotated = JSON.parse(readFileSync(new URL("./.seed-credentials.local.json", import.meta.url), "utf8")); } catch { /* none */ }
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@demo.edu";
 const ADMIN = {
-  email: process.env.ADMIN_EMAIL ?? "admin@demo.edu",
-  password: process.env.ADMIN_PASSWORD ?? "admin123",
+  email: ADMIN_EMAIL,
+  password: process.env.ADMIN_PASSWORD ?? rotated[ADMIN_EMAIL] ?? "admin123",
 };
 const THROTTLE_MS = Number(process.env.THROTTLE_MS ?? 250);
 

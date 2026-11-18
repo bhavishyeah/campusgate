@@ -14,17 +14,33 @@
  *   node scripts/prod-smoke.mjs                 # uses the default Railway URL below
  *   API=https://your-api.example node scripts/prod-smoke.mjs
  *
- * No secrets are read or printed. Seed passwords are the well-known demo creds.
+ * Credentials are never printed. After rotating the seed passwords
+ * (scripts/rotate-seed-passwords.mjs) the smoke test picks up the new ones from
+ * scripts/.seed-credentials.local.json automatically, or from env vars
+ * SMOKE_ADMIN_/SMOKE_FACULTY_/SMOKE_STUDENT_ + EMAIL|PASSWORD. With neither, it
+ * falls back to the original well-known seed creds.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const API = (process.env.API ?? "https://campusgate.up.railway.app").replace(/\/$/, "");
 
-const ADMIN = { email: "admin@demo.edu", password: "admin123" };
-const STUDENT = { email: "bhavishya@demo.edu", password: "student123" };
+// Credentials: SMOKE_<ROLE>_EMAIL / SMOKE_<ROLE>_PASSWORD env vars, else the password
+// stored for that email in scripts/.seed-credentials.local.json (written by
+// scripts/rotate-seed-passwords.mjs, git-ignored), else the original seed defaults.
+let rotated = {};
+try {
+  rotated = JSON.parse(readFileSync(new URL("./.seed-credentials.local.json", import.meta.url), "utf8"));
+} catch { /* no rotated-credentials file: use env/defaults */ }
+function creds(role, defEmail, defPassword) {
+  const email = process.env[`SMOKE_${role}_EMAIL`] ?? defEmail;
+  return { email, password: process.env[`SMOKE_${role}_PASSWORD`] ?? rotated[email] ?? defPassword };
+}
+const ADMIN = creds("ADMIN", "admin@demo.edu", "admin123");
+const STUDENT = creds("STUDENT", "bhavishya@demo.edu", "student123");
 // documents.upload_own is an OWNER self-service key — held by FACULTY, not ADMIN
 // (ADMIN holds the admin keys: admin.view_all / grants.manage / retention.manage).
-const FACULTY = { email: "faculty.cs@demo.edu", password: "faculty123" };
+const FACULTY = creds("FACULTY", "faculty.cs@demo.edu", "faculty123");
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail = "") {
