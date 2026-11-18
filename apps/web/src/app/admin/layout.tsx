@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
+import { ModuleLinks } from "@/components/shell/ModuleLinks";
 import {
   LayoutDashboard,
   Users,
@@ -63,7 +64,7 @@ export default function AdminLayout({
           <p className="text-xs text-gray-400 mt-1">Admin Panel</p>
         </div>
 
-        <nav className="flex-1 px-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-3 space-y-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
             return (
@@ -81,6 +82,7 @@ export default function AdminLayout({
               </Link>
             );
           })}
+        <ModuleLinks variant="dark" />
         </nav>
 
         <div className="p-4 border-t border-gray-700">

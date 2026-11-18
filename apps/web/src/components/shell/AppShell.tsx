@@ -1,144 +1,18 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Wallet, LogOut, ShieldCheck, GraduationCap, Users, BookOpen, ClipboardList, FileCheck, Library, BookMarked, ClipboardCheck, FilePlus2, Contact, Briefcase, UserCircle, IdCard, Building2, BedDouble, BusFront, Bus, Boxes, PackageSearch, ListChecks, Megaphone, FileText, FolderOpen, type LucideIcon } from "lucide-react";
-import type { ModuleKey, PermissionKey } from "@campusgate/shared";
+import { LogOut, ShieldCheck } from "lucide-react";
+import { GATE_PASS_NAV, NAV, type NavItem } from "./navItems";
+import { useNavItemVisible } from "./ModuleLinks";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
-import { canAny } from "@/lib/authz";
-import { useModuleActive } from "@/features/modules/useModuleActive";
 import { NotificationBell } from "@/components/NotificationBell";
 import { MfaEnrollment } from "@/components/MfaEnrollment";
 
-interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  anyOf: PermissionKey[];
-  module?: ModuleKey;
-}
-
-const NAV: NavItem[] = [
-  {
-    href: "/fees",
-    label: "Fees",
-    icon: Wallet,
-    anyOf: ["fees.view", "fees.charges.manage", "fees.structures.manage", "fees.collect"],
-    module: "fees",
-  },
-  {
-    href: "/fees/me",
-    label: "My Fees",
-    icon: Wallet,
-    anyOf: ["fees.view_own"],
-    module: "fees",
-  },
-  // ── Academics (NEW) — foundational/permission-only, NOT module-gated.
-  // anyOf uses academics.sessions.manage, academics.programs.manage,
-  // academics.calendar.manage only. academics.view is intentionally excluded
-  // (MUST-FIX 1): the API grants academics.view for Sessions read but Programs
-  // and Calendar are gated by their respective .manage keys, so including
-  // academics.view here would show the nav but 403 HOD users on those routes.
-  {
-    href: "/academics/sessions",
-    label: "Academics",
-    icon: GraduationCap,
-    anyOf: [
-      "academics.sessions.manage",
-      "academics.programs.manage",
-      "academics.calendar.manage",
-    ],
-  },
-  // ── Students (NEW) — foundational/permission-only, NOT module-gated.
-  {
-    href: "/sis/students",
-    label: "Students",
-    icon: Users,
-    anyOf: [
-      "students.view",
-      "students.create",
-      "students.update",
-      "students.deactivate",
-    ],
-  },
-  // ── Classes — foundational/permission-only, NOT module-gated.
-  // The API does not call requireModuleActive for classes.* routes.
-  // Following the academics precedent: omitting module means
-  // useNavItemVisible skips the "item.module && inactive" branch entirely.
-  {
-    href: "/classes/sections",
-    label: "Classes",
-    icon: BookOpen,
-    anyOf: ["classes.sections.manage", "classes.faculty.assign", "classes.timetable.manage", "classes.view"],
-    // No module field — classes API is permission-gated only, never module-gated.
-  },
-  // ── Attendance — module-gated: attendance API calls requireModuleActive("attendance").
-  {
-    href: "/attendance/sessions",
-    label: "Attendance",
-    icon: ClipboardList,
-    anyOf: ["attendance.view", "attendance.mark", "attendance.correct"],
-    module: "attendance",
-  },
-  // ── Examinations — module-gated: exams.* routes call requireModuleActive("examinations").
-  // anyOf includes exams.results.view_own so students reach /exams/my-results.
-  {
-    href: "/exams",
-    label: "Examinations",
-    icon: FileCheck,
-    anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own", "exams.marks.enter"],
-    module: "examinations",
-  },
-  // ── Library — module-gated. Each anyOf holds only the key that opens the target page.
-  { href: "/library", label: "Library", icon: Library, anyOf: ["library.books.view"], module: "library" },
-  { href: "/library/my", label: "My Library", icon: BookMarked, anyOf: ["library.view_own"], module: "library" },
-  // ── Admissions — module-gated.
-  {
-    href: "/admissions",
-    label: "Admissions",
-    icon: ClipboardCheck,
-    anyOf: ["admissions.applications.view"],
-    module: "admissions",
-  },
-  {
-    href: "/admissions/my",
-    label: "My Application",
-    icon: FilePlus2,
-    anyOf: ["admissions.view_own"],
-    module: "admissions",
-  },
-  // ── Faculty Management / HR — module-gated. Each anyOf holds only the key that opens the target page.
-  { href: "/faculty-mgmt", label: "Faculty", icon: Contact, anyOf: ["faculty.directory.view"], module: "faculty_management" },
-  { href: "/faculty-mgmt/me", label: "My Faculty Profile", icon: UserCircle, anyOf: ["faculty.view_own"], module: "faculty_management" },
-  { href: "/hr", label: "HR", icon: Briefcase, anyOf: ["hr.directory.view"], module: "hr_management" },
-  { href: "/hr/me", label: "My Employment", icon: IdCard, anyOf: ["hr.view_own"], module: "hr_management" },
-  // ── Hostel / Transport — module-gated. Each anyOf holds only the key that opens the target page.
-  { href: "/hostel", label: "Hostel", icon: Building2, anyOf: ["hostel.view"], module: "hostel" },
-  { href: "/hostel/me", label: "My Hostel", icon: BedDouble, anyOf: ["hostel.view_own"], module: "hostel" },
-  { href: "/transport", label: "Transport", icon: BusFront, anyOf: ["transport.view"], module: "transport" },
-  { href: "/transport/me", label: "My Transport", icon: Bus, anyOf: ["transport.view_own"], module: "transport" },
-  // ── Inventory / Service Requests — module-gated. Each anyOf holds only the key that opens the target page.
-  { href: "/inventory", label: "Inventory", icon: Boxes, anyOf: ["inventory.view"], module: "inventory" },
-  { href: "/inventory/me", label: "My Assets", icon: PackageSearch, anyOf: ["inventory.view_own"], module: "inventory" },
-  { href: "/service-requests", label: "Service Requests", icon: ClipboardList, anyOf: ["service_requests.view"], module: "service_requests" },
-  { href: "/service-requests/me", label: "My Requests", icon: ListChecks, anyOf: ["service_requests.request_own"], module: "service_requests" },
-  { href: "/service-requests/raise", label: "Raise a Request", icon: Megaphone, anyOf: ["service_requests.request_own"], module: "service_requests" },
-  // ── Documents — module-gated. Each anyOf holds only keys that open the target page.
-  { href: "/documents", label: "Documents", icon: FileText, anyOf: ["documents.view_own", "documents.admin.view_all"], module: "documents" },
-  { href: "/documents/retention-policies", label: "Document Admin", icon: FolderOpen, anyOf: ["documents.retention.manage"], module: "documents" },
-];
-
-/** Returns whether a nav item should render, respecting permission + module state. */
-function useNavItemVisible(item: NavItem, perms: string[]): boolean {
-  // Hooks must run unconditionally; useModuleActive internally skips the probe
-  // when there's no permitted probe path and returns "unknown".
-  const moduleStatus = useModuleActive(item.module ?? "fees");
-  if (!canAny(item.anyOf, perms)) return false;
-  if (item.module && moduleStatus === "inactive") return false;
-  return true;
-}
+/** Gate Pass home links first (visible only to their legacy role), then the module NAV. */
+const SHELL_NAV: NavItem[] = [...GATE_PASS_NAV, ...NAV];
 
 function SidebarLink({
   item,
@@ -208,7 +82,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   };
 
-  const roleBadge = roles[0]; // coarse display label only — order-dependent, never an auth input
+  const roleBadge = roles[0]; // coarse display label only â€” order-dependent, never an auth input
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20 md:pb-0 md:pl-64">
@@ -220,7 +94,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 space-y-1">
-          {NAV.map((item) => (
+          {SHELL_NAV.map((item) => (
             <SidebarLink key={item.href} item={item} perms={permissions} pathname={pathname} />
           ))}
         </nav>
@@ -239,7 +113,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50">
         <div className="flex justify-around items-center py-2">
-          {NAV.map((item) => (
+          {SHELL_NAV.map((item) => (
             <MobileLink key={item.href} item={item} perms={permissions} pathname={pathname} />
           ))}
         </div>

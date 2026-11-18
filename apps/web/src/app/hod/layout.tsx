@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
+import { ModuleLinks } from "@/components/shell/ModuleLinks";
 import { Inbox, CheckSquare, Clock, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -44,7 +45,7 @@ export default function HodLayout({
           <p className="text-xs text-gray-500 mt-1">HOD Panel</p>
         </div>
 
-        <nav className="flex-1 px-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-3 space-y-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
             return (
@@ -62,6 +63,7 @@ export default function HodLayout({
               </Link>
             );
           })}
+        <ModuleLinks />
         </nav>
 
         <div className="p-4 border-t border-gray-200">
