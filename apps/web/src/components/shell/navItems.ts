@@ -26,7 +26,7 @@ export const NAV: NavItem[] = [
     anyOf: ["fees.view_own"],
     module: "fees",
   },
-  // â”€â”€ Academics (NEW) â€” foundational/permission-only, NOT module-gated.
+  // ── Academics (NEW) — foundational/permission-only, NOT module-gated.
   // anyOf uses academics.sessions.manage, academics.programs.manage,
   // academics.calendar.manage only. academics.view is intentionally excluded
   // (MUST-FIX 1): the API grants academics.view for Sessions read but Programs
@@ -42,7 +42,7 @@ export const NAV: NavItem[] = [
       "academics.calendar.manage",
     ],
   },
-  // â”€â”€ Students (NEW) â€” foundational/permission-only, NOT module-gated.
+  // ── Students (NEW) — foundational/permission-only, NOT module-gated.
   {
     href: "/sis/students",
     label: "Students",
@@ -54,7 +54,7 @@ export const NAV: NavItem[] = [
       "students.deactivate",
     ],
   },
-  // â”€â”€ Classes â€” foundational/permission-only, NOT module-gated.
+  // ── Classes — foundational/permission-only, NOT module-gated.
   // The API does not call requireModuleActive for classes.* routes.
   // Following the academics precedent: omitting module means
   // useNavItemVisible skips the "item.module && inactive" branch entirely.
@@ -63,9 +63,9 @@ export const NAV: NavItem[] = [
     label: "Classes",
     icon: BookOpen,
     anyOf: ["classes.sections.manage", "classes.faculty.assign", "classes.timetable.manage", "classes.view"],
-    // No module field â€” classes API is permission-gated only, never module-gated.
+    // No module field — classes API is permission-gated only, never module-gated.
   },
-  // â”€â”€ Attendance â€” module-gated: attendance API calls requireModuleActive("attendance").
+  // ── Attendance — module-gated: attendance API calls requireModuleActive("attendance").
   {
     href: "/attendance/sessions",
     label: "Attendance",
@@ -73,7 +73,7 @@ export const NAV: NavItem[] = [
     anyOf: ["attendance.view", "attendance.mark", "attendance.correct"],
     module: "attendance",
   },
-  // â”€â”€ Examinations â€” module-gated: exams.* routes call requireModuleActive("examinations").
+  // ── Examinations — module-gated: exams.* routes call requireModuleActive("examinations").
   // anyOf includes exams.results.view_own so students reach /exams/my-results.
   {
     href: "/exams",
@@ -82,10 +82,10 @@ export const NAV: NavItem[] = [
     anyOf: ["exams.manage", "exams.results.view", "exams.results.view_own", "exams.marks.enter"],
     module: "examinations",
   },
-  // â”€â”€ Library â€” module-gated. Each anyOf holds only the key that opens the target page.
+  // ── Library — module-gated. Each anyOf holds only the key that opens the target page.
   { href: "/library", label: "Library", icon: Library, anyOf: ["library.books.view"], module: "library" },
   { href: "/library/my", label: "My Library", icon: BookMarked, anyOf: ["library.view_own"], module: "library" },
-  // â”€â”€ Admissions â€” module-gated.
+  // ── Admissions — module-gated.
   {
     href: "/admissions",
     label: "Admissions",
@@ -100,23 +100,23 @@ export const NAV: NavItem[] = [
     anyOf: ["admissions.view_own"],
     module: "admissions",
   },
-  // â”€â”€ Faculty Management / HR â€” module-gated. Each anyOf holds only the key that opens the target page.
+  // ── Faculty Management / HR — module-gated. Each anyOf holds only the key that opens the target page.
   { href: "/faculty-mgmt", label: "Faculty", icon: Contact, anyOf: ["faculty.directory.view"], module: "faculty_management" },
   { href: "/faculty-mgmt/me", label: "My Faculty Profile", icon: UserCircle, anyOf: ["faculty.view_own"], module: "faculty_management" },
   { href: "/hr", label: "HR", icon: Briefcase, anyOf: ["hr.directory.view"], module: "hr_management" },
   { href: "/hr/me", label: "My Employment", icon: IdCard, anyOf: ["hr.view_own"], module: "hr_management" },
-  // â”€â”€ Hostel / Transport â€” module-gated. Each anyOf holds only the key that opens the target page.
+  // ── Hostel / Transport — module-gated. Each anyOf holds only the key that opens the target page.
   { href: "/hostel", label: "Hostel", icon: Building2, anyOf: ["hostel.view"], module: "hostel" },
   { href: "/hostel/me", label: "My Hostel", icon: BedDouble, anyOf: ["hostel.view_own"], module: "hostel" },
   { href: "/transport", label: "Transport", icon: BusFront, anyOf: ["transport.view"], module: "transport" },
   { href: "/transport/me", label: "My Transport", icon: Bus, anyOf: ["transport.view_own"], module: "transport" },
-  // â”€â”€ Inventory / Service Requests â€” module-gated. Each anyOf holds only the key that opens the target page.
+  // ── Inventory / Service Requests — module-gated. Each anyOf holds only the key that opens the target page.
   { href: "/inventory", label: "Inventory", icon: Boxes, anyOf: ["inventory.view"], module: "inventory" },
   { href: "/inventory/me", label: "My Assets", icon: PackageSearch, anyOf: ["inventory.view_own"], module: "inventory" },
   { href: "/service-requests", label: "Service Requests", icon: ClipboardList, anyOf: ["service_requests.view"], module: "service_requests" },
   { href: "/service-requests/me", label: "My Requests", icon: ListChecks, anyOf: ["service_requests.request_own"], module: "service_requests" },
   { href: "/service-requests/raise", label: "Raise a Request", icon: Megaphone, anyOf: ["service_requests.request_own"], module: "service_requests" },
-  // â”€â”€ Documents â€” module-gated. Each anyOf holds only keys that open the target page.
+  // ── Documents — module-gated. Each anyOf holds only keys that open the target page.
   { href: "/documents", label: "Documents", icon: FileText, anyOf: ["documents.view_own", "documents.admin.view_all"], module: "documents" },
   { href: "/documents/retention-policies", label: "Document Admin", icon: FolderOpen, anyOf: ["documents.retention.manage"], module: "documents" },
 ];

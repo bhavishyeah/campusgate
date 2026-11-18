@@ -82,7 +82,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   };
 
-  const roleBadge = roles[0]; // coarse display label only â€” order-dependent, never an auth input
+  const roleBadge = roles[0]; // coarse display label only — order-dependent, never an auth input
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20 md:pb-0 md:pl-64">
