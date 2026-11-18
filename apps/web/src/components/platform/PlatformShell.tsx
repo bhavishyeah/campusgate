@@ -13,6 +13,9 @@ import {
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { MfaEnrollment } from "@/components/MfaEnrollment";
+import { SidebarToggle } from "@/components/shell/SidebarToggle";
+import { useSidebarCollapsed } from "@/components/shell/useSidebarCollapsed";
+import { SIDEBAR_ID } from "@/components/shell/sidebarState";
 
 interface NavLink {
   href: string;
@@ -44,6 +47,7 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const logout = useAuthStore((s) => s.logout);
   const [showMfa, setShowMfa] = useState(false);
+  const { collapsed, toggle } = useSidebarCollapsed();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -55,10 +59,11 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={() => setShowMfa(true)}
+            aria-label="Enable MFA"
             className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-700"
           >
             <ShieldCheck className="h-4 w-4" />
-            Enable MFA
+            <span className="hidden sm:inline">Enable MFA</span>
           </button>
           <button
             type="button"
@@ -66,15 +71,25 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
               logout();
               router.replace("/login");
             }}
+            aria-label="Sign out"
             className="flex items-center gap-2 text-sm text-gray-600 hover:text-danger-600"
           >
             <LogOut className="h-4 w-4" />
-            Sign out
+            <span className="hidden sm:inline">Sign out</span>
           </button>
         </div>
       </header>
-      <div className="mx-auto flex max-w-7xl gap-6 p-4 md:p-8">
-        <nav aria-label="Platform" className="w-48 shrink-0 space-y-1">
+      <div className="mx-auto flex max-w-7xl flex-col gap-3 p-4 md:flex-row md:gap-6 md:p-8">
+        <nav
+          id={SIDEBAR_ID}
+          aria-label="Platform"
+          className={`flex gap-1 overflow-x-auto md:block md:shrink-0 md:space-y-1 md:overflow-visible transition-[width] duration-200 ${
+            collapsed ? "md:w-12" : "md:w-48"
+          }`}
+        >
+          <div className={`hidden md:flex ${collapsed ? "justify-center" : "justify-end"}`}>
+            <SidebarToggle collapsed={collapsed} onToggle={toggle} />
+          </div>
           {NAV_LINKS.map(({ href, label, icon: Icon }) => {
             const active = isActive(pathname, href);
             return (
@@ -82,14 +97,18 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
                 key={href}
                 href={href}
                 aria-current={active ? "page" : undefined}
-                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium ${
+                title={collapsed ? label : undefined}
+                aria-label={collapsed ? label : undefined}
+                className={`flex min-h-[44px] shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 md:min-h-0 ${
+                  collapsed ? "md:justify-center md:px-0" : ""
+                } ${
                   active
                     ? "bg-primary-50 text-primary-800"
                     : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
                 }`}
               >
-                <Icon className="h-4 w-4" />
-                {label}
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className={collapsed ? "md:hidden" : ""}>{label}</span>
               </Link>
             );
           })}

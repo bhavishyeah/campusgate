@@ -1,44 +1,44 @@
-﻿"use client";
-
+"use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LogOut, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { GATE_PASS_NAV, NAV, type NavItem } from "./navItems";
 import { useNavItemVisible } from "./ModuleLinks";
+import { SidebarFooter, SidebarHeader, SidebarNavLink } from "./SidebarParts";
+import { MobileTabBar } from "./MobileMoreSheet";
+import { useSidebarCollapsed } from "./useSidebarCollapsed";
+import { SIDEBAR_ID, contentOffsetClass, sidebarWidthClass } from "./sidebarState";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
 import { MfaEnrollment } from "@/components/MfaEnrollment";
-
 /** Gate Pass home links first (visible only to their legacy role), then the module NAV. */
 const SHELL_NAV: NavItem[] = [...GATE_PASS_NAV, ...NAV];
-
 function SidebarLink({
   item,
   perms,
   pathname,
+  collapsed,
 }: {
   item: NavItem;
   perms: string[];
   pathname: string;
+  collapsed: boolean;
 }) {
   const visible = useNavItemVisible(item, perms);
   if (!visible) return null;
-  const isActive = pathname.startsWith(item.href);
   return (
-    <Link
+    <SidebarNavLink
       href={item.href}
-      className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-        isActive ? "bg-primary-50 text-primary-700" : "text-gray-600 hover:bg-gray-100"
-      }`}
-    >
-      <item.icon className="w-5 h-5" />
-      {item.label}
-    </Link>
+      label={item.label}
+      icon={item.icon}
+      active={pathname.startsWith(item.href)}
+      collapsed={collapsed}
+    />
   );
 }
-
+/** Bottom-bar tab for a Gate Pass home link (the full list lives in the More sheet). */
 function MobileLink({
   item,
   perms,
@@ -54,7 +54,7 @@ function MobileLink({
   return (
     <Link
       href={item.href}
-      className={`flex flex-col items-center gap-1 px-3 py-1 rounded-lg ${
+      className={`flex flex-col items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-3 py-1 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
         isActive ? "bg-primary-50 text-primary-700" : "text-gray-500"
       }`}
     >
@@ -63,7 +63,6 @@ function MobileLink({
     </Link>
   );
 }
-
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -72,53 +71,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const permissions = useAuthStore((s) => s.permissions);
   const logout = useAuthStore((s) => s.logout);
   const [mfaOpen, setMfaOpen] = useState(false);
-
+  const { collapsed, toggle } = useSidebarCollapsed();
   useEffect(() => {
     connectSocket();
   }, []);
-
   const handleLogout = () => {
     logout();
     router.replace("/login");
   };
-
   const roleBadge = roles[0]; // coarse display label only — order-dependent, never an auth input
-
   return (
-    <div className="min-h-screen bg-gray-50 pb-20 md:pb-0 md:pl-64">
+    <div className={`min-h-screen bg-gray-50 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0 transition-[padding] duration-200 ${contentOffsetClass(collapsed)}`}>
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex md:flex-col md:fixed md:inset-y-0 md:left-0 md:w-64 bg-white border-r border-gray-200">
-        <div className="p-6">
-          <h1 className="text-xl font-bold text-primary-800">CAMPUSGATE</h1>
-          <p className="text-xs text-gray-500 mt-1">Institution</p>
-        </div>
-
-        <nav className="flex-1 px-3 space-y-1">
+      <aside id={SIDEBAR_ID} className={`hidden md:flex md:flex-col md:fixed md:inset-y-0 md:left-0 ${sidebarWidthClass(collapsed)} transition-[width] duration-200 overflow-hidden bg-white border-r border-gray-200`}>
+        <SidebarHeader title="CAMPUSGATE" subtitle="Institution" collapsed={collapsed} onToggle={toggle} />
+        <nav className={`flex-1 overflow-y-auto space-y-1 ${collapsed ? "px-2" : "px-3"}`}>
           {SHELL_NAV.map((item) => (
-            <SidebarLink key={item.href} item={item} perms={permissions} pathname={pathname} />
+            <SidebarLink key={`${item.href}:${item.label}`} item={item} perms={permissions} pathname={pathname} collapsed={collapsed} />
           ))}
         </nav>
-
-        <div className="p-4 border-t border-gray-200">
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 text-sm text-gray-600 hover:text-danger-600 transition-colors w-full"
-          >
-            <LogOut className="w-4 h-4" />
-            Sign Out
-          </button>
-        </div>
+        <SidebarFooter collapsed={collapsed} onSignOut={handleLogout} />
       </aside>
-
-      {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50">
-        <div className="flex justify-around items-center py-2">
-          {SHELL_NAV.map((item) => (
-            <MobileLink key={item.href} item={item} perms={permissions} pathname={pathname} />
-          ))}
-        </div>
-      </nav>
-
+      {/* Mobile bottom nav: Gate Pass home tab + More (full shared list) */}
+      <MobileTabBar includeGatePass onSignOut={handleLogout}>
+        {GATE_PASS_NAV.map((item) => (
+          <MobileLink key={item.href} item={item} perms={permissions} pathname={pathname} />
+        ))}
+      </MobileTabBar>
       {/* Top bar */}
       <header className="sticky top-0 z-40 bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between gap-3">
         <span className="md:hidden font-bold text-primary-800">CAMPUSGATE</span>
@@ -145,10 +124,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       </header>
-
       {/* Main content */}
       <main className="p-4 md:p-8">{children}</main>
-
       <MfaEnrollment open={mfaOpen} onClose={() => setMfaOpen(false)} />
     </div>
   );
