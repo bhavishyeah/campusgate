@@ -1,7 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { privilegedPrisma } from "@campusgate/db";
 
-export const READINESS_TIMEOUT_MS = 3000;
+// 8s, not 3s: the free-tier Supabase pooler stalls for several seconds now and
+// then even when healthy (measured: ~1 in 3 calls hit 3s locally), and a tight
+// limit would raise false "down" alerts. Monitors wait ~30s, so 8s is safe.
+export const READINESS_TIMEOUT_MS = 8000;
 
 /**
  * GET /api/health/ready — database readiness probe for uptime monitors.

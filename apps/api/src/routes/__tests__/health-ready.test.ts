@@ -45,7 +45,7 @@ describe("GET /api/health/ready", () => {
 
   it("returns 503 when the query exceeds the timeout", async () => {
     queryRaw.mockReturnValue(new Promise(() => {})); // never settles
-    const app = await build(50); // injectable timeout (production default 3000ms)
+    const app = await build(50); // injectable timeout (production default 8000ms)
     const started = Date.now();
     const res = await app.inject({ method: "GET", url: "/api/health/ready" });
     expect(Date.now() - started).toBeLessThan(2000);

@@ -5,7 +5,7 @@
 | URL | Touches DB | Use |
 | --- | --- | --- |
 | `GET /api/health` | no | Liveness. Railway healthcheck and `scripts/prod-smoke.mjs` step A. Unchanged. |
-| `GET /api/health/ready` | yes (`SELECT 1`, 3 s timeout) | Readiness. Point uptime monitors here. |
+| `GET /api/health/ready` | yes (`SELECT 1`, 8 s timeout) | Readiness. Point uptime monitors here. |
 
 `/api/health/ready` responses (no auth, read-only, never includes error text):
 
