@@ -1,3 +1,4 @@
+import { sentryEnabled, setSentryUserId } from "./instrument.js"; // must stay first
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -34,6 +35,12 @@ const app = Fastify({
   },
 });
 
+if (sentryEnabled) {
+  // Opaque user id only (no email/name) for error reports.
+  app.addHook("onError", async (request) => {
+    setSentryUserId((request as { user?: { userId?: string } }).user?.userId);
+  });
+}
 // Plugins
 await app.register(cors, {
   origin: process.env.FRONTEND_URL || "http://localhost:3000",

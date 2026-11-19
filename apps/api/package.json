@@ -17,6 +17,7 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/jwt": "^9.0.0",
     "@fastify/websocket": "^11.0.0",
+    "@sentry/node": "11.14.0",
     "@types/bcrypt": "^5.0.2",
     "@types/node": "^22.0.0",
     "@types/qrcode": "1.5.5",
