@@ -3,6 +3,7 @@
  *
  * Hits the LIVE Railway API (not localhost) end-to-end:
  *   A. /api/health
+ *   A2. /api/health/ready (200 and db up; 503 means the database is unreachable)
  *   B. login as the student + admin (seed creds)
  *   C. tenant-scoped read sanity (student sees their own fees/me)
  *   D. Documents round-trip: upload (admin) -> appears in list -> mint signed
@@ -75,6 +76,10 @@ try {
   const health = await api("/api/health");
   ok("health 200 + status ok", health.status === 200 && health.json?.status === "ok", JSON.stringify(health.json));
 
+  // A2. readiness (touches the DB)
+  step("A2", "GET /api/health/ready");
+  const ready = await api("/api/health/ready");
+  ok("A2 health/ready 200 + db up", ready.status === 200 && ready.json?.db === "up", `status ${ready.status}`);
   // E. unauthenticated rejected (do early, no token)
   step("E", "unauthenticated /api/documents is rejected");
   const noauth = await api("/api/documents");

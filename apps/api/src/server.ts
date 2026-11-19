@@ -26,6 +26,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { wsRoutes } from "./routes/ws.js";
 import { platformRoutes } from "./routes/platform.js";
+import { healthRoutes } from "./routes/health.js";
 
 const app = Fastify({
   logger: {
@@ -79,6 +80,8 @@ await app.register(wsRoutes, { prefix: "/ws" });
 
 // Health check
 app.get("/api/health", async () => ({ status: "ok", timestamp: new Date().toISOString() }));
+// Readiness check (touches the DB; for uptime monitors)
+await app.register(healthRoutes);
 
 // Start
 const port = Number(process.env.PORT) || 4000;
