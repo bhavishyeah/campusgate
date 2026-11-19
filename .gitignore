@@ -11,6 +11,11 @@ out/
 .env
 .env.local
 .env.*.local
+# Live-DB TEST project settings (never commit; the *.example templates are tracked)
+apps/api/.env.test
+packages/db/.env.test
+**/.env.test*
+!**/.env.test.example
 
 # Turbo
 .turbo/

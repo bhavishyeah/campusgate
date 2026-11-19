@@ -3,7 +3,8 @@
  * tables through the `campass_app` runtime connection, proving Row-Level Security
  * isolates tenants even when the application layer forgets to filter.
  *
- * Requires live Supabase + the campass_app credentials in apps/api/.env. This is
+ * Requires live Supabase + the campass_app credentials in apps/api/.env.test
+ * (the dedicated TEST project; see docs/test-database.md). This is
  * the real-DB suite; the other api integration suites mock @campusgate/db.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

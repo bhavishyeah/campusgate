@@ -1,14 +1,15 @@
 /**
  * Real-database setup for the cross-tenant escape suite (tenancy.md §7).
  *
- * This is the ONLY api test that hits the live Supabase instance. It uses two
+ * This is the ONLY api test that hits the live Supabase instance (the dedicated TEST project:
+ * see ./live-test-env.ts and docs/test-database.md). It uses two
  * connections:
  *   - appClient  : connects as `campass_app` (NOSUPERUSER NOBYPASSRLS) via the
  *                  transaction pooler (apps/api/.env DATABASE_URL). RLS enforces
  *                  for this role, so the escape tests exercise it through
  *                  `withTenant`.
  *   - adminClient: connects as `postgres` (bypasses RLS) via the session pooler
- *                  (packages/db/.env DIRECT_URL). Used ONLY in setup/teardown to
+ *                  (packages/db/.env.test DIRECT_URL). Used ONLY in setup/teardown to
  *                  seed and delete the two test institutions and to inspect
  *                  pg_catalog in the meta-test.
  *
@@ -16,52 +17,15 @@
  * IDs are plausible, and tears that data down afterwards (scoped by captured IDs /
  * the ESCAPE_TEST_ prefix — never a blanket delete).
  *
- * Secret values are read from the .env files into env vars and never printed.
+ * Secret values are read from the .env.test files into env vars and never printed.
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
+import { appDatabaseUrl, adminDatabaseUrl, pinLiveTestEnv } from "./live-test-env.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "../../../../../..");
-const apiEnvPath = path.join(repoRoot, "apps", "api", ".env");
-const dbEnvPath = path.join(repoRoot, "packages", "db", ".env");
-
-/** Minimal .env parser (KEY="value" / KEY=value), ignores comments/blank lines. */
-function parseEnv(filePath: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const raw = readFileSync(filePath, "utf8");
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
-const apiEnv = parseEnv(apiEnvPath);
-const dbEnv = parseEnv(dbEnvPath);
-
-const appDatabaseUrl = apiEnv.DATABASE_URL; // campass_app (RLS-subject)
-const adminDatabaseUrl = dbEnv.DIRECT_URL ?? dbEnv.DATABASE_URL; // postgres (RLS-bypass)
-
-if (!appDatabaseUrl) throw new Error("apps/api/.env DATABASE_URL not found");
-if (!adminDatabaseUrl) throw new Error("packages/db/.env DIRECT_URL not found");
 
 // Pin the shared @campusgate/db singleton to the campass_app connection BEFORE it
 // is imported, so `withTenant` runs through the RLS-subject role.
-process.env.DATABASE_URL = appDatabaseUrl;
+pinLiveTestEnv("app-only");
 
 /** campass_app connection — the RLS-subject client the escape tests exercise. */
 export const appClient = new PrismaClient({

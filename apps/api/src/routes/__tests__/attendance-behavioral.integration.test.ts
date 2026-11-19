@@ -17,49 +17,17 @@
  * middleware reads users/memberships on privilegedPrisma (no tenant GUC yet), so
  * that client MUST be the owner/postgres role, not campass_app.
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import jwt from "@fastify/jwt";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "../../../../..");
-
-function parseEnv(filePath: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const raw = readFileSync(filePath, "utf8");
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
-const apiEnv = parseEnv(path.join(repoRoot, "apps", "api", ".env"));
-const dbEnv = parseEnv(path.join(repoRoot, "packages", "db", ".env"));
-
-const appDatabaseUrl = apiEnv.DATABASE_URL; // campass_app (RLS-subject)
-const adminDatabaseUrl = dbEnv.DIRECT_URL ?? dbEnv.DATABASE_URL; // postgres (owner)
-if (!appDatabaseUrl) throw new Error("apps/api/.env DATABASE_URL not found");
-if (!adminDatabaseUrl) throw new Error("packages/db/.env DIRECT_URL not found");
+import { adminDatabaseUrl, pinLiveTestEnv } from "./helpers/live-test-env.js";
 
 // Pin BOTH the runtime (campass_app) and privileged (owner) URLs BEFORE
 // @campusgate/db loads so withTenant runs as campass_app AND privilegedPrisma
 // (used by authenticate) runs as the owner.
-process.env.DATABASE_URL = appDatabaseUrl;
-process.env.PRIVILEGED_DATABASE_URL = adminDatabaseUrl;
-process.env.DIRECT_URL = adminDatabaseUrl;
+pinLiveTestEnv();
 
 const adminClient = new PrismaClient({ datasources: { db: { url: adminDatabaseUrl } }, log: ["error"] });
 

@@ -4,7 +4,7 @@
  * only place the external Supabase Storage REST endpoint shapes are confirmed.
  *
  * It is SKIPPED unless BOTH SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are
- * present in the environment — so the default fast run and the integration run
+ * present in apps/api/.env.test (TEST project only; the production guard applies) — so the default fast run and the integration run
  * stay free of real blob I/O. When enabled it drives the adapter end-to-end:
  *   putObject a tiny buffer under smoke/<uuid> → headObject reports it exists
  *   with the right size → getSignedDownloadUrl returns an absolute URL that
@@ -14,6 +14,11 @@
 import { randomUUID, createHash } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { SupabaseStorageAdapter } from "../storage.js";
+import { pinLiveTestEnv } from "../../../routes/__tests__/helpers/live-test-env.js";
+
+// SUPABASE_* come ONLY from apps/api/.env.test (the TEST project); a value in the
+// shell/production .env is ignored (removed) by the loader.
+pinLiveTestEnv();
 
 const ENABLED = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 

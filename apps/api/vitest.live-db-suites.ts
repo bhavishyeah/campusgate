@@ -1,6 +1,7 @@
 // ─── Live-DB integration suites ──────────────────────────────────────────────
 // These suites do NOT mock @campusgate/db — they open real connections to the
-// live Supabase instance:
+// dedicated TEST Supabase project (apps/api/.env.test + packages/db/.env.test; see
+// docs/test-database.md; a production guard refuses protected project refs):
 //   - tenant-escape        proves cross-tenant RLS isolation on every tenant table
 //   - superadmin-security  break-glass + append-only audit_events + RLS
 //   - module-system        the real module entitlement/activation engine

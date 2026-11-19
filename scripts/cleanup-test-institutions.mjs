@@ -2,7 +2,8 @@
  * CampusGate — find and remove leftover TEST institutions (ops script).
  *
  * The live integration suites (apps/api/src/**\/__tests__/*.integration.test.ts)
- * run against the production database and create institutions whose name/code
+ * now run only against the dedicated TEST project (docs/test-database.md). Older
+ * runs against the production database created institutions whose name/code
  * start with a suite prefix (ADM_TEST_, LIB_TEST_, ...). Their teardown can leave
  * rows behind. This script finds them and either suspends or hard-deletes them.
  *
