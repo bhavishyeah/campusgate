@@ -10,7 +10,7 @@
 `/api/health/ready` responses (no auth, read-only, never includes error text):
 
 - `200 {"status":"ok","db":"up","timestamp":"..."}`
-- `503 {"status":"error","db":"down","timestamp":"..."}` (query failed or took longer than 3 s; the real error is logged on the server as a warning)
+- `503 {"status":"error","db":"down","timestamp":"..."}` (query failed or took longer than 8 s; the real error is logged on the server as a warning)
 
 Uptime monitor URL: `https://campusgate.up.railway.app/api/health/ready`, expect HTTP 200.
 
