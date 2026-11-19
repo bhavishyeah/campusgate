@@ -164,12 +164,24 @@ export async function issueToken(input: IssueTokenInput, deps: TokenDeps = {}): 
 }
 
 /** Provider failed after reservation: release the budget, invalidate the token, record why. */
-export async function failIssuedToken(id: string, reason: string, deps: TokenDeps = {}): Promise<void> {
+export async function failIssuedToken(
+  id: string,
+  reason: string,
+  deps: TokenDeps = {},
+  opts: { startCooldown?: boolean } = {},
+): Promise<void> {
   const db = deps.db ?? privilegedPrisma;
   const now = deps.now ? deps.now() : new Date();
+  // startCooldown=false (provider credential problem): release and supersede,
+  // but leave failedAt null so the admin can retry right after fixing the key.
   await db.accountToken.update({
     where: { id },
-    data: { emailSentAt: null, supersededAt: now, failedAt: now, failureReason: reason },
+    data: {
+      emailSentAt: null,
+      supersededAt: now,
+      failedAt: opts.startCooldown === false ? null : now,
+      failureReason: reason,
+    },
   });
 }
 
@@ -204,6 +216,9 @@ export async function ensureMembership(
     });
     membershipId = created.id;
   }
+  // A membership that already has any role is left exactly as it is.
+  const roleCount = await db.membershipRole.count({ where: { membershipId } });
+  if (roleCount > 0) return;
   const role = await db.role.findFirst({
     where: { key: input.legacyRole, institutionId: null },
     select: { id: true },

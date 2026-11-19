@@ -241,6 +241,12 @@ export async function authRoutes(app: FastifyInstance) {
     if (!enforce(limiters.registerIp, clientIpKey(request), reply)) return reply;
     if (!enforce(limiters.registerEmail, hashKey(email), reply)) return reply;
 
+    // /login rejects a password equal to the enrollment number (legacy default),
+    // so refuse it here instead of creating an account that cannot sign in.
+    if (password === enrollmentNo) {
+      return reply.status(400).send({ error: "Choose a different password." });
+    }
+
     // Get the department's institution
     const department = await privilegedPrisma.department.findUnique({
       where: { id: departmentId },

@@ -108,6 +108,15 @@ describe("POST /forgot-password", () => {
     expect(mail.sent).toHaveLength(0);
   });
 
+  it("6 PENDING case variants cannot crowd out the real ACTIVE account", async () => {
+    for (let i = 0; i < 6; i++) {
+      f.addUser({ email: `VICTIM${i}`.slice(0, 6) + "@x.edu", accountStatus: "PENDING_APPROVAL", passwordHash: "p" });
+    }
+    f.addUser({ email: "victim@x.edu", role: "HOD", passwordHash: "p" });
+    await forgot(await makeApp(), "victim@x.edu");
+    await drainBackground();
+    expect(mail.sent.map((m) => m.to.email)).toEqual(["victim@x.edu"]);
+  });
   it("per-email limit (3/hour) silently suppresses the 4th send, still generic 200", async () => {
     f.addUser({ email: "ok@x.edu", role: "HOD", passwordHash: "p" });
     const app = await makeApp();

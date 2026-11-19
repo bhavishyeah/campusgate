@@ -67,6 +67,14 @@ describe("POST /register no longer activates existing accounts", () => {
     expect(m.studentProfile.update).not.toHaveBeenCalled();
   });
 
+  it("a password equal to the enrollment number is refused with 400 before any lookup", async () => {
+    const res = await post(await makeApp(), body({ password: "ENR12345", enrollmentNo: "ENR12345" }));
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Choose a different password.");
+    expect(m.user.findFirst).not.toHaveBeenCalled();
+    expect(m.user.create).not.toHaveBeenCalled();
+  });
+
   it("legacy bcrypt(enrollmentNo) account gets the same 409 and is untouched", async () => {
     m.user.findFirst.mockResolvedValue({ id: "u2", passwordHash: await bcrypt.hash("ENR1", 4) });
     const res = await post(await makeApp(), body());

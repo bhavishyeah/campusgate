@@ -6,6 +6,7 @@ import websocket from "@fastify/websocket";
 import { authRoutes } from "./routes/auth.js";
 import { accountLifecycleRoutes } from "./routes/account-lifecycle.js";
 import { accountInviteRoutes } from "./routes/account-invites.js";
+import { drainBackground } from "./services/account-invites.js";
 import { mfaRoutes } from "./routes/mfa.js";
 import { studentRoutes } from "./routes/student.js";
 import { studentAdminRoutes } from "./routes/students.js";
@@ -113,5 +114,13 @@ try {
   app.log.error(err);
   process.exit(1);
 }
+
+// Let detached forgot-password sends finish on redeploy (Railway sends SIGTERM).
+process.once("SIGTERM", () => {
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000).unref());
+  void Promise.race([drainBackground(), timeout])
+    .then(() => app.close())
+    .finally(() => process.exit(0));
+});
 
 export type App = typeof app;

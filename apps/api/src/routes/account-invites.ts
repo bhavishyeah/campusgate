@@ -30,6 +30,9 @@ export async function accountInviteRoutes(app: FastifyInstance) {
   async function singleInvite(kind: Kind, request: FastifyRequest, reply: FastifyReply) {
     const { userId: actorId, institutionId } = request.user;
     const { userId } = request.params as { userId: string };
+    if (typeof userId !== "string" || userId.length < 1 || userId.length > 64) {
+      return reply.status(400).send({ error: "Invalid user id" });
+    }
 
     if (!enforce(limiters.inviteAdmin, actorId, reply)) return reply;
 

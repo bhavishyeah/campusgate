@@ -22,6 +22,7 @@ import {
 export const RESET_RESERVE = 50;
 export const BULK_BATCH_MAX = 100;
 export const SEND_CONCURRENCY = 5;
+const PROVIDER_ERROR_STOP = 3;
 export const ALL_PENDING_SCAN_CAP = 5000;
 const DAY_MS = 24 * 3_600_000;
 
@@ -119,7 +120,8 @@ export async function issueAndSend(input: IssueAndSendInput, deps: TokenDeps = {
     });
   } catch (err) {
     const reason = err instanceof EmailSendError ? err.reason : "PROVIDER_UNAVAILABLE";
-    await failIssuedToken(issued.id, reason, deps);
+    const credentialProblem = err instanceof EmailSendError && (err.status === 401 || err.status === 403);
+    await failIssuedToken(issued.id, reason, deps, { startCooldown: !credentialProblem });
     if (reason === "PROVIDER_LIMIT") return { status: "PROVIDER_LIMIT", reason };
     if (reason === "NOT_CONFIGURED") return { status: "NOT_CONFIGURED", reason };
     return { status: "FAILED", reason };
@@ -138,7 +140,8 @@ export type BulkOutcome =
   | "SKIPPED_NOT_FOUND"
   | "SKIPPED_NOT_ELIGIBLE"
   | "SKIPPED_BUDGET"
-  | "SKIPPED_PROVIDER_LIMIT";
+  | "SKIPPED_PROVIDER_LIMIT"
+  | "SKIPPED_PROVIDER_ERROR";
 
 export interface BulkInviteResponse {
   dryRun: boolean;
@@ -155,6 +158,7 @@ export interface BulkInviteResponse {
     notEligible: number;
     budget: number;
     providerLimit: number;
+    providerError: number;
   };
   failedRecently: number;
   remainingNotInvited: number;
@@ -194,6 +198,7 @@ export async function runBulkInvite(
     notEligible: 0,
     budget: 0,
     providerLimit: 0,
+    providerError: 0,
   };
 
   // 1. Tenant step: users (campass_app + GUC). Never touches account_tokens.
@@ -286,10 +291,17 @@ export async function runBulkInvite(
     const inst = await db.institution.findUnique({ where: { id: institutionId }, select: { name: true } });
     const institutionName = inst?.name ?? "your institution";
     let stop = false;
+    let stopKind: "LIMIT" | "ERROR" = "LIMIT";
+    let consecutiveProviderErrors = 0;
     await mapPool(batch, SEND_CONCURRENCY, async (c) => {
       if (stop) {
-        skipped.providerLimit++;
-        results.push({ userId: c.id, email: c.email, outcome: "SKIPPED_PROVIDER_LIMIT" });
+        if (stopKind === "ERROR") {
+          skipped.providerError++;
+          results.push({ userId: c.id, email: c.email, outcome: "SKIPPED_PROVIDER_ERROR" });
+        } else {
+          skipped.providerLimit++;
+          results.push({ userId: c.id, email: c.email, outcome: "SKIPPED_PROVIDER_LIMIT" });
+        }
         return;
       }
       let r: IssueAndSendResult;
@@ -311,6 +323,7 @@ export async function runBulkInvite(
       }
       switch (r.status) {
         case "SENT":
+          consecutiveProviderErrors = 0;
           sent++;
           results.push({ userId: c.id, email: c.email, outcome: "SENT" });
           break;
@@ -325,6 +338,7 @@ export async function runBulkInvite(
           break;
         case "PROVIDER_LIMIT":
           stop = true;
+          stopKind = "LIMIT";
           failed++;
           results.push({ userId: c.id, email: c.email, outcome: "FAILED" });
           break;
@@ -335,6 +349,14 @@ export async function runBulkInvite(
         default:
           failed++;
           results.push({ userId: c.id, email: c.email, outcome: "FAILED" });
+          if (r.status === "FAILED" && (r.reason === "PROVIDER_REJECTED" || r.reason === "PROVIDER_UNAVAILABLE")) {
+            if (++consecutiveProviderErrors >= PROVIDER_ERROR_STOP && !stop) {
+              stop = true;
+              stopKind = "ERROR";
+            }
+          } else {
+            consecutiveProviderErrors = 0;
+          }
       }
     });
   }

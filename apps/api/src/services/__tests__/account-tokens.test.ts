@@ -256,6 +256,15 @@ describe("consumeToken: reset, expiry and binding", () => {
 });
 
 describe("ensureMembership", () => {
+  it("leaves a membership that already has roles untouched", async () => {
+    const f = new FakeOwnerDb();
+    f.memberships.push({ id: "m1", userId: "u", institutionId: "inst-1", membershipStatus: "SUSPENDED" });
+    f.membershipRoles.push({ id: "mr1", membershipId: "m1", roleId: "role-other", institutionId: "inst-1" });
+    await ensureMembership(f as never, { userId: "u", institutionId: "inst-1", legacyRole: "STUDENT" });
+    expect(f.membershipRoles).toHaveLength(1);
+    expect(f.membershipRoles[0].roleId).toBe("role-other");
+    expect(f.memberships[0].membershipStatus).toBe("SUSPENDED");
+  });
   it("skips SUPER_ADMIN and warns when the template role is missing", async () => {
     const f = new FakeOwnerDb();
     await ensureMembership(f as never, { userId: "u", institutionId: "inst-1", legacyRole: "SUPER_ADMIN" });

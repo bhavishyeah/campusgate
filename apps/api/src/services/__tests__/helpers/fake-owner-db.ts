@@ -62,7 +62,8 @@ export class FakeOwnerDb {
   }
 
   user = {
-    findMany: async (args: Row) => this.users.filter((x) => matches(x, args.where)).slice(0, args.take ?? 1e9).map((u) => this.userView(u)),
+    findMany: async (args: Row) =>
+      this.users.map((u) => this.userView(u)).filter((x) => matches(x, args.where)).slice(0, args.take ?? 1e9),
     findFirst: async (args: Row) => {
       const u = this.users.find((x) => matches(x, args.where));
       return u ? this.userView(u) : null;
@@ -105,6 +106,7 @@ export class FakeOwnerDb {
   };
 
   membershipRole = {
+    count: async (args: Row) => this.membershipRoles.filter((x) => matches(x, args.where)).length,
     upsert: async (args: Row) => {
       const w = args.where.membershipId_roleId;
       const ex = this.membershipRoles.find((x) => x.membershipId === w.membershipId && x.roleId === w.roleId);

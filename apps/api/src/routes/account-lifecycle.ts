@@ -107,7 +107,13 @@ export async function accountLifecycleRoutes(app: FastifyInstance) {
     // The lookup runs for every request, existing account or not, so the
     // response path does the same work. Everything else is detached.
     const candidates = (await privilegedPrisma.user.findMany({
-      where: { email: { equals: email, mode: "insensitive" } },
+      // Only rows that could ever receive mail, so PENDING case-variant rows
+      // created through /register cannot crowd the real account out of the page.
+      where: {
+        email: { equals: email, mode: "insensitive" },
+        accountStatus: "ACTIVE",
+        institution: { status: "ACTIVE" },
+      },
       select: {
         id: true,
         email: true,
@@ -118,7 +124,8 @@ export async function accountLifecycleRoutes(app: FastifyInstance) {
         institution: { select: { status: true, name: true } },
         studentProfile: { select: { status: true } },
       },
-      take: 5,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: 10,
     })) as Candidate[];
 
     if (emailAllowed) {
