@@ -11,7 +11,9 @@
     "lint": "turbo lint",
     "db:generate": "turbo db:generate",
     "db:push": "turbo db:push",
-    "db:migrate": "turbo db:migrate"
+    "db:migrate": "turbo db:migrate",
+    "db:migrate:test": "npm run db:migrate:test -w @campusgate/db",
+    "db:check:test": "npm run db:check:test -w @campusgate/db"
   },
   "devDependencies": {
     "turbo": "^2.3.0",
