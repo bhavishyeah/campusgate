@@ -66,3 +66,21 @@ describe("sentry scrubber", () => {
     expect(out.user).toBeUndefined();
   });
 });
+
+describe("sentry scrubber: account lifecycle tokens", () => {
+  it("filters fragment/query tokens and the new key names, and account-invites bodies", () => {
+    expect(scrubUrlString("https://a.x/reset-password#token=SECRET1")).not.toContain("SECRET1");
+    expect(scrubUrlString("/x?resetToken=SECRET2&a=1")).not.toContain("SECRET2");
+    expect(scrubUrlString("/x?inviteToken=SECRET3")).not.toContain("SECRET3");
+    expect(scrubUrlString("/x?activationToken=SECRET4")).not.toContain("SECRET4");
+    const out: any = scrubEvent({
+      request: { url: "https://api.x/api/account-invites/bulk-students", data: { userIds: ["a"] } },
+      extra: { newPassword: "n", confirmPassword: "c", confirm: "c", resetToken: "r", inviteToken: "i", activationToken: "a", tokenHash: "h", ok: 1 },
+    });
+    expect(out.request.data).toBeUndefined();
+    for (const k of ["newPassword", "confirmPassword", "confirm", "resetToken", "inviteToken", "activationToken", "tokenHash"]) {
+      expect(out.extra[k]).toBe("[Filtered]");
+    }
+    expect(out.extra.ok).toBe(1);
+  });
+});

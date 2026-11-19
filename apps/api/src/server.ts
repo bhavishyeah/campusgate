@@ -4,6 +4,8 @@ import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import websocket from "@fastify/websocket";
 import { authRoutes } from "./routes/auth.js";
+import { accountLifecycleRoutes } from "./routes/account-lifecycle.js";
+import { accountInviteRoutes } from "./routes/account-invites.js";
 import { mfaRoutes } from "./routes/mfa.js";
 import { studentRoutes } from "./routes/student.js";
 import { studentAdminRoutes } from "./routes/students.js";
@@ -29,10 +31,18 @@ import { wsRoutes } from "./routes/ws.js";
 import { platformRoutes } from "./routes/platform.js";
 import { healthRoutes } from "./routes/health.js";
 
+// Client IP for rate limits comes from the right of X-Forwarded-For. Outside
+// development/test (including NODE_ENV unset) assume one proxy hop (Railway);
+// override with TRUST_PROXY_HOPS. See docs/email-and-accounts.md.
+const devOrTest = process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+const proxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? "", 10);
+const trustedHops = Number.isFinite(proxyHops) && proxyHops >= 0 ? proxyHops : devOrTest ? 0 : 1;
 const app = Fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info",
   },
+  // Same semantics as a numeric hop count: trust the nearest N proxies.
+  trustProxy: (_address: string, hop: number) => hop < trustedHops,
 });
 
 if (sentryEnabled) {
@@ -61,6 +71,8 @@ await app.register(websocket);
 
 // Routes
 await app.register(authRoutes, { prefix: "/api/auth" });
+await app.register(accountLifecycleRoutes, { prefix: "/api/auth" });
+await app.register(accountInviteRoutes, { prefix: "/api/account-invites" });
 await app.register(mfaRoutes, { prefix: "/api/auth/mfa" });
 await app.register(studentRoutes, { prefix: "/api/student" });
 await app.register(studentAdminRoutes, { prefix: "/api/students" });

@@ -7,12 +7,17 @@ import { ROLE_PERMISSIONS } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
 import { resolvePermissions } from "../services/authz-engine.js";
 import { notifyInstitutionAdmins } from "../services/notifications.js";
+import { clientIpKey, enforce, hashKey, limiters } from "../services/rate-limit.js";
+import { isSelfRegistrationEnabled } from "../services/self-registration.js";
 
 // Platform permission keys for a SUPER_ADMIN (no membership), normalized the
 // same way (dedup + sort) as the membership-resolved sets.
 const SUPER_ADMIN_PERMISSIONS: string[] = [
   ...new Set(ROLE_PERMISSIONS.SUPER_ADMIN ?? []),
 ].sort();
+
+const NOT_ACTIVATED_MESSAGE =
+  "Account not activated. Check your email for an activation link, or use Forgot password to get a new one.";
 
 /** Parse a basic device descriptor from the User-Agent string. */
 function parseDevice(ua?: string) {
@@ -86,7 +91,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (!user.passwordHash) {
       if (user.role === "STUDENT") {
         return reply.status(403).send({
-          error: "Account not activated. Please complete first-time registration to set your password.",
+          error: NOT_ACTIVATED_MESSAGE,
         });
       }
       return reply.status(401).send({ error: "Invalid email or password" });
@@ -103,6 +108,13 @@ export async function authRoutes(app: FastifyInstance) {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) {
       return reply.status(401).send({ error: "Invalid email or password" });
+    }
+
+    // Legacy default: some imported students were given bcrypt(enrollmentNo) as
+    // their password. It is rejected here (no data rewrite); those users recover
+    // through Forgot password. Plain comparison on a password that already verified.
+    if (user.studentProfile && password === user.studentProfile.enrollmentNo) {
+      return reply.status(403).send({ error: NOT_ACTIVATED_MESSAGE });
     }
 
     // Update last login
@@ -209,7 +221,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
-  // ─── REGISTER / FIRST-TIME ACTIVATION (student) ───────────────────────────
+  // ─── SELF-REGISTER (new accounts only; pending admin approval) ────────────
   app.post("/register", async (request, reply) => {
     const parsed = registerSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -218,6 +230,16 @@ export async function authRoutes(app: FastifyInstance) {
 
     const { email, password, name, enrollmentNo, departmentId, program, semester, section } =
       parsed.data;
+
+    if (!isSelfRegistrationEnabled()) {
+      return reply
+        .status(403)
+        .send({ error: "Self-registration is disabled. Please contact your institution." });
+    }
+
+    // Soft per-IP limit (a campus can share one public IP) and a per-email limit.
+    if (!enforce(limiters.registerIp, clientIpKey(request), reply)) return reply;
+    if (!enforce(limiters.registerEmail, hashKey(email), reply)) return reply;
 
     // Get the department's institution
     const department = await privilegedPrisma.department.findUnique({
@@ -234,65 +256,16 @@ export async function authRoutes(app: FastifyInstance) {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // If a user already exists with this email, attempt first-time activation flow
-    const existingByEmail = await privilegedPrisma.user.findUnique({
-      where: { email },
-      include: { studentProfile: true },
+    // An existing account (any role, any enrollment number) is never modified
+    // here: passwordless/imported accounts activate only through an emailed
+    // single-use token (/activate). The match is case-insensitive so a case
+    // variant cannot slip past the check.
+    const existingByEmail = await privilegedPrisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+      select: { id: true },
     });
-
     if (existingByEmail) {
-      if (existingByEmail.role !== "STUDENT" || !existingByEmail.studentProfile) {
-        return reply.status(409).send({ error: "Email already registered" });
-      }
-
-      const profile = existingByEmail.studentProfile;
-      if (profile.enrollmentNo !== enrollmentNo) {
-        return reply.status(409).send({ error: "Enrollment number does not match imported record" });
-      }
-
-      if (existingByEmail.institutionId !== department.institutionId) {
-        return reply.status(409).send({ error: "Email belongs to a different institution" });
-      }
-
-      const canActivateWithoutPassword = !existingByEmail.passwordHash;
-      const canActivateWithLegacyDefault =
-        !!existingByEmail.passwordHash &&
-        (await bcrypt.compare(enrollmentNo, existingByEmail.passwordHash));
-
-      if (!canActivateWithoutPassword && !canActivateWithLegacyDefault) {
-        return reply.status(409).send({
-          error: "Account already activated. Please sign in instead.",
-        });
-      }
-
-      const activated = await privilegedPrisma.user.update({
-        where: { id: existingByEmail.id },
-        data: {
-          passwordHash,
-          accountStatus: "ACTIVE",
-          studentProfile: {
-            update: {
-              name,
-              departmentId,
-              program,
-              semester,
-              section,
-            },
-          },
-        },
-        include: { studentProfile: true },
-      });
-
-      return reply.send({
-        activation: true,
-        message: "Account activated successfully. You can now sign in.",
-        user: {
-          id: activated.id,
-          email: activated.email,
-          role: activated.role,
-          accountStatus: activated.accountStatus,
-        },
-      });
+      return reply.status(409).send({ error: "Email already registered" });
     }
 
     // Check enrollment collision for new self-registration

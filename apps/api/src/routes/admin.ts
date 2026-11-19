@@ -26,6 +26,9 @@ import {
 import { authenticate } from "../middleware/auth.js";
 import { requirePermission, requireModuleActive } from "../services/authz-engine.js";
 import { recordAuditEvent } from "../services/audit.js";
+import { ensureMembership } from "../services/account-tokens.js";
+import { inviteCeiling, issueAndSend } from "../services/account-invites.js";
+import { getEmailSender } from "../services/email/index.js";
 import { activate, suspend } from "../services/module-system.js";
 import { resolveImportRow } from "../services/student-sis.js";
 import { AllowanceEngine } from "../services/allowance-engine.js";
@@ -597,10 +600,13 @@ export async function adminRoutes(app: FastifyInstance) {
     if (role) where.role = role;
     if (status) where.accountStatus = status;
 
-    const [users, total] = await withTenant(institutionId, (tx) =>
-      Promise.all([
+    // Secrets are never sent to the browser. `hasPassword` comes from a second
+    // tenant query because `omit` removes passwordHash from the rows.
+    const { users, total, withPassword } = await withTenant(institutionId, async (tx) => {
+      const [rows, count] = await Promise.all([
         tx.user.findMany({
           where,
+          omit: { passwordHash: true, mfaSecret: true, mfaRecoveryCodes: true },
           include: {
             studentProfile: { include: { department: true } },
             hodProfile: { include: { department: true } },
@@ -611,11 +617,31 @@ export async function adminRoutes(app: FastifyInstance) {
           take: limitNum,
         }),
         tx.user.count({ where }),
-      ]),
-    );
+      ]);
+      const pageIds = rows.map((r) => r.id);
+      const pw = pageIds.length
+        ? await tx.user.findMany({ where: { id: { in: pageIds }, passwordHash: { not: null } }, select: { id: true } })
+        : [];
+      return { users: rows, total: count, withPassword: new Set(pw.map((p) => p.id)) };
+    });
+
+    // account_tokens is owner-only: read it outside the tenant transaction.
+    const pageIds = users.map((u) => u.id);
+    const invites = pageIds.length
+      ? await privilegedPrisma.accountToken.groupBy({
+          by: ["userId"],
+          where: { userId: { in: pageIds }, institutionId, purpose: "ACCOUNT_ACTIVATION" },
+          _max: { emailSentAt: true },
+        })
+      : [];
+    const lastInvite = new Map(invites.map((i) => [i.userId, i._max.emailSentAt]));
 
     return reply.send({
-      users,
+      users: users.map((u) => ({
+        ...u,
+        hasPassword: withPassword.has(u.id),
+        lastInviteSentAt: lastInvite.get(u.id)?.toISOString() ?? null,
+      })),
       pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
     });
   });
@@ -632,9 +658,13 @@ export async function adminRoutes(app: FastifyInstance) {
     const { email, name, role, departmentId, enrollmentNo, program, semester, section, gateIds } =
       parsed.data;
 
-    // Generate a temporary password
-    const tempPassword = randomBytes(9).toString("base64url");
-    const passwordHash = await bcrypt.hash(tempPassword, 12);
+    // D6: students always get a temporary password (their invites need
+    // `students.create`, which this route does not check). Non-student roles get
+    // a passwordless account plus an emailed invite when a real sender is
+    // configured; otherwise the temporary password, exactly as before.
+    const useInvite = role !== "STUDENT" && getEmailSender().kind === "brevo";
+    const tempPassword = useInvite ? null : randomBytes(9).toString("base64url");
+    const passwordHash = tempPassword ? await bcrypt.hash(tempPassword, 12) : null;
 
     const result = await withTenant(institutionId, async (tx) => {
       const existing = await tx.user.findUnique({ where: { email } });
@@ -702,10 +732,30 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Email already in use" });
     }
 
-    return reply.status(201).send({
-      user: { id: result.user.id, email: result.user.email, role: result.user.role },
-      tempPassword, // In production, send this via email
-    });
+    const created = { id: result.user.id, email: result.user.email, role: result.user.role };
+    if (!useInvite) {
+      return reply.status(201).send({ user: created, tempPassword });
+    }
+
+    // After the tenant transaction committed: issue + send through the owner client.
+    let inviteSent = false;
+    try {
+      const inst = await privilegedPrisma.institution.findUnique({ where: { id: institutionId }, select: { name: true } });
+      const r = await issueAndSend({
+        userId: result.user.id,
+        institutionId,
+        institutionName: inst?.name ?? "your institution",
+        email: result.user.email,
+        purpose: "ACCOUNT_ACTIVATION",
+        createdByUserId: userId,
+        budgetCeiling: inviteCeiling(),
+      });
+      inviteSent = r.status === "SENT";
+      if (!inviteSent) request.log.warn({ status: r.status }, "invite not sent for new user");
+    } catch (err) {
+      request.log.error({ errClass: err instanceof Error ? err.name : "unknown" }, "invite send failed for new user");
+    }
+    return reply.status(201).send({ user: created, inviteSent });
   });
 
   // ─── APPROVE PENDING REGISTRATION ─────────────────────────────────────────
@@ -723,6 +773,10 @@ export async function adminRoutes(app: FastifyInstance) {
         where: { id: user.id },
         data: { accountStatus: "ACTIVE" },
       });
+
+      // F3: users created outside admissions/HR have no membership; without one
+      // /login returns 403 "No active membership". No-op if one already exists.
+      await ensureMembership(tx, { userId: user.id, institutionId, legacyRole: user.role }, request.log);
 
       await recordAuditEvent(
         {
@@ -748,6 +802,55 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     return reply.send({ message: "User approved" });
+  });
+
+  // ─── REJECT PENDING REGISTRATION ──────────────────────────────────────────
+  // Deletes a never-approved self-registration so its email and enrollment
+  // number become available again. Same decision as approve, so same key.
+  app.post("/users/:id/reject", { preHandler: [requirePermission("admin.users.approve")] }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    const { id } = request.params as { id: string };
+
+    try {
+      const result = await withTenant(institutionId, async (tx) => {
+        const user = await tx.user.findFirst({
+          where: { id, institutionId, accountStatus: "PENDING_APPROVAL" },
+          select: { id: true, role: true },
+        });
+        if (!user) return { notFound: true as const };
+
+        await tx.studentProfile.deleteMany({ where: { userId: user.id, institutionId } });
+        await tx.user.delete({ where: { id: user.id } });
+
+        await recordAuditEvent(
+          {
+            action: "admin.user.rejected",
+            result: "SUCCESS",
+            actorUserId: userId,
+            actorRoleKey: request.auth?.roles[0] ?? request.user.role,
+            institutionId,
+            actorMembershipId: request.auth?.membershipId,
+            resourceType: "User",
+            resourceId: id,
+            requestRef: request.id,
+            metadata: { role: user.role },
+          },
+          tx,
+        );
+        return { ok: true as const };
+      });
+
+      if ("notFound" in result) {
+        return reply.status(404).send({ error: "No pending user found" });
+      }
+      return reply.send({ message: "Registration rejected" });
+    } catch (err) {
+      if ((err as { code?: string })?.code === "P2003") {
+        request.log.warn("reject blocked by a foreign key");
+        return reply.status(409).send({ error: "Cannot delete this account. Deactivate it instead." });
+      }
+      throw err;
+    }
   });
 
   // ─── DEACTIVATE USER ───────────────────────────────────────────────────────

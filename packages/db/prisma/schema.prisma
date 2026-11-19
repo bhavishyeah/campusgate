@@ -438,11 +438,40 @@ model User {
   documentAccessGrantsGrantee DocumentAccessGrant[] @relation("DocumentAccessGrantGrantee")
   documentAccessGrantsGranted DocumentAccessGrant[] @relation("DocumentAccessGrantGrantedBy")
   documentAccessLogs       DocumentAccessLog[] @relation("DocumentAccessLogUser")
+  accountTokens            AccountToken[]
 
   @@unique([id, institutionId])
   @@map("users")
 }
 
+// Account lifecycle tokens (password reset + account activation). OWNER-ONLY
+// table: reachable through privilegedPrisma only (no tenant RLS policies, no
+// campass_app grants). Only the SHA-256 hex digest of the token is stored.
+enum AccountTokenPurpose {
+  PASSWORD_RESET
+  ACCOUNT_ACTIVATION
+}
+
+model AccountToken {
+  id              String              @id @default(cuid())
+  userId          String
+  institutionId   String
+  user            User                @relation(fields: [userId, institutionId], references: [id, institutionId], onDelete: Cascade)
+  purpose         AccountTokenPurpose
+  tokenHash       String              @unique
+  expiresAt       DateTime
+  emailSentAt     DateTime?
+  failedAt        DateTime?
+  failureReason   String?
+  usedAt          DateTime?
+  supersededAt    DateTime?
+  createdByUserId String?
+  createdAt       DateTime            @default(now())
+
+  @@index([userId, purpose, createdAt])
+  @@index([institutionId])
+  @@map("account_tokens")
+}
 // ΓöÇΓöÇΓöÇ IDENTITY & RBAC (B-2) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 model InstitutionMembership {

@@ -31,7 +31,10 @@ export const AUDIT_ACTIONS = [
   { key: "campus_movement.shift.ended", module: "campus_movement", description: "Guard shift ended" },
   { key: "campus_movement.emergency.declared", module: "campus_movement", description: "Emergency declared" },
   { key: "campus_movement.emergency.resolved", module: "campus_movement", description: "Emergency resolved" },
-  // admin.* (14)
+  // admin.* (17)
+  { key: "admin.user.invite_sent", module: "admin", description: "Account activation invite sent" },
+  { key: "admin.users.invites_bulk_sent", module: "admin", description: "Bulk account activation invites sent" },
+  { key: "admin.user.rejected", module: "admin", description: "Pending registration rejected" },
   { key: "admin.user.created", module: "admin", description: "Institution user created" },
   { key: "admin.user.updated", module: "admin", description: "Institution user updated" },
   { key: "admin.user.deactivated", module: "admin", description: "Institution user deactivated" },

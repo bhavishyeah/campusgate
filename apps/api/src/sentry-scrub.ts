@@ -14,6 +14,13 @@ const FILTERED = "[Filtered]";
 const SENSITIVE_KEYS = new Set([
   "password",
   "passwordhash",
+  "newpassword",
+  "confirmpassword",
+  "confirm",
+  "resettoken",
+  "invitetoken",
+  "activationtoken",
+  "tokenhash",
   "token",
   "stepuptoken",
   "code",
@@ -27,13 +34,13 @@ const SENSITIVE_KEYS = new Set([
 
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-step-up"]);
 
-const BODYLESS_PATH = /^\/(api\/(auth|platform)|ws)(\/|\?|$)/i;
+const BODYLESS_PATH = /^\/(api\/(auth|platform|account-invites)|ws)(\/|\?|$)/i;
 
 const MAX_DEPTH = 12;
 
 /** Replace the value of any `token` query/fragment parameter inside a string. */
 export function scrubUrlString(value: string): string {
-  return value.replace(/([?&#]token=)[^&#\s"']*/gi, `$1${FILTERED}`);
+  return value.replace(/([?&#](?:token|resettoken|invitetoken|activationtoken)=)[^&#\s"']*/gi, `$1${FILTERED}`);
 }
 
 function pathOf(url: unknown): string {

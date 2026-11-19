@@ -7,9 +7,50 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+// bcrypt silently ignores bytes past 72, so the limit is in UTF-8 bytes, not
+// characters. TextEncoder (not Buffer) keeps this package browser-safe.
+export const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .refine((p) => new TextEncoder().encode(p).length <= 72, "Password must be at most 72 bytes");
+
+// Trimmed, NOT lowercased: stored emails keep their case and /login is case-sensitive.
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().email("Invalid email address").max(254),
+});
+
+// 32 random bytes => 43 base64url chars.
+export const tokenSchema = z
+  .string()
+  .min(40)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
+export const resetPasswordSchema = z.object({
+  token: tokenSchema,
+  password: passwordSchema,
+});
+
+export const activateAccountSchema = resetPasswordSchema;
+
+export const bulkInviteSchema = z
+  .object({
+    mode: z.enum(["ALL_PENDING", "SELECTED"]),
+    userIds: z.array(z.string().min(1).max(64)).max(100).optional(),
+    dryRun: z.boolean().default(false),
+    resendRecent: z.boolean().default(false),
+  })
+  .refine(
+    (v) => (v.mode === "SELECTED" ? !!v.userIds?.length : !v.userIds?.length),
+    { message: "userIds is required for SELECTED and not allowed for ALL_PENDING" },
+  )
+  .refine((v) => !(v.mode === "ALL_PENDING" && v.resendRecent), {
+    message: "resendRecent is only valid for SELECTED",
+  });
+
 export const registerSchema = z.object({
   email: z.string().email("Invalid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  password: passwordSchema,
   name: z.string().min(2, "Name must be at least 2 characters"),
   role: z.enum(["STUDENT"]), // Only students can self-register
   enrollmentNo: z.string().min(1, "Enrollment number is required"),
