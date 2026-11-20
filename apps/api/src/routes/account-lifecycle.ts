@@ -33,8 +33,10 @@ type Candidate = {
 function isEligible(u: Candidate): boolean {
   if (u.role === "SUPER_ADMIN") return false; // platform accounts, D15 (the membership check runs in issueToken)
   if (u.accountStatus !== "ACTIVE" || u.institution.status !== "ACTIVE") return false;
-  // A passwordless student is activated by this path, so the profile must be ACTIVE.
-  if (!u.passwordHash && u.role === "STUDENT" && u.studentProfile?.status !== "ACTIVE") return false;
+  // A passwordless student is activated by this path, so the profile must be ACTIVE or freshly ENROLLED.
+  if (!u.passwordHash && u.role === "STUDENT" && u.studentProfile?.status !== "ACTIVE" && u.studentProfile?.status !== "ENROLLED") {
+    return false;
+  }
   return true;
 }
 

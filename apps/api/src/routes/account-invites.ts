@@ -65,7 +65,12 @@ export async function accountInviteRoutes(app: FastifyInstance) {
         error: "This account already has a password. The user can use Forgot password.",
       });
     }
-    if (target.accountStatus !== "ACTIVE" || (kind === "student" && target.studentProfile?.status !== "ACTIVE")) {
+    // A freshly enrolled student (ENROLLED) must be resendable; bulk and ALL_PENDING stay ACTIVE only.
+    const studentStatus = target.studentProfile?.status;
+    if (
+      target.accountStatus !== "ACTIVE" ||
+      (kind === "student" && studentStatus !== "ACTIVE" && studentStatus !== "ENROLLED")
+    ) {
       return reply.status(409).send({ code: "ACCOUNT_NOT_ACTIVE", error: "This account is not active." });
     }
     if (!getEmailSender().isConfigured()) {

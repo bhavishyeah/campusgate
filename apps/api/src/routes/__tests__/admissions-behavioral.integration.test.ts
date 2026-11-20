@@ -605,6 +605,15 @@ describe("Phase-6 admissions behavioral (real DB, real routes)", () => {
     const changeTypes = history.map((h) => h.changeType).sort();
     expect(changeTypes).toContain("CREATED");
     expect(changeTypes).toContain("ENROLLED");
+
+    // Handoff: STUDENT role added next to APPLICANT, version bumped once, audited.
+    const membership = await adminClient.institutionMembership.findFirst({
+      where: { userId: applicantUserId, institutionId: instA },
+      select: { permissionsVersion: true, roles: { select: { role: { select: { key: true } } } } },
+    });
+    expect(membership!.roles.map((r) => r.role.key).sort()).toEqual(["APPLICANT", "STUDENT"]);
+    expect(membership!.permissionsVersion).toBe(1);
+    expect(await auditCount("admissions.student.access_granted")).toBe(1);
   }, 180_000);
 
   // ─── HEADLINE: enroll LINK (AC-7) ───────────────────────────────────────────

@@ -151,6 +151,7 @@ export const AUDIT_ACTIONS = [
   { key: "admissions.offer.accepted", module: "admissions", description: "Admission offer accepted by applicant" },
   { key: "admissions.offer.declined", module: "admissions", description: "Admission offer declined by applicant" },
   { key: "admissions.offer.expired", module: "admissions", description: "Admission offer expired" },
+  { key: "admissions.student.access_granted", module: "admissions", description: "STUDENT role granted to an enrolled applicant" },
   // fees.* (16) — Phase 7 Fees & Payments slice 1 mutations (past-tense). No
   // migration mirror (validated in recordAuditEvent). The webhook-level audits
   // that occur before/without a tenant tx (signature rejected, duplicate

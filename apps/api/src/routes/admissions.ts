@@ -1,4 +1,4 @@
-﻿import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import bcrypt from "bcrypt";
 import { withTenant, privilegedPrisma, Prisma } from "@campusgate/db";
 import {
@@ -18,6 +18,7 @@ import {
   declineOfferSchema,
   expireOfferSchema,
   enrollApplicationSchema,
+  grantStudentAccessSchema,
   updateApplicationDraftSchema,
 } from "@campusgate/shared";
 import { authenticate } from "../middleware/auth.js";
@@ -25,12 +26,24 @@ import { requirePermission, requireModuleActive } from "../services/authz-engine
 import { recordAuditEvent } from "../services/audit.js";
 import { notifyUser } from "../services/notifications.js";
 import { assertTransition, isTerminal, type ApplicationStatus } from "../services/admissions-state.js";
+import { getEmailSender } from "../services/email/index.js";
 import {
-  planEnrollment,
-  CROSS_PERSON_MESSAGE,
-  type ApplicantSnapshot,
-  type StudentProfileSnapshot,
-} from "../services/admissions-enroll.js";
+  EnrollConflict,
+  NUMBER_TAKEN_MESSAGE,
+  checkApplicantEligible,
+  createProfileForExistingUser,
+  deliverEnrolledNotice,
+  enrollmentNoTaken,
+  enrollmentPrefix,
+  enrollmentYear,
+  evaluateEnrollGuards,
+  generateEnrollmentNo,
+  grantStudentRole,
+  hasStudentRole,
+  isUniqueViolation as isP2002,
+  lockEnrollmentPrefix,
+  profileStatusDeny,
+} from "../services/student-handoff.js";
 
 const MODULE_KEY = "admissions" as const;
 const APPLICANT_ROLE_KEY = "APPLICANT" as const;
@@ -606,14 +619,23 @@ export async function admissionsRoutes(app: FastifyInstance) {
             program: { select: { id: true, name: true, code: true } },
             documents: { orderBy: { createdAt: "asc" } },
             offers: { orderBy: { offeredAt: "desc" } },
-            ...(canViewAll ? { reviews: { orderBy: { reviewedAt: "asc" } } } : {}),
+            ...(canViewAll
+              ? {
+                  reviews: { orderBy: { reviewedAt: "asc" } },
+                  enrollments: { select: { studentProfileId: true }, take: 1 },
+                }
+              : {}),
           },
         });
         if (!application) return { notFound: true as const };
         return { application };
       });
       if ("notFound" in outcome) return reply.status(404).send({ error: "application not found" });
-      return reply.send(outcome.application);
+      // Staff only (additive): the resulting student record, so the UI can link to it.
+      const { enrollments, ...rest } = outcome.application as typeof outcome.application & {
+        enrollments?: { studentProfileId: string }[];
+      };
+      return reply.send(canViewAll ? { ...rest, enrollment: enrollments?.[0] ?? null } : rest);
     },
   );
 
@@ -1608,11 +1630,13 @@ export async function admissionsRoutes(app: FastifyInstance) {
   );
 
   // ═══ ENROLL (admissions.enroll) ══════════════════════════════════════════════
-  // POST /applications/:id/enroll — create-or-link the StudentProfile (design §4)
-  // inside ONE withTenant tx. Requires Application.status=ACCEPTED + an ACCEPTED
-  // offer; resolves an intake session; runs the pure match; writes the profile
-  // (CREATE path populates every non-null column + CREATED/ENROLLED history
-  // directly), the Enrollment row, the audit, and notifies the applicant.
+  // POST /applications/:id/enroll — create-or-link the StudentProfile and hand the
+  // applicant over to the student side inside ONE withTenant tx: profile (+ history),
+  // STUDENT role + permissionsVersion bump, Enrollment row, application status,
+  // audit and notification. Preconditions live in evaluateEnrollGuards (shared with
+  // the read-only preview). A unique violation throws EnrollConflict, which rolls
+  // the whole transaction back; the DENIED audit is written afterwards. The enrolled
+  // email goes out after commit, best effort.
   app.post(
     "/applications/:id/enroll",
     { preHandler: [requirePermission("admissions.enroll"), requireModuleActive(gate)] },
@@ -1623,293 +1647,408 @@ export async function admissionsRoutes(app: FastifyInstance) {
       if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
       const { enrollmentNo, academicSessionId: bodySessionId } = parsed.data;
 
-      const outcome = await withTenant(institutionId, async (tx) => {
-        const application = await tx.application.findFirst({
-          where: { id, institutionId },
-          select: {
-            id: true,
-            status: true,
-            campaignId: true,
-            applicantUserId: true,
-            formData: true,
-            programId: true,
-          },
-        });
-        if (!application) return { notFound: true as const };
+      let outcome;
+      try {
+        outcome = await withTenant(institutionId, async (tx) => {
+          const application = await tx.application.findFirst({
+            where: { id, institutionId },
+            select: { id: true, status: true, campaignId: true, applicantUserId: true, formData: true },
+          });
+          if (!application) return { notFound: true as const };
 
-        // Idempotency layer 3: already enrolled → 409 (no second row).
-        const existingEnrollment = await tx.enrollment.findFirst({
-          where: { institutionId, applicationId: application.id },
-          select: { id: true },
-        });
-        if (existingEnrollment) {
-          await denyEnroll(tx, request, institutionId, application.id, "Application already enrolled");
-          return { conflict: "Application already enrolled" as const };
-        }
-
-        // State guard: must be ACCEPTED (terminal/other → 409).
-        if (application.status !== "ACCEPTED") {
-          await denyEnroll(tx, request, institutionId, application.id, "application is not ACCEPTED");
-          return { conflict: "application is not in ACCEPTED state" as const };
-        }
-
-        // Must have an ACCEPTED offer.
-        const acceptedOffer = await tx.admissionOffer.findFirst({
-          where: { institutionId, applicationId: application.id, status: "ACCEPTED" },
-          select: { id: true, offeredProgramId: true },
-        });
-        if (!acceptedOffer) {
-          await denyEnroll(tx, request, institutionId, application.id, "no ACCEPTED offer");
-          return { conflict: "no accepted offer for this application" as const };
-        }
-
-        // Resolve intake session: campaign.intakeSessionId, else body, else 422.
-        const campaign = await tx.admissionCampaign.findFirst({
-          where: { id: application.campaignId, institutionId },
-          select: { intakeSessionId: true },
-        });
-        let academicSessionId = campaign?.intakeSessionId ?? null;
-        if (!academicSessionId && bodySessionId) {
-          const s = await tx.academicSession.findFirst({
-            where: { id: bodySessionId, institutionId },
+          // Idempotency layer 1: already enrolled → 409 (no second row, no repair here).
+          const existingEnrollment = await tx.enrollment.findFirst({
+            where: { institutionId, applicationId: application.id },
             select: { id: true },
           });
-          if (!s) {
-            await denyEnroll(tx, request, institutionId, application.id, "academicSessionId not found");
-            return { unprocessable: "academicSessionId does not resolve" as const };
-          }
-          academicSessionId = s.id;
-        }
-        if (!academicSessionId) {
-          await denyEnroll(tx, request, institutionId, application.id, "no intake session");
-          return {
-            unprocessableMsg:
-              "No intake session: campaign has no intakeSessionId and none supplied" as const,
-          };
-        }
-
-        // Resolve the applicant User + the offered Program.
-        const applicantUser = await tx.user.findFirst({
-          where: { id: application.applicantUserId, institutionId },
-          select: { id: true, email: true },
-        });
-        if (!applicantUser) return { notFound: true as const };
-        const program = await tx.program.findFirst({
-          where: { id: acceptedOffer.offeredProgramId, institutionId },
-          select: { id: true, name: true, code: true, departmentId: true },
-        });
-        if (!program) {
-          await denyEnroll(tx, request, institutionId, application.id, "offered program not found");
-          return { unprocessable: "offered program no longer exists" as const };
-        }
-
-        const normalizedEmail = applicantUser.email ? applicantUser.email.trim().toLowerCase() : "";
-
-        // Run the pure match/plan against the two candidate profiles.
-        const byUserId = await loadProfileSnapshot(
-          tx,
-          institutionId,
-          { userId: application.applicantUserId },
-        );
-        const byEnrollmentNo = await loadProfileSnapshot(tx, institutionId, { enrollmentNo });
-
-        const applicantSnapshot: ApplicantSnapshot = {
-          userId: application.applicantUserId,
-          normalizedEmail,
-          enrollmentNo,
-        };
-        const plan = planEnrollment(applicantSnapshot, byUserId, byEnrollmentNo);
-
-        if (plan.kind === "REJECT_CROSS_PERSON") {
-          await denyEnroll(tx, request, institutionId, application.id, CROSS_PERSON_MESSAGE);
-          return { conflict: CROSS_PERSON_MESSAGE };
-        }
-
-        const now = new Date();
-        let studentProfileId: string;
-
-        if (plan.kind === "CREATE") {
-          // §4 name source: Application.formData name/fullName, else the
-          // applicant email, else the enrollmentNo (User has no name column).
-          const profileName = formDataName(application.formData) || normalizedEmail || enrollmentNo;
-          let created;
-          try {
-            created = await tx.studentProfile.create({
-              data: {
-                userId: application.applicantUserId,
-                institutionId,
-                enrollmentNo,
-                name: profileName,
-                departmentId: program.departmentId,
-                program: program.name ?? program.code,
-                programId: program.id,
-                semester: 1,
-                academicSessionId,
-                status: "ENROLLED",
-                admissionDate: now,
-              },
-              select: { id: true },
-            });
-          } catch (err) {
-            if (isUniqueViolation(err)) {
-              await denyEnroll(tx, request, institutionId, application.id, "duplicate student profile");
-              return { conflict: "a student profile already exists for this identity" as const };
-            }
-            throw err;
-          }
-          studentProfileId = created.id;
-
-          // Write the CREATED then ENROLLED history DIRECTLY (term-less flow):
-          // currentTermId/previousTermId null; newSessionId = resolved session.
-          await tx.studentProfileHistory.create({
-            data: {
-              institutionId,
-              studentProfileId,
-              changeType: "CREATED",
-              newStatus: "ENROLLED",
-              newProgramId: program.id,
-              newProgramText: program.name ?? program.code,
-              newSemester: 1,
-              newDepartmentId: program.departmentId,
-              newSessionId: academicSessionId,
-              newTermId: null,
-              previousTermId: null,
-              actorUserId: request.user.userId,
-              reason: "Admissions enroll: profile created",
-            },
-          });
-          await tx.studentProfileHistory.create({
-            data: {
-              institutionId,
-              studentProfileId,
-              changeType: "ENROLLED",
-              newStatus: "ENROLLED",
-              newProgramId: program.id,
-              newProgramText: program.name ?? program.code,
-              newSemester: 1,
-              newDepartmentId: program.departmentId,
-              newSessionId: academicSessionId,
-              newTermId: null,
-              previousTermId: null,
-              actorUserId: request.user.userId,
-              reason: "Admissions enroll: enrolled",
-            },
-          });
-        } else {
-          // LINK path (§2): reuse the existing profile; FLIP an APPLICANT status.
-          studentProfileId = plan.studentProfileId;
-          const existing = await tx.studentProfile.findFirst({
-            where: { id: studentProfileId, institutionId },
-            select: {
-              id: true,
-              status: true,
-              programId: true,
-              program: true,
-              departmentId: true,
-              academicSessionId: true,
-            },
-          });
-          if (!existing) return { notFound: true as const };
-
-          const fillProgram = existing.programId == null;
-          const fillSession = existing.academicSessionId == null;
-          const flip = plan.kind === "LINK_FLIP_APPLICANT";
-
-          await tx.studentProfile.update({
-            where: { id: existing.id },
-            data: {
-              ...(flip ? { status: "ENROLLED", admissionDate: now } : {}),
-              ...(fillProgram ? { programId: program.id, program: program.name ?? program.code } : {}),
-              ...(fillSession ? { academicSessionId } : {}),
-            },
-          });
-
-          if (flip) {
-            await tx.studentProfileHistory.create({
-              data: {
-                institutionId,
-                studentProfileId: existing.id,
-                changeType: "ENROLLED",
-                previousStatus: existing.status,
-                newStatus: "ENROLLED",
-                newProgramId: fillProgram ? program.id : existing.programId,
-                newProgramText: fillProgram ? program.name ?? program.code : existing.program,
-                newDepartmentId: existing.departmentId,
-                newSessionId: academicSessionId,
-                newTermId: null,
-                previousTermId: null,
-                actorUserId: request.user.userId,
-                reason: "Admissions enroll: existing profile enrolled",
-              },
-            });
-          }
-        }
-
-        // Create the Enrollment row (idempotency layer 1 backstops a race).
-        let enrollment;
-        try {
-          enrollment = await tx.enrollment.create({
-            data: {
-              institutionId,
-              applicationId: application.id,
-              studentProfileId,
-              academicSessionId,
-              enrolledByUserId: request.user.userId, // recorded actor id — token only
-            },
-          });
-        } catch (err) {
-          if (isUniqueViolation(err)) {
+          if (existingEnrollment) {
             await denyEnroll(tx, request, institutionId, application.id, "Application already enrolled");
             return { conflict: "Application already enrolled" as const };
           }
-          throw err;
-        }
 
-        // Move the application ACCEPTED → ENROLLED (legality-checked).
-        const legal = assertTransition("ACCEPTED", "ENROLLED");
-        if (!legal.ok) return { conflict: legal.message };
-        await tx.application.update({ where: { id: application.id }, data: { status: "ENROLLED" } });
-
-        await recordAuditEvent(
-          {
-            action: "admissions.application.enrolled",
-            result: "SUCCESS",
-            ...actor(request),
+          const guard = await evaluateEnrollGuards(tx, {
             institutionId,
-            resourceType: "Enrollment",
-            resourceId: enrollment.id,
-            metadata: {
-              applicationId: application.id,
-              studentProfileId,
-              created: plan.kind === "CREATE",
-              academicSessionId,
-            },
-          },
-          tx,
-        );
-        await notifyUser(
-          application.applicantUserId,
-          {
-            title: "You are enrolled",
-            body: "Congratulations — your admission is complete and you are now enrolled.",
-            type: "admissions.application.enrolled",
-            data: { applicationId: application.id, enrollmentId: enrollment.id, studentProfileId },
-          },
-          tx,
-        );
+            application,
+            bodySessionId,
+            enrollmentNo,
+            requireSession: true,
+          });
+          if ("deny" in guard) {
+            if (guard.deny.status === 404) return { notFound: true as const };
+            await denyEnroll(tx, request, institutionId, application.id, guard.deny.auditReason, guard.deny.auditMeta);
+            return { denied: guard.deny };
+          }
+          const { program, applicant, plan } = guard.ok;
+          const academicSessionId = guard.ok.academicSessionId as string;
 
-        return { enrollment, studentProfileId, created: plan.kind === "CREATE" };
-      });
+          const now = new Date();
+          let studentProfileId: string;
+          let finalEnrollmentNo: string;
+
+          if (plan.kind === "CREATE") {
+            let number = enrollmentNo;
+            if (number) {
+              // StudentProfile.enrollmentNo is globally unique; RLS hides other institutions.
+              if (await enrollmentNoTaken(number)) {
+                throw new EnrollConflict(NUMBER_TAKEN_MESSAGE, "enrollment number already registered");
+              }
+            } else {
+              const prefix = enrollmentPrefix(program.code, enrollmentYear(guard.ok.sessionStart, now));
+              await lockEnrollmentPrefix(tx, prefix);
+              number = await generateEnrollmentNo(prefix);
+            }
+            // §4 name source: Application.formData name/fullName, else the applicant email, else the number.
+            const profileName = formDataName(application.formData) || applicant.normalizedEmail || number;
+            const created = await createProfileForExistingUser(tx, {
+              institutionId,
+              userId: application.applicantUserId,
+              enrollmentNo: number,
+              name: profileName,
+              program,
+              academicSessionId,
+              actorUserId: request.user.userId,
+              now,
+            });
+            studentProfileId = created.id;
+            finalEnrollmentNo = number;
+          } else {
+            // LINK path (§2): reuse the existing profile; FLIP an APPLICANT status.
+            studentProfileId = plan.studentProfileId;
+            const existing = await tx.studentProfile.findFirst({
+              where: { id: studentProfileId, institutionId },
+              select: {
+                id: true,
+                status: true,
+                programId: true,
+                program: true,
+                departmentId: true,
+                academicSessionId: true,
+                enrollmentNo: true,
+              },
+            });
+            if (!existing) return { notFound: true as const };
+            finalEnrollmentNo = existing.enrollmentNo;
+
+            const fillProgram = existing.programId == null;
+            const fillSession = existing.academicSessionId == null;
+            const flip = plan.kind === "LINK_FLIP_APPLICANT";
+
+            await tx.studentProfile.update({
+              where: { id: existing.id },
+              data: {
+                ...(flip ? { status: "ENROLLED", admissionDate: now } : {}),
+                ...(fillProgram ? { programId: program.id, program: program.name ?? program.code } : {}),
+                ...(fillSession ? { academicSessionId } : {}),
+              },
+            });
+
+            if (flip) {
+              await tx.studentProfileHistory.create({
+                data: {
+                  institutionId,
+                  studentProfileId: existing.id,
+                  changeType: "ENROLLED",
+                  previousStatus: existing.status,
+                  newStatus: "ENROLLED",
+                  newProgramId: fillProgram ? program.id : existing.programId,
+                  newProgramText: fillProgram ? program.name ?? program.code : existing.program,
+                  newDepartmentId: existing.departmentId,
+                  newSessionId: academicSessionId,
+                  newTermId: null,
+                  previousTermId: null,
+                  actorUserId: request.user.userId,
+                  reason: "Admissions enroll: existing profile enrolled",
+                },
+              });
+            }
+          }
+
+          // STUDENT role (only ever STUDENT, only in this institution) + version bump.
+          const grant = await grantStudentRole(tx, { userId: application.applicantUserId, institutionId });
+
+          // Create the Enrollment row (idempotency layer 1 backstops a race).
+          let enrollment;
+          try {
+            enrollment = await tx.enrollment.create({
+              data: {
+                institutionId,
+                applicationId: application.id,
+                studentProfileId,
+                academicSessionId,
+                enrolledByUserId: request.user.userId, // recorded actor id — token only
+              },
+            });
+          } catch (err) {
+            if (isP2002(err)) {
+              throw new EnrollConflict("Application already enrolled", "Application already enrolled");
+            }
+            throw err;
+          }
+
+          // Move the application ACCEPTED → ENROLLED (legality-checked).
+          const legal = assertTransition("ACCEPTED", "ENROLLED");
+          if (!legal.ok) return { conflict: legal.message };
+          await tx.application.update({ where: { id: application.id }, data: { status: "ENROLLED" } });
+
+          await recordAuditEvent(
+            {
+              action: "admissions.application.enrolled",
+              result: "SUCCESS",
+              ...actor(request),
+              institutionId,
+              resourceType: "Enrollment",
+              resourceId: enrollment.id,
+              metadata: {
+                applicationId: application.id,
+                studentProfileId,
+                created: plan.kind === "CREATE",
+                academicSessionId,
+                roleGranted: grant.created,
+              },
+            },
+            tx,
+          );
+          if (grant.created) {
+            await recordAuditEvent(
+              {
+                action: "admissions.student.access_granted",
+                result: "SUCCESS",
+                ...actor(request),
+                institutionId,
+                resourceType: "User",
+                resourceId: application.applicantUserId,
+                metadata: { applicationId: application.id, studentProfileId, roleKey: "STUDENT" },
+              },
+              tx,
+            );
+          }
+          await notifyUser(
+            application.applicantUserId,
+            {
+              title: "You are enrolled",
+              body: "Congratulations — your admission is complete and you are now enrolled.",
+              type: "admissions.application.enrolled",
+              data: { applicationId: application.id, enrollmentId: enrollment.id, studentProfileId },
+            },
+            tx,
+          );
+
+          return {
+            enrollment,
+            studentProfileId,
+            enrollmentNo: finalEnrollmentNo,
+            created: plan.kind === "CREATE",
+            roleGranted: grant.created,
+            applicantUserId: application.applicantUserId,
+            applicantEmail: applicant.email,
+            hasPassword: applicant.hasPassword,
+            applicationId: application.id,
+          };
+        });
+      } catch (err) {
+        if (err instanceof EnrollConflict) {
+          // The tx rolled back (profile, role and version included). Audit afterwards, best effort.
+          try {
+            await withTenant(institutionId, (tx) =>
+              denyEnroll(tx, request, institutionId, id, err.auditReason),
+            );
+          } catch (auditErr) {
+            request.log.warn({ errClass: auditErr instanceof Error ? auditErr.name : "unknown" }, "enroll DENIED audit failed");
+          }
+          return reply.status(409).send({ error: err.message });
+        }
+        throw err;
+      }
 
       if ("notFound" in outcome) return reply.status(404).send({ error: "application not found" });
       if ("conflict" in outcome) return reply.status(409).send({ error: outcome.conflict });
-      if ("unprocessable" in outcome) return reply.status(422).send({ error: outcome.unprocessable });
-      if ("unprocessableMsg" in outcome) return reply.status(422).send({ error: outcome.unprocessableMsg });
+      if (outcome.denied) return reply.status(outcome.denied.status).send({ error: outcome.denied.message });
+
+      const notice = await deliverEnrolledNotice(
+        {
+          institutionId,
+          applicationId: outcome.applicationId,
+          userId: outcome.applicantUserId,
+          email: outcome.applicantEmail,
+          hasPassword: outcome.hasPassword,
+          actorUserId: request.user.userId,
+        },
+        request.log,
+      );
       return reply.status(201).send({
         enrollment: outcome.enrollment,
         studentProfileId: outcome.studentProfileId,
+        enrollmentNo: outcome.enrollmentNo,
         created: outcome.created,
+        roleGranted: outcome.roleGranted,
+        accountSetup: notice.accountSetup,
+        email: notice.email,
       });
+    },
+  );
+
+  // GET /applications/:id/enroll-preview — read-only: what enrolling would do. Same
+  // guards and messages as enroll, no audit, no writes (admissions.enroll).
+  app.get(
+    "/applications/:id/enroll-preview",
+    { preHandler: [requirePermission("admissions.enroll"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { id } = request.params as { id: string };
+
+      const outcome = await withTenant(institutionId, async (tx) => {
+        const application = await tx.application.findFirst({
+          where: { id, institutionId },
+          select: { id: true, status: true, campaignId: true, applicantUserId: true, formData: true },
+        });
+        if (!application) return { notFound: true as const };
+
+        if (application.status === "ENROLLED") {
+          const enrollment = await tx.enrollment.findFirst({
+            where: { institutionId, applicationId: application.id },
+            select: { studentProfileId: true },
+          });
+          const roleMissing = !(await hasStudentRole(tx, { userId: application.applicantUserId, institutionId }));
+          return { enrolled: { roleMissing, studentProfileId: enrollment?.studentProfileId ?? null } };
+        }
+
+        const guard = await evaluateEnrollGuards(tx, { institutionId, application, requireSession: false });
+        if ("deny" in guard) return { denied: guard.deny };
+        const { program, applicant, plan, existingProfile } = guard.ok;
+        const department = await tx.department.findFirst({
+          where: { id: program.departmentId, institutionId },
+          select: { name: true },
+        });
+        const willCreateProfile = plan.kind === "CREATE";
+        return {
+          ok: {
+            application,
+            program,
+            applicant,
+            existingProfile,
+            willCreateProfile,
+            departmentName: department?.name ?? null,
+            sessionName: guard.ok.sessionName,
+            sessionStart: guard.ok.sessionStart,
+            needsSession: !guard.ok.campaignHasSession,
+          },
+        };
+      });
+
+      if ("notFound" in outcome) return reply.status(404).send({ error: "application not found" });
+      if (outcome.denied) return reply.status(outcome.denied.status).send({ error: outcome.denied.message });
+      if (outcome.enrolled) {
+        return reply.send({ enrolled: true, roleMissing: outcome.enrolled.roleMissing, studentProfileId: outcome.enrolled.studentProfileId });
+      }
+
+      const p = outcome.ok;
+      let suggestedEnrollmentNo: string | null = null;
+      if (p.willCreateProfile) {
+        try {
+          suggestedEnrollmentNo = await generateEnrollmentNo(
+            enrollmentPrefix(p.program.code, enrollmentYear(p.sessionStart, new Date())),
+          );
+        } catch (err) {
+          if (!(err instanceof EnrollConflict)) throw err; // exhausted: the officer enters one
+        }
+      }
+      return reply.send({
+        enrolled: false,
+        roleMissing: false,
+        suggestedEnrollmentNo,
+        student: {
+          name: formDataName(p.application.formData) || p.applicant.normalizedEmail,
+          programName: p.program.name ?? p.program.code,
+          departmentName: p.departmentName,
+          sessionName: p.sessionName,
+          semester: 1,
+        },
+        willCreateProfile: p.willCreateProfile,
+        existingEnrollmentNo: p.existingProfile?.enrollmentNo ?? null,
+        studentProfileId: p.existingProfile?.id ?? null,
+        hasPassword: p.applicant.hasPassword,
+        emailConfigured: getEmailSender().isConfigured(),
+        grants: ["STUDENT"],
+        needsSession: p.needsSession,
+      });
+    },
+  );
+
+  // POST /applications/:id/grant-student-access — repair path for an ENROLLED
+  // application whose applicant lacks the STUDENT role (enrolled before the handoff
+  // existed, or a partial state). Creates no profile and no Enrollment; sends no email.
+  app.post(
+    "/applications/:id/grant-student-access",
+    { preHandler: [requirePermission("admissions.enroll"), requireModuleActive(gate)] },
+    async (request, reply) => {
+      const { institutionId } = request.user;
+      const { id } = request.params as { id: string };
+      const parsed = grantStudentAccessSchema.safeParse(request.body ?? {});
+      if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+      let outcome;
+      try {
+        outcome = await withTenant(institutionId, async (tx) => {
+          const application = await tx.application.findFirst({
+            where: { id, institutionId },
+            select: { id: true, status: true, applicantUserId: true },
+          });
+          if (!application) return { notFound: true as const };
+          if (application.status !== "ENROLLED") {
+            return { conflict: "application is not ENROLLED" as const };
+          }
+          const enrollment = await tx.enrollment.findFirst({
+            where: { institutionId, applicationId: application.id },
+            select: { studentProfileId: true, studentProfile: { select: { userId: true, status: true } } },
+          });
+          if (!enrollment || enrollment.studentProfile.userId !== application.applicantUserId) {
+            return { conflict: "Enrollment does not match the applicant" as const };
+          }
+
+          const eligible = await checkApplicantEligible(tx, { institutionId, userId: application.applicantUserId });
+          if ("deny" in eligible) {
+            await denyEnroll(tx, request, institutionId, application.id, eligible.deny.auditReason, eligible.deny.auditMeta);
+            return { denied: eligible.deny };
+          }
+          const blocked = profileStatusDeny(enrollment.studentProfile.status);
+          if (blocked) {
+            await denyEnroll(tx, request, institutionId, application.id, blocked.auditReason, blocked.auditMeta);
+            return { denied: blocked };
+          }
+          if (await hasStudentRole(tx, { userId: application.applicantUserId, institutionId })) {
+            return { conflict: "Student access already granted" as const };
+          }
+
+          await grantStudentRole(tx, { userId: application.applicantUserId, institutionId });
+          await recordAuditEvent(
+            {
+              action: "admissions.student.access_granted",
+              result: "SUCCESS",
+              ...actor(request),
+              institutionId,
+              resourceType: "User",
+              resourceId: application.applicantUserId,
+              metadata: {
+                applicationId: application.id,
+                studentProfileId: enrollment.studentProfileId,
+                roleKey: "STUDENT",
+                repaired: true,
+              },
+            },
+            tx,
+          );
+          return { studentProfileId: enrollment.studentProfileId };
+        });
+      } catch (err) {
+        // Two concurrent repairs: the loser hits the (membershipId, roleId) unique.
+        if (isP2002(err)) return reply.status(409).send({ error: "Student access already granted" });
+        throw err;
+      }
+
+      if ("notFound" in outcome) return reply.status(404).send({ error: "application not found" });
+      if ("conflict" in outcome) return reply.status(409).send({ error: outcome.conflict });
+      if (outcome.denied) return reply.status(outcome.denied.status).send({ error: outcome.denied.message });
+      return reply.send({ repaired: true, roleGranted: true, studentProfileId: outcome.studentProfileId });
     },
   );
   }); // end authenticated-surface child plugin (encapsulated `authenticate` hook)
@@ -1923,6 +2062,7 @@ export async function admissionsRoutes(app: FastifyInstance) {
     institutionId: string,
     applicationId: string,
     reason: string,
+    extra?: Record<string, unknown>,
   ): Promise<void> {
     await recordAuditEvent(
       {
@@ -1932,33 +2072,10 @@ export async function admissionsRoutes(app: FastifyInstance) {
         institutionId,
         resourceType: "Application",
         resourceId: applicationId,
-        metadata: { reason },
+        metadata: { reason, ...(extra ?? {}) },
       },
       tx,
     );
-  }
-
-  // Load a StudentProfile snapshot for the pure match, by userId or enrollmentNo.
-  async function loadProfileSnapshot(
-    tx: Prisma.TransactionClient,
-    institutionId: string,
-    key: { userId: string } | { enrollmentNo: string },
-  ): Promise<StudentProfileSnapshot | null> {
-    const where: Prisma.StudentProfileWhereInput =
-      "userId" in key
-        ? { institutionId, userId: key.userId }
-        : { institutionId, enrollmentNo: key.enrollmentNo };
-    const row = await tx.studentProfile.findFirst({
-      where,
-      select: { id: true, userId: true, status: true, user: { select: { email: true } } },
-    });
-    if (!row) return null;
-    return {
-      id: row.id,
-      userId: row.userId,
-      status: row.status,
-      ownerNormalizedEmail: row.user?.email ? row.user.email.trim().toLowerCase() : "",
-    };
   }
 
   // Extract a name/fullName from Application.formData (CREATE-path fallback).

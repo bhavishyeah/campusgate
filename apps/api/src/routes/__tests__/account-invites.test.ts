@@ -252,3 +252,32 @@ describe("summary", () => {
     expect(r.json()).toEqual({ notActivatedStudents: 2, emailConfigured: true, budget: { inviteCeiling: 250, inviteRemaining: 250 } });
   });
 });
+
+describe("single invite eligibility for freshly enrolled students", () => {
+  it("an ENROLLED passwordless student can be invited (resend); bulk, ALL_PENDING and summary still exclude them", async () => {
+    const enrolled = student(1, { studentProfile: { enrollmentNo: "E1", status: "ENROLLED" } });
+    const active = student(2);
+    const app = await makeApp();
+    const one = await call(app, "POST", `/students/${enrolled.id}`);
+    expect(one.statusCode).toBe(200);
+    expect(mail.sent).toHaveLength(1);
+    mail.sent.length = 0;
+    const bulk = await call(app, "POST", "/bulk-students", "ADMIN", { mode: "SELECTED", userIds: [enrolled.id], dryRun: false });
+    expect(bulk.json().skipped.notEligible).toBe(1);
+    expect(bulk.json().sent).toBe(0);
+    const all = await call(app, "POST", "/bulk-students", "ADMIN", { mode: "ALL_PENDING", dryRun: true });
+    expect(all.json().results ?? []).toEqual([]);
+    expect(all.json().eligibleTotal).toBe(1); // only the ACTIVE student
+    const summary = await call(app, "GET", "/summary", "ADMIN");
+    expect(summary.json().notActivatedStudents).toBe(1);
+    expect(active.id).toBeTruthy();
+  });
+
+  it.each(["SUSPENDED", "WITHDRAWN", "GRADUATED", "ON_LEAVE", "APPLICANT"])("a %s profile is still not eligible for the single invite", async (status) => {
+    const s = student(1, { studentProfile: { enrollmentNo: "E1", status } });
+    const res = await call(await makeApp(), "POST", `/students/${s.id}`);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("ACCOUNT_NOT_ACTIVE");
+    expect(mail.sent).toHaveLength(0);
+  });
+});

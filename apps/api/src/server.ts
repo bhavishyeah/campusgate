@@ -56,6 +56,7 @@ if (sentryEnabled) {
 await app.register(cors, {
   origin: process.env.FRONTEND_URL || "http://localhost:3000",
   credentials: true,
+  exposedHeaders: ["x-session-stale"],
 });
 
 const jwtSecret = process.env.JWT_SECRET || "campusgate-dev-secret-change-in-production";

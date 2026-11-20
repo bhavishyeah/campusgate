@@ -373,6 +373,73 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
+  // ─── REFRESH (re-sign the CURRENT claims; never extends the session) ──────
+  // authenticate has already re-read roles/permissions/version from the DB, so
+  // request.auth is fresh. The new token reuses the jti and expires when the
+  // old one would: the lifetime comes from the Session row (authenticate drops
+  // `exp` from request.user), or from the raw bearer token when it has no jti.
+  app.post("/refresh", { preHandler: [authenticate] }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) return reply.status(401).send({ error: "Unauthorized" });
+    if (!enforce(limiters.refreshUser, auth.userId, reply)) return reply;
+
+    const jti = request.user.jti;
+    let expiresAtMs: number;
+    try {
+      // Never later than the bearer token's own exp, nor than the Session row.
+      expiresAtMs = (await request.jwtDecode<{ exp: number }>()).exp * 1000;
+      if (jti) {
+        const session = await privilegedPrisma.session.findFirst({
+          where: { jti, revoked: false },
+          select: { expiresAt: true },
+        });
+        if (!session) return reply.status(401).send({ error: "Session revoked or expired" });
+        expiresAtMs = Math.min(expiresAtMs, session.expiresAt.getTime());
+      }
+    } catch (err) {
+      request.log.error({ err }, "refresh: could not determine session expiry");
+      return reply.status(500).send({ error: "Internal Server Error" });
+    }
+    const expiresIn = Math.floor((expiresAtMs - Date.now()) / 1000);
+    if (!Number.isFinite(expiresIn) || expiresIn < 1) {
+      return reply.status(401).send({ error: "Session revoked or expired" });
+    }
+
+    try {
+      const user = await privilegedPrisma.user.findUnique({
+        where: { id: auth.userId },
+        include: { studentProfile: true, hodProfile: true, guardProfile: true },
+      });
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const token = app.jwt.sign(
+        {
+          userId: auth.userId,
+          membershipId: auth.membershipId,
+          institutionId: auth.institutionId,
+          roles: auth.roles,
+          permissions: auth.permissions,
+          permissionsVersion: auth.permissionsVersion,
+          role: request.user.role,
+          ...(jti ? { jti } : {}),
+        },
+        { expiresIn },
+      );
+      return reply.send({
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          accountStatus: user.accountStatus,
+          profile: user.studentProfile || user.hodProfile || user.guardProfile,
+        },
+      });
+    } catch (err) {
+      request.log.error({ err }, "refresh: token sign failed");
+      return reply.status(500).send({ error: "Internal Server Error" });
+    }
+  });
+
   // ─── LOGOUT (revoke current session) ───────────────────────────────────────
   app.post("/logout", { preHandler: [authenticate] }, async (request, reply) => {
     const { userId } = request.user;

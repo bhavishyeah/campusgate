@@ -31,13 +31,28 @@ export function frontendOrigin(env: NodeJS.ProcessEnv = process.env): string | n
   }
 }
 
+/** Plain sign-in link (no token), or null when FRONTEND_URL is unset/invalid. */
+export function buildLoginLink(): string | null {
+  const origin = frontendOrigin();
+  return origin ? `${origin}/login` : null;
+}
+
 export function buildAccountLink(path: "/reset-password" | "/activate", token: string): string | null {
   const origin = frontendOrigin();
   if (!origin) return null;
   return `${origin}${path}#token=${encodeURIComponent(token)}`;
 }
 
-function layout(heading: string, intro: string, buttonLabel: string, link: string, expiry: string): { html: string; text: string } {
+const IGNORE_FOOTER = "If you did not request this, you can ignore this email. Your password will not change.";
+
+function layout(
+  heading: string,
+  intro: string,
+  buttonLabel: string,
+  link: string,
+  expiry: string,
+  footer: string = IGNORE_FOOTER,
+): { html: string; text: string } {
   const h = escapeHtml(heading);
   const html =
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1f2937;max-width:520px">` +
@@ -46,8 +61,8 @@ function layout(heading: string, intro: string, buttonLabel: string, link: strin
     `<p style="margin:0 0 16px">${escapeHtml(intro)}</p>` +
     `<p style="margin:0 0 16px"><a href="${escapeHtml(link)}" style="background:#1d4ed8;color:#ffffff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">${escapeHtml(buttonLabel)}</a></p>` +
     `<p style="margin:0 0 8px;font-size:13px">If the button does not work, copy this link into your browser:<br>${escapeHtml(link)}</p>` +
-    `<p style="margin:0 0 8px;font-size:13px">${escapeHtml(expiry)}</p>` +
-    `<p style="margin:0;font-size:13px;color:#6b7280">If you did not request this, you can ignore this email. Your password will not change.</p>` +
+    (expiry ? `<p style="margin:0 0 8px;font-size:13px">${escapeHtml(expiry)}</p>` : "") +
+    `<p style="margin:0;font-size:13px;color:#6b7280">${escapeHtml(footer)}</p>` +
     `</div>`;
   const text = [
     "Hello,",
@@ -56,8 +71,8 @@ function layout(heading: string, intro: string, buttonLabel: string, link: strin
     "",
     `${buttonLabel}: ${link}`,
     "",
-    expiry,
-    "If you did not request this, you can ignore this email. Your password will not change.",
+    ...(expiry ? [expiry] : []),
+    footer,
   ].join("\n");
   return { html, text };
 }
@@ -94,4 +109,40 @@ export function renderActivation(input: {
     `This link works once and expires in ${window}.`,
   );
   return { subject: `Activate your CampusGate account - ${inst}`, ...body };
+}
+
+const ENROLLED_FOOTER = "If you were not expecting this, contact your institution.";
+
+/** Enrolled notice for a user who already has a password: plain sign-in link, no token. */
+export function renderEnrolled(input: { institutionName: string; link: string }): RenderedEmail {
+  const inst = cleanInstitutionName(input.institutionName);
+  const body = layout(
+    "You're enrolled",
+    `Your admission to ${inst} is complete and you are now enrolled. Sign in to CampusGate to open your student portal.`,
+    "Sign in",
+    input.link,
+    "",
+    ENROLLED_FOOTER,
+  );
+  return { subject: `You're enrolled - ${inst}`, ...body };
+}
+
+/** Enrolled notice for a user with no password yet: the activation link is inside. */
+export function renderEnrolledActivation(input: {
+  institutionName: string;
+  link: string;
+  expiresInHours: number;
+}): RenderedEmail {
+  const inst = cleanInstitutionName(input.institutionName);
+  const days = input.expiresInHours % 24 === 0 ? input.expiresInHours / 24 : null;
+  const window = days !== null ? `${days} day${days === 1 ? "" : "s"}` : `${input.expiresInHours} hours`;
+  const body = layout(
+    "You're enrolled",
+    `Your admission to ${inst} is complete and you are now enrolled. Set a password to activate your CampusGate account and open your student portal.`,
+    "Activate account",
+    input.link,
+    `This link works once and expires in ${window}.`,
+    ENROLLED_FOOTER,
+  );
+  return { subject: `Activate your account, you're enrolled - ${inst}`, ...body };
 }

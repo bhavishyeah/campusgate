@@ -192,6 +192,9 @@ export async function authenticate(
   if (tokenUser.permissionsVersion === membership.permissionsVersion) {
     permissions = tokenUser.permissions;
   } else {
+    // Tell the web client its token is behind the membership so it can call
+    // POST /api/auth/refresh. The API itself is already correct for this request.
+    reply.header("x-session-stale", "1");
     try {
       permissions = resolvePermissions(membership.roles);
     } catch (err) {

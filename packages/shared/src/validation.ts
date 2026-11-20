@@ -847,14 +847,22 @@ export const declineOfferSchema = z
 
 export const expireOfferSchema = z.object({}).strict();
 
-// Enroll (§8). enrollmentNo required; academicSessionId optional (used when the
-// campaign has no intakeSessionId — resolution enforced in-handler, else 422).
+// Enroll (§8). enrollmentNo optional: blank or absent means the server generates
+// one at commit; academicSessionId optional (used when the campaign has no
+// intakeSessionId — resolution enforced in-handler, else 422).
 export const enrollApplicationSchema = z
   .object({
-    enrollmentNo: z.string().min(1, "Enrollment number is required"),
+    enrollmentNo: z.preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().trim().min(1, "Enrollment number is required").max(100).optional(),
+    ),
     academicSessionId: z.string().min(1).optional(),
   })
   .strict();
+
+// Repair endpoint for an ENROLLED application whose applicant lacks the STUDENT
+// role. No body: the user and the institution come from the application and token.
+export const grantStudentAccessSchema = z.object({}).strict();
 
 // ─── FEES & PAYMENTS (Phase 7 slice 1) ───────────────────────────────────────
 

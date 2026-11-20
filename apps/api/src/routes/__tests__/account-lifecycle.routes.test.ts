@@ -248,3 +248,20 @@ describe("GET /public-config", () => {
     vi.unstubAllEnvs();
   });
 });
+
+describe("POST /forgot-password for freshly enrolled students (M1)", () => {
+  beforeEach(() => { reset(); vi.unstubAllEnvs(); vi.stubEnv("FRONTEND_URL", "https://app.x.edu"); });
+  it("a passwordless ENROLLED student gets an activation email; SUSPENDED and WITHDRAWN students do not", async () => {
+    f.addUser({ email: "enrolled@x.edu", studentProfile: { enrollmentNo: "E1", status: "ENROLLED" } });
+    f.addUser({ email: "susp@x.edu", studentProfile: { enrollmentNo: "E2", status: "SUSPENDED" } });
+    f.addUser({ email: "wd@x.edu", studentProfile: { enrollmentNo: "E3", status: "WITHDRAWN" } });
+    const app = await makeApp();
+    for (const e of ["enrolled@x.edu", "susp@x.edu", "wd@x.edu"]) {
+      const r = await forgot(app, e);
+      expect(r.json()).toEqual(GENERIC);
+    }
+    await drainBackground();
+    expect(mail.sent.map((m) => m.to.email)).toEqual(["enrolled@x.edu"]);
+    expect(f.tokens[0].purpose).toBe("ACCOUNT_ACTIVATION");
+  });
+});

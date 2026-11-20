@@ -125,6 +125,7 @@ export const limiters = {
   registerEmail: createLimiter({ max: 5, windowMs: HOUR }),
   inviteAdmin: createLimiter({ max: 30, windowMs: MIN }),
   bulkAdmin: createLimiter({ max: 6, windowMs: HOUR }),
+  refreshUser: createLimiter({ max: 30, windowMs: MIN }),
 };
 
 /** Test helper: clear every shared limiter. */

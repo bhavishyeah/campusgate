@@ -16,6 +16,7 @@ import {
   buildAccountLink,
   getEmailSender,
   renderActivation,
+  renderEnrolledActivation,
   renderPasswordReset,
 } from "./email/index.js";
 
@@ -64,6 +65,8 @@ export interface IssueAndSendInput {
   institutionName: string;
   email: string;
   purpose: TokenPurpose;
+  /** "enrolled" swaps the activation mail for the "you're enrolled" variant (same link and token). */
+  template?: "enrolled";
   createdByUserId?: string | null;
   budgetCeiling: number;
   anonymous?: boolean;
@@ -108,7 +111,9 @@ export async function issueAndSend(input: IssueAndSendInput, deps: TokenDeps = {
   const mail =
     input.purpose === "PASSWORD_RESET"
       ? renderPasswordReset({ institutionName: input.institutionName, link, expiresInMinutes: RESET_TTL_MS / 60_000 })
-      : renderActivation({ institutionName: input.institutionName, link, expiresInHours: ACTIVATION_TTL_MS / 3_600_000 });
+      : input.template === "enrolled"
+        ? renderEnrolledActivation({ institutionName: input.institutionName, link, expiresInHours: ACTIVATION_TTL_MS / 3_600_000 })
+        : renderActivation({ institutionName: input.institutionName, link, expiresInHours: ACTIVATION_TTL_MS / 3_600_000 });
 
   try {
     await sender.send({
@@ -116,7 +121,12 @@ export async function issueAndSend(input: IssueAndSendInput, deps: TokenDeps = {
       subject: mail.subject,
       html: mail.html,
       text: mail.text,
-      tag: input.purpose === "PASSWORD_RESET" ? "password-reset" : "account-activation",
+      tag:
+        input.purpose === "PASSWORD_RESET"
+          ? "password-reset"
+          : input.template === "enrolled"
+            ? "student-enrolled"
+            : "account-activation",
     });
   } catch (err) {
     const reason = err instanceof EmailSendError ? err.reason : "PROVIDER_UNAVAILABLE";

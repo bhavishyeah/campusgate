@@ -16,7 +16,7 @@ export interface ApplicantSnapshot {
   /** The applicant User.email, already normalized (lowercased/trimmed). */
   normalizedEmail: string;
   /** The enrollment number supplied for this admission (the match key). */
-  enrollmentNo: string;
+  enrollmentNo?: string;
 }
 
 /** A matched StudentProfile snapshot (the tenant-scoped candidate), or null. */
