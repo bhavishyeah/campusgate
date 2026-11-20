@@ -43,7 +43,7 @@ type PersistedAuth = Pick<
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       token: null,
       user: null,
       roles: [],
@@ -64,7 +64,9 @@ export const useAuthStore = create<AuthState>()(
           institutionId: claims.institutionId ?? null,
         });
       },
-      logout: () =>
+      logout: () => {
+        // Read the token before clearing: the server-side unsubscribe needs it.
+        const token = get().token;
         set({
           token: null,
           user: null,
@@ -73,7 +75,11 @@ export const useAuthStore = create<AuthState>()(
           permissionsVersion: null,
           membershipId: null,
           institutionId: null,
-        }),
+        });
+        if (typeof window !== "undefined") {
+          void import("@/lib/push").then((m) => m.unsubscribeThisDevice(token)).catch(() => {});
+        }
+      },
       setHydrated: () => set({ hydrated: true }),
     }),
     {

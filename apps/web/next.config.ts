@@ -5,6 +5,8 @@ const withPWA = withPWAInit({
   dest: "public",
   disable: process.env.NODE_ENV === "development",
   register: true,
+  customWorkerSrc: "worker",
+  customWorkerDest: "public",
   workboxOptions: {
     // Account-link pages are never stored by the service worker (the default
     // "pages" rule would cache them for 24h). This rule must come first: the

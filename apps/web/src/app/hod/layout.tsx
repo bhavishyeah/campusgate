@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
+import { PushPrompt } from "@/components/push/PushPrompt";
 import { ModuleLinks } from "@/components/shell/ModuleLinks";
 import { SidebarFooter, SidebarHeader, SidebarNavLink } from "@/components/shell/SidebarParts";
 import { MobileTab, MobileTabBar } from "@/components/shell/MobileMoreSheet";
@@ -78,6 +79,7 @@ export default function HodLayout({
         </span>
         <NotificationBell />
       </header>
+      <PushPrompt />
       <main className="p-4 md:p-8">{children}</main>
     </div>
   );

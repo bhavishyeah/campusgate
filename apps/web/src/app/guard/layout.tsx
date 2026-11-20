@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
+import { PushPrompt } from "@/components/push/PushPrompt";
 import { Scan, Activity, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -73,6 +74,7 @@ export default function GuardLayout({
           </button>
         </div>
       </header>
+      <PushPrompt />
 
       <main className="p-4">{children}</main>
     </div>

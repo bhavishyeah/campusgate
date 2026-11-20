@@ -12,6 +12,7 @@ import { SIDEBAR_ID, contentOffsetClass, sidebarWidthClass } from "./sidebarStat
 import { useAuthStore } from "@/stores/auth";
 import { connectSocket } from "@/lib/socket";
 import { NotificationBell } from "@/components/NotificationBell";
+import { PushPrompt } from "@/components/push/PushPrompt";
 import { MfaEnrollment } from "@/components/MfaEnrollment";
 /** Gate Pass home links first (visible only to their legacy role), then the module NAV. */
 const SHELL_NAV: NavItem[] = [...GATE_PASS_NAV, ...NAV];
@@ -125,6 +126,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       {/* Main content */}
+      <PushPrompt />
       <main className="p-4 md:p-8">{children}</main>
       <MfaEnrollment open={mfaOpen} onClose={() => setMfaOpen(false)} />
     </div>

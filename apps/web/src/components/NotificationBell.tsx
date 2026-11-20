@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Bell, Check, CheckCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { onMessage } from "@/lib/socket";
@@ -246,6 +247,11 @@ export function NotificationBell({ variant = "light" }: { variant?: Variant }) {
                 ))}
               </ul>
             )}
+          </div>
+          <div className="border-t border-gray-100 px-4 py-2">
+            <Link href="/settings/notifications" onClick={() => setOpen(false)} className="text-xs font-medium text-primary-600 hover:text-primary-700">
+              Notification settings
+            </Link>
           </div>
         </div>
       )}
