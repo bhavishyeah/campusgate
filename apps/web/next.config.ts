@@ -1,10 +1,25 @@
 import type { NextConfig } from "next";
-import withPWAInit from "@ducanh2912/next-pwa";
+import withPWAInit, { runtimeCaching as defaultRuntimeCaching } from "@ducanh2912/next-pwa";
 
 const withPWA = withPWAInit({
   dest: "public",
   disable: process.env.NODE_ENV === "development",
   register: true,
+  workboxOptions: {
+    // Account-link pages are never stored by the service worker (the default
+    // "pages" rule would cache them for 24h). This rule must come first: the
+    // first matching route wins. The function is serialized into sw.js, so it
+    // must not reference anything outside its own body.
+    runtimeCaching: [
+      {
+        urlPattern: ({ url, sameOrigin }) =>
+          sameOrigin && /^\/(?:forgot-password|reset-password|activate)\/?$/.test(url.pathname),
+        handler: "NetworkOnly",
+        method: "GET",
+      },
+      ...defaultRuntimeCaching,
+    ],
+  },
 });
 
 const nextConfig: NextConfig = {
