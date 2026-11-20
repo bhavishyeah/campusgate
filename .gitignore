@@ -39,3 +39,4 @@ packages/db/generated/
 # Ops scripts: local secrets / exports (never commit)
 scripts/.seed-credentials.local.json*
 scripts/.cleanup-export.local.json*
+scripts/.vapid-keys.local.json*
