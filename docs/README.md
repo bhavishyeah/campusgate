@@ -34,6 +34,7 @@ the relevant docs here. When a decision changes, change it **here first**, then 
 | [`superadmin-security.md`](./superadmin-security.md) | Super Admin model (C): zero standing access, break-glass support grants, MFA, AuditLog v2 | Complete | 1.0 |
 | [`database.md`](./database.md) | Neon → Supabase migration, connection strategy, versioned migrations, Phase 0 schema additions | Complete | 1.0 |
 | [`roadmap.md`](./roadmap.md) | Phases 0–10: objective, dependencies, scope, schema, security/tenancy notes, tests, Definition of Done | Complete | 1.0 |
+| [`admissions-handoff.md`](./admissions-handoff.md) | Admissions to student handoff: what enroll creates, enrollment numbers, the STUDENT role grant, email, session refresh | Complete | 1.0 |
 
 > Status values: **Draft** (being written) → **Complete** (reviewed, build-ready) →
 > **Superseded** (replaced; see changelog).

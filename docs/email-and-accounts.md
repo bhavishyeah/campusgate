@@ -54,7 +54,11 @@ Both are short, plain English, with HTML and text versions, the institution name
 
 Token rules: 32 random bytes, base64url, only the SHA-256 hash is stored. Each link works once, works only on its own page (a reset link fails on `/activate` and the reverse), and is cancelled when a newer link of the same kind is issued. A successful reset or activation signs the user out of every session and cancels their other links. The token travels in the URL fragment, so it never reaches a server log; the page removes it from the address bar after reading it. The three pages send `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `X-Frame-Options: DENY`, and the service worker never caches them.
 
-Who can use Forgot password: active accounts in active institutions. Students also need an active student profile to activate (any active account may reset an existing password). Pending-approval accounts get nothing. The response is the same in every case.
+Who can use Forgot password: active accounts in active institutions. Students also need an active or newly enrolled (ENROLLED) student profile to activate (any active account may reset an existing password). Pending-approval accounts get nothing. The response is the same in every case.
+
+### Enrolled email
+
+Enrolling an applicant also sends one email (an activation link inside it for applicants with no password yet). See [dmissions-handoff.md](./admissions-handoff.md). It uses the same sender, the same daily budget for the activation variant, and a 20-invite reserve for the plain variant.
 
 ### Admin invites
 
