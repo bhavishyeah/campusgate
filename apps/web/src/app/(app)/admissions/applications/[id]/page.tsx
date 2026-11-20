@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { SectionNav, ADMISSIONS_STAFF_NAV } from "@/components/ui-ext/SectionNav";
 import { RecordReviewDialog } from "@/components/admissions/RecordReviewDialog";
+import { ReasonDialog } from "@/components/library/ReasonDialog";
 import { StatusActionBar } from "@/components/admissions/StatusActionBar";
 import { ApiError } from "@/lib/api";
 import { describeApiError } from "@/lib/apiErrors";
@@ -29,7 +30,9 @@ import { ApplicationStatusBadge } from "@/features/admissions/ApplicationStatusB
 import {
   useApplication,
   useCampaign,
+  useEnrollPreview,
   useExpireOffer,
+  useGrantStudentAccess,
   useVerifyDocument,
 } from "@/features/admissions/hooks";
 import { canActOnOffer, offeredPrograms, reviewDecisionLabel } from "@/features/admissions/labels";
@@ -85,6 +88,39 @@ function StaffApplicationInner() {
   return <StaffApplicationBody application={app.data} campaign={campaign.data} />;
 }
 
+/**
+ * Repair path: shown only when the applicant was enrolled without the STUDENT role
+ * (enrolled before the handoff existed, or a partial state). Mounted inside
+ * <Can admissions.enroll>, the key the preview and grant endpoints enforce.
+ */
+function GrantStudentAccess({ applicationId }: { applicationId: string }) {
+  const preview = useEnrollPreview(applicationId, true);
+  const grant = useGrantStudentAccess(applicationId);
+  const [open, setOpen] = useState(false);
+  if (!preview.data?.roleMissing) return null;
+  return (
+    <div className="rounded-lg border border-warning-500 bg-warning-50 px-4 py-3 text-sm space-y-2">
+      <p>This student does not have student access yet, so they cannot use the student portal.</p>
+      <Button size="sm" onClick={() => setOpen(true)}>
+        Grant student access
+      </Button>
+      <ReasonDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Grant student access"
+        description="Gives this enrolled applicant the student role in this institution. No email is sent."
+        confirmLabel="Grant student access"
+        hideField
+        pending={grant.isPending}
+        onConfirm={async () => {
+          await grant.mutateAsync();
+          toast.success("Student access granted.");
+        }}
+      />
+    </div>
+  );
+}
+
 function offerProgramName(application: Application, offer: ApplicationOffer, campaign: Campaign | undefined): string {
   const fromCampaign = campaign ? offeredPrograms(campaign).find((p) => p.id === offer.offeredProgramId) : undefined;
   if (fromCampaign) return fromCampaign.name;
@@ -129,12 +165,23 @@ function StaffApplicationBody({ application, campaign }: { application: Applicat
           This applicant is enrolled.
           <Can permission="students.view">
             {" "}
-            <span className="text-xs">Open the student list to find the record.</span>{" "}
-            <Link href="/sis/students" className="underline">
-              Students
-            </Link>
+            {application.enrollment?.studentProfileId ? (
+              <Link href={`/sis/students/${application.enrollment.studentProfileId}`} className="underline">
+                Open student record
+              </Link>
+            ) : (
+              <Link href="/sis/students" className="underline">
+                Students
+              </Link>
+            )}
           </Can>
         </div>
+      ) : null}
+
+      {enrolled ? (
+        <Can permission="admissions.enroll">
+          <GrantStudentAccess applicationId={application.id} />
+        </Can>
       ) : null}
 
       <section className="space-y-2">

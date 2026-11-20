@@ -26,6 +26,7 @@ import { InlineError } from "@/components/ui-ext/InlineError";
 import { AddDocumentDialog } from "@/components/admissions/AddDocumentDialog";
 import { DynamicFormFields, ReadOnlyValue } from "@/components/admissions/DynamicFormFields";
 import { ProgressTimeline } from "@/components/admissions/ProgressTimeline";
+import { StudentPortalLink } from "@/components/admissions/StudentPortalLink";
 import { ReasonDialog } from "@/components/library/ReasonDialog";
 import { ApiError } from "@/lib/api";
 import { describeApiError } from "@/lib/apiErrors";
@@ -114,8 +115,10 @@ function MyApplicationBody({ application, campaign }: { application: Application
       </div>
 
       {application.status === "ENROLLED" ? (
-        <div role="status" className="bg-success-50 border border-success-500 text-success-700 px-4 py-3 rounded-lg text-sm">
-          You have been enrolled. Your admission is complete.
+        <div role="status" className="bg-success-50 border border-success-500 text-success-700 px-4 py-3 rounded-lg text-sm space-y-2">
+          <p className="font-semibold">You&apos;re enrolled</p>
+          <p>Your admission is complete. Your student record is ready.</p>
+          <StudentPortalLink />
         </div>
       ) : null}
 

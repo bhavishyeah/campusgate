@@ -258,18 +258,69 @@ export function useExpireOffer(applicationId: string) {
   });
 }
 
+export type EnrollEmailOutcome = "SENT" | "SKIPPED_NOT_CONFIGURED" | "SKIPPED_BUDGET" | "FAILED";
+export type AccountSetupOutcome = "INVITE_SENT" | "INVITE_NOT_SENT" | "HAS_PASSWORD";
+
 export interface EnrollResult {
   enrollment: unknown;
   studentProfileId: string;
+  enrollmentNo: string;
   created: boolean;
+  roleGranted: boolean;
+  accountSetup: AccountSetupOutcome;
+  email: EnrollEmailOutcome;
+}
+
+/** GET /applications/:id/enroll-preview. `enrolled: true` carries only roleMissing + studentProfileId. */
+export interface EnrollPreview {
+  enrolled: boolean;
+  roleMissing: boolean;
+  studentProfileId: string | null;
+  suggestedEnrollmentNo?: string | null;
+  student?: {
+    name: string;
+    programName: string;
+    departmentName: string | null;
+    sessionName: string | null;
+    semester: number;
+  };
+  willCreateProfile?: boolean;
+  existingEnrollmentNo?: string | null;
+  hasPassword?: boolean;
+  emailConfigured?: boolean;
+  grants?: string[];
+  needsSession?: boolean;
+}
+
+/** Only mounted inside <Can admissions.enroll>; the server gates the same key. */
+export function useEnrollPreview(id: string, enabled: boolean) {
+  const allowed = can("admissions.enroll", usePerms());
+  return useQuery<EnrollPreview, ApiError>({
+    queryKey: admissionsKeys.enrollPreview(id),
+    queryFn: () => api.get(`/api/admissions/applications/${id}/enroll-preview`),
+    enabled: enabled && allowed,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
 }
 
 /** toast:false — EnrollDialog renders identity/conflict errors inline. */
 export function useEnroll(id: string) {
   const qc = useQueryClient();
-  return useMutation<EnrollResult, ApiError, { enrollmentNo: string; academicSessionId?: string }>({
+  return useMutation<EnrollResult, ApiError, { enrollmentNo?: string; academicSessionId?: string }>({
     mutationFn: (body) => api.post(`/api/admissions/applications/${id}/enroll`, body),
-    onSuccess: () => invalidate(qc, APP_KEYS(id)),
+    onSuccess: () => invalidate(qc, [...APP_KEYS(id), admissionsKeys.enrollPreview(id)]),
+  });
+}
+
+/** Repair path for an ENROLLED application whose applicant lacks the STUDENT role. */
+export function useGrantStudentAccess(id: string) {
+  const qc = useQueryClient();
+  // The API rejects a body-less JSON POST, so send {}.
+  return useMutation<{ repaired: boolean; roleGranted: boolean; studentProfileId: string }, ApiError, void>({
+    mutationFn: () => api.post(`/api/admissions/applications/${id}/grant-student-access`, {}),
+    onSuccess: () => invalidate(qc, [...APP_KEYS(id), admissionsKeys.enrollPreview(id)]),
   });
 }
 

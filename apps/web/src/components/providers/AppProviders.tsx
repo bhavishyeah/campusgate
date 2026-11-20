@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
-import { ApiError } from "@/lib/api";
+import { ApiError, setSessionRefreshListener } from "@/lib/api";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const [qc] = useState(
@@ -25,6 +25,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       })
   );
 
+  // After a silent token refresh (role change), cached permission-driven data is stale.
+  useEffect(() => {
+    setSessionRefreshListener(() => {
+      void qc.invalidateQueries();
+    });
+    return () => setSessionRefreshListener(null);
+  }, [qc]);
   return (
     <QueryClientProvider client={qc}>
       {children}

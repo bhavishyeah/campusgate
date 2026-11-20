@@ -49,6 +49,13 @@ describe("landingRoute", () => {
     expect(landingRoute(["APPLICANT"], ["admissions.view_own"])).toBe("/admissions/my");
   });
 
+  it("sends an enrolled applicant (APPLICANT + STUDENT roles, real permissions) to the student home", () => {
+    const perms = [...new Set([...(ROLE_PERMISSIONS.APPLICANT ?? []), ...(ROLE_PERMISSIONS.STUDENT ?? [])])];
+    expect(landingRoute(["APPLICANT", "STUDENT"], perms)).toBe("/student");
+    // The applicant alone, with the real APPLICANT permissions, is unchanged.
+    expect(landingRoute(["APPLICANT"], [...(ROLE_PERMISSIONS.APPLICANT ?? [])])).toBe("/admissions/my");
+  });
+
   it("keeps a GatePass STUDENT on /student even holding library.view_own", () => {
     expect(landingRoute(["STUDENT"], ["library.view_own", "fees.view_own"])).toBe("/student");
   });

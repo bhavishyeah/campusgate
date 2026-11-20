@@ -141,7 +141,8 @@ export const interviewFormSchema = z.object({
 export type InterviewFormValues = z.infer<typeof interviewFormSchema>;
 
 export const enrollFormSchema = z.object({
-  enrollmentNo: z.string().trim().min(1, "Enrollment number is required").max(100),
+  // Blank means "generate on save" (the server allocates the number).
+  enrollmentNo: z.string().trim().max(100),
   academicSessionId: z.string(),
 });
 export type EnrollFormValues = z.infer<typeof enrollFormSchema>;

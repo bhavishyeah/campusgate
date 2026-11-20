@@ -93,6 +93,8 @@ export interface Application {
   createdAt: string;
   campaign?: { id: string; name: string };
   program?: ProgramRef;
+  /** Staff reads only: the student record created or linked by the enroll step. */
+  enrollment?: { studentProfileId: string } | null;
   documents?: ApplicationDocument[];
   offers?: ApplicationOffer[];
   reviews?: ApplicationReview[];

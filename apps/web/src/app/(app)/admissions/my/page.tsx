@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui-ext/EmptyState";
 import { InlineError } from "@/components/ui-ext/InlineError";
 import { NoAccess } from "@/components/ui-ext/NoAccess";
 import { describeApiError } from "@/lib/apiErrors";
+import { StudentPortalLink } from "@/components/admissions/StudentPortalLink";
 import { ApplicationStatusBadge } from "@/features/admissions/ApplicationStatusBadge";
 import { useMyApplications, useOpenCampaigns } from "@/features/admissions/hooks";
 
@@ -66,6 +67,7 @@ function MyAdmissionsInner() {
                       <Link href={`/admissions/my/${a.id}`}>Open</Link>
                     </Button>
                   </div>
+                  {a.status === "ENROLLED" ? <StudentPortalLink size="sm" /> : null}
                 </CardContent>
               </Card>
             ))}

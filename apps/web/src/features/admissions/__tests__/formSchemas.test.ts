@@ -4,6 +4,7 @@ import {
   buildApplyValues,
   buildCampaignPatch,
   campaignFormSchema,
+  enrollFormSchema,
   offerFormSchema,
   toFormData,
   type CampaignFormValues,
@@ -94,5 +95,13 @@ describe("offerFormSchema", () => {
   it("accepts blank or future expiry", () => {
     expect(offerFormSchema.safeParse({ offeredProgramId: "p", expiresAt: "" }).success).toBe(true);
     expect(offerFormSchema.safeParse({ offeredProgramId: "p", expiresAt: "2999-01-01T00:00" }).success).toBe(true);
+  });
+});
+
+describe("enrollFormSchema", () => {
+  it("accepts a blank enrollment number (the server generates one) and trims a typed one", () => {
+    expect(enrollFormSchema.parse({ enrollmentNo: "   ", academicSessionId: "" }).enrollmentNo).toBe("");
+    expect(enrollFormSchema.parse({ enrollmentNo: " A1 ", academicSessionId: "" }).enrollmentNo).toBe("A1");
+    expect(enrollFormSchema.safeParse({ enrollmentNo: "x".repeat(101), academicSessionId: "" }).success).toBe(false);
   });
 });

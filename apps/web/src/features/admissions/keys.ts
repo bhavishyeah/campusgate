@@ -11,4 +11,5 @@ export const admissionsKeys = {
   openCampaigns: (page: number) => ["admissions", "open-campaigns", "list", page] as const,
   openCampaign: (id: string) => ["admissions", "open-campaigns", "detail", id] as const,
   mine: () => ["admissions", "mine"] as const,
+  enrollPreview: (id: string) => ["admissions", "enroll-preview", id] as const,
 } as const;
