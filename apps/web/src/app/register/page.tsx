@@ -40,6 +40,16 @@ export default function RegisterPage() {
       .catch(() => setError("Could not load courses. Please try again later."));
   }, []);
 
+  // If the config call fails the form is shown; the API still enforces the flag.
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
+
+  useEffect(() => {
+    api
+      .get<{ selfRegistrationEnabled: boolean }>("/api/auth/public-config")
+      .then((c) => setRegistrationEnabled(c.selfRegistrationEnabled !== false))
+      .catch(() => {});
+  }, []);
+
   const update = (field: keyof typeof form) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => setForm({ ...form, [field]: e.target.value });
@@ -113,7 +123,24 @@ export default function RegisterPage() {
           <p className="text-primary-200 mt-2">Student Registration</p>
         </div>
 
+        {!registrationEnabled ? (
+          <div className="card text-center">
+            <p className="text-sm text-gray-700 mb-4">
+              Self-registration is disabled. Contact your institution.
+            </p>
+            <a href="/login" className="text-primary-600 hover:underline text-sm">
+              Back to Sign In
+            </a>
+          </div>
+        ) : (
         <div className="card">
+          <p className="bg-primary-50 text-primary-700 px-4 py-3 rounded-lg text-sm mb-4">
+            Already on the college list? Use the activation link we emailed you, or{" "}
+            <a href="/forgot-password" className="underline">
+              use Forgot password
+            </a>
+            .
+          </p>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label htmlFor="name" className="label">
@@ -285,6 +312,7 @@ export default function RegisterPage() {
             </a>
           </p>
         </div>
+        )}
       </div>
     </div>
   );

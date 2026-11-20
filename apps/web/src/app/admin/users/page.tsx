@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { UserPlus, Check, Ban, RotateCcw, X } from "lucide-react";
+import { UserPlus, Check, Ban, RotateCcw, X, Mail, Trash2 } from "lucide-react";
+import { BulkInviteDialog } from "@/components/admin/BulkInviteDialog";
 
 interface Department {
   id: string;
@@ -21,6 +22,8 @@ interface UserRow {
   role: "STUDENT" | "HOD" | "GUARD" | "ADMIN";
   accountStatus: "ACTIVE" | "INACTIVE" | "PENDING_APPROVAL";
   createdAt: string;
+  hasPassword?: boolean;
+  lastInviteSentAt?: string | null;
   studentProfile?: { name: string; enrollmentNo: string; department?: { name: string } };
   hodProfile?: { name: string; department?: { name: string } };
   guardProfile?: { name: string; assignedGates?: { gate: { name: string } }[] };
@@ -43,6 +46,16 @@ const roleStyles: Record<string, string> = {
   GUARD: "bg-green-50 text-green-700",
   ADMIN: "bg-gray-800 text-white",
 };
+
+function inviteErrorText(err: any): string {
+  const code = err?.data?.code;
+  if (code === "EMAIL_NOT_CONFIGURED") return "Email delivery is not configured on the server.";
+  if (code === "EMAIL_DAILY_LIMIT") return "The daily email limit is used up. Try again tomorrow.";
+  if (code === "EMAIL_PROVIDER_LIMIT") return "The email provider limit was reached. Try again later.";
+  if (code === "INVITE_THROTTLED") return "This user was invited several times recently. Try again later.";
+  if (code === "EMAIL_SEND_FAILED") return "The email could not be sent. Try again.";
+  return err?.message || "Failed to send invite";
+}
 
 function profileName(u: UserRow) {
   return u.studentProfile?.name || u.hodProfile?.name || u.guardProfile?.name || "—";
@@ -69,6 +82,9 @@ export default function AdminUsersPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [gates, setGates] = useState<Gate[]>([]);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const [confirm, setConfirm] = useState<{ kind: "invite" | "reject"; user: UserRow } | null>(null);
+  const [showBulk, setShowBulk] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -95,7 +111,7 @@ export default function AdminUsersPage() {
     api.get<Gate[]>("/api/admin/gates").then(setGates).catch(() => {});
   }, []);
 
-  const act = async (id: string, action: "approve" | "deactivate" | "reactivate") => {
+  const act = async (id: string, action: "approve" | "deactivate" | "reactivate" | "reject") => {
     setBusyId(id);
     setError("");
     try {
@@ -108,17 +124,50 @@ export default function AdminUsersPage() {
     }
   };
 
+  const sendInvite = async (u: UserRow) => {
+    setBusyId(u.id);
+    setError("");
+    setNotice("");
+    try {
+      const path = u.role === "STUDENT" ? "students" : "users";
+      await api.post(`/api/account-invites/${path}/${u.id}`);
+      setNotice(`Invite sent to ${u.email}.`);
+      await fetchUsers();
+    } catch (err: any) {
+      setError(inviteErrorText(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const runConfirmed = async () => {
+    if (!confirm) return;
+    const { kind, user } = confirm;
+    setConfirm(null);
+    if (kind === "invite") await sendInvite(user);
+    else await act(user.id, "reject");
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
         <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-        <button
-          className="btn-primary flex items-center gap-2"
-          onClick={() => setShowCreate(true)}
-        >
-          <UserPlus className="w-4 h-4" />
-          Create User
-        </button>
+        <div className="flex gap-2">
+          <button
+            className="btn-secondary flex items-center gap-2"
+            onClick={() => setShowBulk(true)}
+          >
+            <Mail className="w-4 h-4" />
+            Invite not-activated students
+          </button>
+          <button
+            className="btn-primary flex items-center gap-2"
+            onClick={() => setShowCreate(true)}
+          >
+            <UserPlus className="w-4 h-4" />
+            Create User
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -175,6 +224,18 @@ export default function AdminUsersPage() {
           role="alert"
         >
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div
+          className="bg-success-50 border border-success-500 text-success-700 px-4 py-3 rounded-lg text-sm mb-4 flex items-start justify-between gap-4"
+          role="status"
+        >
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")} aria-label="Dismiss message">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -244,6 +305,26 @@ export default function AdminUsersPage() {
                           Approve
                         </button>
                       )}
+                      {u.accountStatus === "PENDING_APPROVAL" && (
+                        <button
+                          className="flex items-center gap-1 text-xs bg-danger-500 hover:bg-danger-600 text-white px-2 py-1 rounded disabled:opacity-50"
+                          onClick={() => setConfirm({ kind: "reject", user: u })}
+                          disabled={busyId === u.id}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Reject
+                        </button>
+                      )}
+                      {u.accountStatus === "ACTIVE" && u.hasPassword === false && (
+                        <button
+                          className="flex items-center gap-1 text-xs bg-primary-600 hover:bg-primary-700 text-white px-2 py-1 rounded disabled:opacity-50"
+                          onClick={() => setConfirm({ kind: "invite", user: u })}
+                          disabled={busyId === u.id}
+                        >
+                          <Mail className="w-3 h-3" />
+                          {u.lastInviteSentAt ? "Resend invite" : "Send invite"}
+                        </button>
+                      )}
                       {u.accountStatus === "ACTIVE" && (
                         <button
                           className="flex items-center gap-1 text-xs bg-danger-500 hover:bg-danger-600 text-white px-2 py-1 rounded disabled:opacity-50"
@@ -301,12 +382,60 @@ export default function AdminUsersPage() {
           departments={departments}
           gates={gates}
           onClose={() => setShowCreate(false)}
-          onCreated={(pw) => {
+          onCreated={(res) => {
             setShowCreate(false);
-            setTempPassword(pw);
+            setTempPassword(res.tempPassword ?? null);
+            if (!res.tempPassword) {
+              setNotice(
+                res.inviteSent
+                  ? `Invite sent to ${res.email}.`
+                  : "User created but the invite was not sent. Use Resend invite."
+              );
+            }
             fetchUsers();
           }}
         />
+      )}
+
+      {showBulk && (
+        <BulkInviteDialog
+          onClose={() => {
+            setShowBulk(false);
+            fetchUsers();
+          }}
+        />
+      )}
+
+      {confirm && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
+        >
+          <div className="bg-white rounded-xl p-6 w-full max-w-md">
+            <h2 id="confirm-title" className="text-lg font-semibold mb-2">
+              {confirm.kind === "invite"
+                ? confirm.user.lastInviteSentAt
+                  ? "Resend invite?"
+                  : "Send invite?"
+                : "Reject registration?"}
+            </h2>
+            <p className="text-sm text-gray-600 mb-6">
+              {confirm.kind === "invite"
+                ? `Email an activation link to ${confirm.user.email}. Any earlier link stops working.`
+                : "Reject and delete this registration? The email and enrollment number become available again."}
+            </p>
+            <div className="flex gap-3">
+              <button className="btn-secondary flex-1" onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button className="btn-primary flex-1" onClick={runConfirmed}>
+                {confirm.kind === "invite" ? (confirm.user.lastInviteSentAt ? "Resend" : "Send") : "Reject"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -321,7 +450,7 @@ function CreateUserModal({
   departments: Department[];
   gates: Gate[];
   onClose: () => void;
-  onCreated: (tempPassword: string) => void;
+  onCreated: (res: { tempPassword?: string; inviteSent?: boolean; email: string }) => void;
 }) {
   const [form, setForm] = useState({
     name: "",
@@ -359,8 +488,8 @@ function CreateUserModal({
         payload.gateIds = form.gateIds;
       }
 
-      const res = await api.post<{ tempPassword: string }>("/api/admin/users", payload);
-      onCreated(res.tempPassword);
+      const res = await api.post<{ tempPassword?: string; inviteSent?: boolean }>("/api/admin/users", payload);
+      onCreated({ ...res, email: form.email });
     } catch (err: any) {
       setError(err.message || "Failed to create user");
     } finally {

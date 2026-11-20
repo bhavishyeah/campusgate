@@ -44,6 +44,29 @@ describe("web sentry scrubber", () => {
     expect(crumb.data.token).toBe("[Filtered]");
   });
 
+  it("scrubs reset/activation tokens in fragments and query strings, and the new password keys", () => {
+    const t = "T".repeat(43);
+    expect(scrubString(`https://x.example/reset-password#token=${t}`)).toBe(
+      "https://x.example/reset-password#token=[Filtered]",
+    );
+    expect(scrubString(`/activate?resetToken=${t}&a=1`)).toBe("/activate?resetToken=[Filtered]&a=1");
+    expect(scrubString(`/x?inviteToken=${t}`)).toBe("/x?inviteToken=[Filtered]");
+    expect(scrubString(`/x#activationToken=${t}`)).toBe("/x#activationToken=[Filtered]");
+    const out: any = scrubEvent({
+      extra: { newPassword: "a", confirmPassword: "b", confirm: "c", resetToken: "d", inviteToken: "e", activationToken: "f", tokenHash: "g", ok: 1 },
+    });
+    expect(out.extra).toEqual({
+      newPassword: "[Filtered]",
+      confirmPassword: "[Filtered]",
+      confirm: "[Filtered]",
+      resetToken: "[Filtered]",
+      inviteToken: "[Filtered]",
+      activationToken: "[Filtered]",
+      tokenHash: "[Filtered]",
+      ok: 1,
+    });
+  });
+
   it("leaves harmless strings alone", () => {
     expect(scrubString("/fees/me?page=2")).toBe("/fees/me?page=2");
   });

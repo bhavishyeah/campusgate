@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { BulkInviteDialog } from "@/components/admin/BulkInviteDialog";
 import {
   Upload,
   FileSpreadsheet,
@@ -163,6 +164,7 @@ export default function AdminImportPage() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState("");
   const [editingCell, setEditingCell] = useState<{ row: number; col: keyof StudentRow } | null>(null);
+  const [showInvite, setShowInvite] = useState(false);
 
   // Load courses
   useEffect(() => {
@@ -607,10 +609,16 @@ export default function AdminImportPage() {
           )}
 
           <p className="text-sm text-gray-600 mb-4">
-            Default password for each student is their enrollment number.
+            Imported students have no password yet. Send them an activation email so they can set one.
           </p>
 
-          <button className="btn-primary w-full" onClick={reset}>Import Another File</button>
+          <div className="flex gap-3">
+            <button className="btn-secondary flex-1" onClick={() => setShowInvite(true)}>
+              Send invites to imported students
+            </button>
+            <button className="btn-primary flex-1" onClick={reset}>Import Another File</button>
+          </div>
+          {showInvite && <BulkInviteDialog onClose={() => setShowInvite(false)} />}
         </div>
       )}
     </div>

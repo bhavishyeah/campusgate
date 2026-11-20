@@ -16,7 +16,14 @@ const AUTH_STORE_KEY = "campusgate-auth";
 const SENSITIVE_KEYS = new Set([
   "password",
   "passwordhash",
+  "newpassword",
+  "confirmpassword",
+  "confirm",
   "token",
+  "resettoken",
+  "invitetoken",
+  "activationtoken",
+  "tokenhash",
   "accesstoken",
   "access_token",
   "stepuptoken",
@@ -35,7 +42,7 @@ const SENSITIVE_KEYS = new Set([
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-step-up"]);
 
 const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
-const TOKEN_PARAM_RE = /([?&#]token=)[^&#\s"']*/gi;
+const TOKEN_PARAM_RE = /([?&#](?:token|resettoken|invitetoken|activationtoken)=)[^&#\s"']*/gi;
 
 const MAX_DEPTH = 12;
 

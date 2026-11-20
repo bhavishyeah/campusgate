@@ -102,6 +102,12 @@ export default function LoginPage() {
             >
               {loading ? "Signing in..." : "Sign In"}
             </button>
+
+            <p className="text-center text-sm">
+              <a href="/forgot-password" className="text-primary-600 hover:underline">
+                Forgot password?
+              </a>
+            </p>
           </form>
 
           {/* Divider */}
