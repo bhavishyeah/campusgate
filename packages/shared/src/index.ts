@@ -3,3 +3,4 @@ export * from "./validation.js";
 export * from "./permissions.js";
 export * from "./audit-actions.js";
 export * from "./modules.js";
+export * from "./notifications.js";

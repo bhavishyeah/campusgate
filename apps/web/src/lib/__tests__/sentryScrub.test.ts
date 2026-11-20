@@ -76,3 +76,32 @@ describe("web sentry scrubber", () => {
     expect(out.user).toBeUndefined();
   });
 });
+
+describe("web sentry scrubber: web push data", () => {
+  const FCM = "https://fcm.googleapis.com/fcm/send/SECRETDEVICE";
+
+  it("redacts subscription fields and push-service URLs", () => {
+    const out: any = scrubEvent({
+      message: `subscribe failed for ${FCM}`,
+      extra: {
+        subscription: { endpoint: FCM, keys: { p256dh: "P", auth: "A" } },
+        nested: { endpoint: FCM, p256dh: "P", auth: "A", vapid_public_key: "PUB", ok: 1 },
+      },
+    });
+    expect(JSON.stringify(out)).not.toMatch(/SECRETDEVICE|"P"|"A"|PUB"/);
+    expect(out.message).toBe("subscribe failed for [Filtered]");
+    expect(out.extra.nested.ok).toBe(1);
+  });
+
+  it("scrubString redacts every allowlisted push host but not other googleapis hosts", () => {
+    for (const u of [
+      FCM,
+      "https://updates.push.services.mozilla.com/wpush/v2/x",
+      "https://web.push.apple.com/Qx",
+      "https://wns2-par02p.notify.windows.com/w/?token=x",
+    ]) {
+      expect(scrubString(`url ${u} end`)).not.toContain("https://");
+    }
+    expect(scrubString("https://storage.googleapis.com/x")).toBe("https://storage.googleapis.com/x");
+  });
+});

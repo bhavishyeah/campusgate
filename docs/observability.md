@@ -32,8 +32,8 @@ Settings: errors only (`tracesSampleRate: 0`), Session Replay off, automatic PII
 
 ### What is scrubbed (`beforeSend` / `beforeBreadcrumb`)
 
-- API (`apps/api/src/sentry-scrub.ts`): `authorization`, `cookie`, `x-step-up` headers; request bodies for `/api/auth/*`, `/api/platform/*` and `/ws`; any field named `password`, `passwordHash`, `token`, `stepUpToken`, `code`, `secret`, `razorpay_signature` at any depth; `token=` query params in URLs, messages and breadcrumbs (the WebSocket URL carries `?token=<JWT>`). The user is reduced to `{ id }` (the opaque userId).
-- Web (`apps/web/src/lib/sentryScrub.ts`): the same headers and field names, all request bodies, `token=` query params, any JWT-shaped string, and anything mentioning the persisted auth store (`campusgate-auth` in localStorage). The user is reduced to `{ id }`.
+- API (`apps/api/src/sentry-scrub.ts`): `authorization`, `cookie`, `x-step-up` headers; request bodies for `/api/auth/*`, `/api/platform/*` and `/ws`; any field named `password`, `passwordHash`, `token`, `stepUpToken`, `code`, `secret`, `razorpay_signature` at any depth; `token=` query params in URLs, messages and breadcrumbs (the WebSocket URL carries `?token=<JWT>`). Web Push data: fields named `endpoint`, `p256dh`, `auth`, `keys`, `subscription`, `pushSubscription` and the VAPID key fields, push-service URLs (FCM, Mozilla, Apple, Windows) in any string, and request bodies for `/api/notifications/push/*`. The user is reduced to `{ id }` (the opaque userId).
+- Web (`apps/web/src/lib/sentryScrub.ts`): the same headers and field names, all request bodies, `token=` query params, any JWT-shaped string, the same Web Push fields and push-service URLs, and anything mentioning the persisted auth store (`campusgate-auth` in localStorage). The user is reduced to `{ id }`.
 
 ### Verify after setting a DSN
 

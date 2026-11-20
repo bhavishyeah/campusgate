@@ -30,17 +30,28 @@ const SENSITIVE_KEYS = new Set([
   "cookie",
   "set-cookie",
   "x-step-up",
+  "endpoint",
+  "p256dh",
+  "auth",
+  "keys",
+  "subscription",
+  "pushsubscription",
+  "vapid_private_key",
+  "vapidprivatekey",
+  "vapid_public_key",
 ]);
 
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-step-up"]);
 
-const BODYLESS_PATH = /^\/(api\/(auth|platform|account-invites)|ws)(\/|\?|$)/i;
+const BODYLESS_PATH = /^\/(api\/(auth|platform|account-invites|notifications\/push)|ws)(\/|\?|$)/i;
 
+const PUSH_URL_RE =
+  /https:\/\/(?:fcm\.googleapis\.com|(?:[a-z0-9-]+\.)*push\.services\.mozilla\.com|web\.push\.apple\.com|(?:[a-z0-9-]+\.)*notify\.windows\.com)[^\s"']*/gi;
 const MAX_DEPTH = 12;
 
 /** Replace the value of any `token` query/fragment parameter inside a string. */
 export function scrubUrlString(value: string): string {
-  return value.replace(/([?&#](?:token|resettoken|invitetoken|activationtoken)=)[^&#\s"']*/gi, `$1${FILTERED}`);
+  return value.replace(/([?&#](?:token|resettoken|invitetoken|activationtoken)=)[^&#\s"']*/gi, `$1${FILTERED}`).replace(PUSH_URL_RE, FILTERED);
 }
 
 function pathOf(url: unknown): string {

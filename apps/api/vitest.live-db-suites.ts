@@ -41,4 +41,5 @@ export const LIVE_DB_SUITES = [
   'src/**/documents.behavioral.integration.test.ts',
   'src/**/storage.smoke.integration.test.ts',
   'src/**/account-lifecycle.integration.test.ts',
+  'src/**/push-subscriptions.integration.test.ts',
 ];

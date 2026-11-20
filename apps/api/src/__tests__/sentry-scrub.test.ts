@@ -84,3 +84,36 @@ describe("sentry scrubber: account lifecycle tokens", () => {
     expect(out.extra.ok).toBe(1);
   });
 });
+
+describe("sentry scrubber: web push data", () => {
+  const FCM = "https://fcm.googleapis.com/fcm/send/SECRETDEVICE";
+  const MOZ = "https://updates.push.services.mozilla.com/wpush/v2/SECRETDEVICE";
+
+  it("redacts subscription fields at any depth and push-service URLs in strings", () => {
+    const out: any = scrubEvent({
+      message: `push failed for ${FCM} and ${MOZ}`,
+      extra: {
+        subscription: { endpoint: FCM, keys: { p256dh: "P", auth: "A" } },
+        nested: { endpoint: FCM, p256dh: "P", auth: "A", vapid_private_key: "PRIV", vapidPrivateKey: "PRIV2", VAPID_PUBLIC_KEY: "PUB", ok: 1 },
+        note: `see ${FCM}?x=1`,
+      },
+      breadcrumbs: [{ category: "http", data: { url: "https://web.push.apple.com/QSECRET" } }],
+    });
+    const text = JSON.stringify(out);
+    expect(text).not.toMatch(/SECRETDEVICE|QSECRET|PRIV|"P"|"A"|PUB"/);
+    expect(out.extra.subscription).toBe("[Filtered]");
+    expect(out.extra.nested).toMatchObject({ endpoint: "[Filtered]", p256dh: "[Filtered]", auth: "[Filtered]", ok: 1 });
+    expect(out.message).toBe("push failed for [Filtered] and [Filtered]");
+  });
+
+  it("drops request bodies for /api/notifications/push but keeps other notification bodies", () => {
+    const push: any = scrubEvent({ request: { url: "https://api.x/api/notifications/push/subscribe", data: { endpoint: FCM } } });
+    expect(push.request.data).toBeUndefined();
+    const other: any = scrubEvent({ request: { url: "https://api.x/api/notifications/preferences", data: { category: "FEES" } } });
+    expect(other.request.data).toEqual({ category: "FEES" });
+  });
+
+  it("does not over-match other googleapis hosts", () => {
+    expect(scrubUrlString("https://storage.googleapis.com/bucket/x")).toBe("https://storage.googleapis.com/bucket/x");
+  });
+});

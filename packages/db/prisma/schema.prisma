@@ -439,9 +439,62 @@ model User {
   documentAccessGrantsGranted DocumentAccessGrant[] @relation("DocumentAccessGrantGrantedBy")
   documentAccessLogs       DocumentAccessLog[] @relation("DocumentAccessLogUser")
   accountTokens            AccountToken[]
+  pushSubscriptions        PushSubscription[]
+  notificationPreferences  NotificationPreference[]
 
   @@unique([id, institutionId])
   @@map("users")
+}
+
+// Web Push (notification foundation). Tenant-owned, FORCE RLS. EMERGENCY is
+// deliberately not a member: an emergency push can never be stored as disabled.
+enum NotificationCategory {
+  GATEPASS
+  FEES
+  EXAMS
+  ATTENDANCE
+  LIBRARY
+  ADMISSIONS
+  ANNOUNCEMENTS
+  SYSTEM
+}
+
+model PushSubscription {
+  id            String   @id @default(cuid())
+  userId        String
+  institutionId String
+  user          User     @relation(fields: [userId, institutionId], references: [id, institutionId], onDelete: Cascade)
+  endpoint      String   @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  deviceLabel   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  failureCount  Int      @default(0)
+
+  @@unique([id, institutionId])
+  @@index([userId])
+  @@index([institutionId])
+  @@map("push_subscriptions")
+}
+
+model NotificationPreference {
+  id            String               @id @default(cuid())
+  userId        String
+  institutionId String
+  user          User                 @relation(fields: [userId, institutionId], references: [id, institutionId], onDelete: Cascade)
+  category      NotificationCategory
+  pushEnabled   Boolean
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@unique([userId, category])
+  @@unique([id, institutionId])
+  @@index([institutionId])
+  @@map("notification_preferences")
 }
 
 // Account lifecycle tokens (password reset + account activation). OWNER-ONLY

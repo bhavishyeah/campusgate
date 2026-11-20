@@ -126,6 +126,9 @@ export const limiters = {
   inviteAdmin: createLimiter({ max: 30, windowMs: MIN }),
   bulkAdmin: createLimiter({ max: 6, windowMs: HOUR }),
   refreshUser: createLimiter({ max: 30, windowMs: MIN }),
+  // Web Push device registration (notification foundation), keyed by userId.
+  pushSubscribe: createLimiter({ max: 20, windowMs: 10 * MIN }),
+  pushManage: createLimiter({ max: 60, windowMs: 10 * MIN }),
 };
 
 /** Test helper: clear every shared limiter. */

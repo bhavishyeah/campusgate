@@ -28,6 +28,8 @@ import { hodRoutes } from "./routes/hod.js";
 import { guardRoutes } from "./routes/guard.js";
 import { adminRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
+import { notificationPushRoutes } from "./routes/notification-push.js";
+import { configurePushDispatcher, getPushDispatcher } from "./services/push/dispatcher.js";
 import { wsRoutes } from "./routes/ws.js";
 import { platformRoutes } from "./routes/platform.js";
 import { healthRoutes } from "./routes/health.js";
@@ -97,6 +99,8 @@ await app.register(guardRoutes, { prefix: "/api/guard" });
 await app.register(adminRoutes, { prefix: "/api/admin" });
 await app.register(platformRoutes, { prefix: "/api/platform" });
 await app.register(notificationRoutes, { prefix: "/api/notifications" });
+await app.register(notificationPushRoutes, { prefix: "/api/notifications" });
+configurePushDispatcher({ log: app.log });
 await app.register(wsRoutes, { prefix: "/ws" });
 
 // Health check
@@ -119,7 +123,7 @@ try {
 // Let detached forgot-password sends finish on redeploy (Railway sends SIGTERM).
 process.once("SIGTERM", () => {
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000).unref());
-  void Promise.race([drainBackground(), timeout])
+  void Promise.race([Promise.all([drainBackground(), getPushDispatcher().drain()]), timeout])
     .then(() => app.close())
     .finally(() => process.exit(0));
 });

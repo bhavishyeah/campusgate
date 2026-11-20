@@ -37,6 +37,15 @@ const SENSITIVE_KEYS = new Set([
   AUTH_STORE_KEY,
   "localstorage",
   "sessionstorage",
+  "endpoint",
+  "p256dh",
+  "auth",
+  "keys",
+  "subscription",
+  "pushsubscription",
+  "vapid_private_key",
+  "vapidprivatekey",
+  "vapid_public_key",
 ]);
 
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-step-up"]);
@@ -44,11 +53,13 @@ const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-s
 const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 const TOKEN_PARAM_RE = /([?&#](?:token|resettoken|invitetoken|activationtoken)=)[^&#\s"']*/gi;
 
+const PUSH_URL_RE =
+  /https:\/\/(?:fcm\.googleapis\.com|(?:[a-z0-9-]+\.)*push\.services\.mozilla\.com|web\.push\.apple\.com|(?:[a-z0-9-]+\.)*notify\.windows\.com)[^\s"']*/gi;
 const MAX_DEPTH = 12;
 
 export function scrubString(value: string): string {
   if (value.includes(AUTH_STORE_KEY)) return FILTERED;
-  return value.replace(TOKEN_PARAM_RE, `$1${FILTERED}`).replace(JWT_RE, FILTERED);
+  return value.replace(TOKEN_PARAM_RE, `$1${FILTERED}`).replace(JWT_RE, FILTERED).replace(PUSH_URL_RE, FILTERED);
 }
 
 function deepScrub(value: unknown, depth = 0): unknown {
