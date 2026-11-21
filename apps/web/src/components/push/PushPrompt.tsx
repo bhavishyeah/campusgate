@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bell, X } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
+import { PUSH_DENIED_TEXT, PUSH_DISMISSED_TEXT } from "@/lib/pushText";
 import {
   enablePush,
   fetchPushConfig,
@@ -34,20 +35,20 @@ export function resetPushPromptForTests(): void {
   resyncedThisSession = false;
 }
 
+type Notice = "" | "dismissed" | "failed";
+
 export function PushPrompt() {
   const userId = useAuthStore((s) => s.user?.id);
   const [state, setState] = useState<PushState | null>(null);
   const [config, setConfig] = useState<PushConfig | null>(null);
   const [hidden, setHidden] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState<Notice>("");
 
   useEffect(() => {
     if (!userId) return;
-    if (isDismissed(userId)) {
-      setHidden(true);
-      return;
-    }
+    // The dismissal only hides the banner; the state check and the silent resync still run.
+    setHidden(isDismissed(userId));
     let cancelled = false;
     (async () => {
       let cfg: PushConfig | null = null;
@@ -86,7 +87,7 @@ export function PushPrompt() {
   // Click handler: requestPermission is called synchronously inside enablePush.
   const onEnable = async () => {
     setBusy(true);
-    setMessage("");
+    setNotice("");
     const result = await enablePush(config?.publicKey ?? null);
     setBusy(false);
     if (result.ok) {
@@ -95,10 +96,11 @@ export function PushPrompt() {
     }
     if (result.reason === "denied") setState("denied");
     else if (result.reason === "not-configured") setHidden(true);
-    else if (result.reason === "failed") setMessage("Could not enable notifications on this device");
+    else if (result.reason === "dismissed") setNotice("dismissed");
+    else setNotice("failed");
   };
 
-  if (hidden || (state !== "default" && state !== "ios-install")) return null;
+  if (hidden || (state !== "default" && state !== "ios-install" && state !== "denied")) return null;
 
   return (
     <div
@@ -110,6 +112,8 @@ export function PushPrompt() {
       <div className="min-w-0 flex-1">
         {state === "ios-install" ? (
           <p>{IOS_INSTALL_TEXT}</p>
+        ) : state === "denied" ? (
+          <p>{PUSH_DENIED_TEXT}</p>
         ) : (
           <>
             <p>Get instant alerts on this device for gate passes, fees and notices.</p>
@@ -118,9 +122,18 @@ export function PushPrompt() {
               disabled={busy}
               className="mt-2 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
-              {busy ? "Enabling..." : "Enable notifications"}
+              {busy ? "Enabling..." : notice === "failed" ? "Try again" : "Enable notifications"}
             </button>
-            {message && <p className="mt-1 text-xs text-danger-700">{message}</p>}
+            {notice === "dismissed" && (
+              <p role="status" className="mt-2 text-xs text-gray-700">
+                {PUSH_DISMISSED_TEXT}
+              </p>
+            )}
+            {notice === "failed" && (
+              <p role="alert" className="mt-2 text-xs text-danger-700">
+                Could not enable notifications on this device
+              </p>
+            )}
           </>
         )}
       </div>

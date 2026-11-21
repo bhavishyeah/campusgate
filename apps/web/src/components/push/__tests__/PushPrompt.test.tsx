@@ -48,11 +48,50 @@ describe("PushPrompt", () => {
     expect(push.enablePush).not.toHaveBeenCalled();
   });
 
-  it("renders nothing for subscribed or denied and resyncs when already granted", async () => {
+  it("renders nothing for a subscribed device and resyncs", async () => {
     push.getPushState.mockResolvedValue("subscribed");
     const { container } = render(<PushPrompt />);
     await waitFor(() => expect(push.resyncPush).toHaveBeenCalledTimes(1));
     expect(container.firstChild).toBeNull();
+  });
+
+  it("a subscribed device stays hidden and resyncs even after a dismissal expired or is active", async () => {
+    localStorage.setItem("cg.push.dismissed.u1", String(Date.now()));
+    push.getPushState.mockResolvedValue("subscribed");
+    const { container } = render(<PushPrompt />);
+    await waitFor(() => expect(push.resyncPush).toHaveBeenCalledTimes(1));
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("shows unblock steps when notifications are denied, and they can be dismissed", async () => {
+    push.getPushState.mockResolvedValue("denied");
+    const { container } = render(<PushPrompt />);
+    await screen.findByText(/blocked for this site/);
+    expect(screen.getByText(/Permissions > Notifications > Allow/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("explains install steps when the prompt was dismissed or not shown", async () => {
+    push.getPushState.mockResolvedValue("default");
+    push.enablePush.mockResolvedValue({ ok: false, reason: "dismissed" });
+    render(<PushPrompt />);
+    fireEvent.click(await screen.findByText("Enable notifications"));
+    const note = await screen.findByRole("status");
+    expect(note.textContent).toMatch(/install CampusGate first/);
+    expect(note.textContent).toMatch(/Permissions > Notifications > Allow/);
+    expect(screen.getByText("Enable notifications")).toBeTruthy();
+  });
+
+  it("shows the error with a Try again button when enabling failed", async () => {
+    push.getPushState.mockResolvedValue("default");
+    push.enablePush.mockResolvedValueOnce({ ok: false, reason: "failed" }).mockResolvedValueOnce({ ok: true });
+    render(<PushPrompt />);
+    fireEvent.click(await screen.findByText("Enable notifications"));
+    await screen.findByText("Could not enable notifications on this device");
+    fireEvent.click(screen.getByText("Try again"));
+    await waitFor(() => expect(push.enablePush).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Try again")).toBeNull());
   });
 
   it("stays silent when the config call fails (platform account)", async () => {
@@ -70,7 +109,8 @@ describe("PushPrompt", () => {
     expect(localStorage.getItem("cg.push.dismissed.u1")).toBeTruthy();
 
     cleanup();
-    render(<PushPrompt />);
-    expect(push.fetchPushConfig).toHaveBeenCalledTimes(1);
+    const again = render(<PushPrompt />);
+    await waitFor(() => expect(push.getPushState).toHaveBeenCalledTimes(2));
+    expect(again.container.firstChild).toBeNull();
   });
 });

@@ -70,6 +70,14 @@ describe("getPushState", () => {
     setNavigator({ permission: "granted" });
     expect(await getPushState(enabled)).toBe("granted-not-subscribed");
   });
+  it("treats a device with a browser subscription as subscribed even when permission reads default", async () => {
+    setNavigator({ permission: "default" });
+    (navigator.serviceWorker as any).getRegistration = vi.fn(async () => ({
+      pushManager: { getSubscription: async () => ({ endpoint: "https://fcm.googleapis.com/x" }) },
+    }));
+    expect(await getPushState(enabled)).toBe("subscribed");
+  });
+
   it("never calls requestPermission", async () => {
     setNavigator({ permission: "default" });
     await getPushState(enabled);

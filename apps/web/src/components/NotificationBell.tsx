@@ -132,7 +132,8 @@ export function NotificationBell({ variant = "light" }: { variant?: Variant }) {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnreadCount(0);
     try {
-      await api.post("/api/notifications/read-all");
+      const res = await api.post<{ unreadCount: number }>("/api/notifications/read-all");
+      setUnreadCount(res.unreadCount);
     } catch {
       fetchNotifications();
     }

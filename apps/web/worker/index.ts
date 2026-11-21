@@ -12,8 +12,8 @@ self.addEventListener("push", (event) => {
       body: msg.body,
       tag: msg.id || undefined,
       data: { url: msg.url, id: msg.id },
-      icon: "/icons/icon-192.svg",
-      badge: "/icons/icon-192.svg",
+      icon: "/icons/notification-192.png",
+      badge: "/icons/badge-96.png",
       requireInteraction: msg.priority === "e",
       timestamp: msg.ts,
     })

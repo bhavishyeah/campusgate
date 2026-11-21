@@ -26,6 +26,13 @@ vi.mock("@campusgate/db", () => {
         return select ? { id: row.id, deviceLabel: row.deviceLabel } : row;
       },
       findMany: async ({ where }: any) => store.subs.filter((s) => s.userId === where.userId),
+      findFirst: async ({ where }: any) =>
+        store.subs.find((s) => s.endpoint === where.endpoint && s.userId === where.userId) ?? null,
+      updateMany: async ({ where, data }: any) => {
+        const rows = store.subs.filter((s) => s.userId === where.userId && where.id.in.includes(s.id));
+        rows.forEach((r) => Object.assign(r, data));
+        return { count: rows.length };
+      },
       deleteMany: async ({ where }: any) => {
         const before = store.subs.length;
         store.subs = store.subs.filter((s) => {
@@ -113,6 +120,8 @@ describe("auth and platform accounts (F3)", () => {
     ["POST", "/push/subscribe", body()],
     ["POST", "/push/unsubscribe", { endpoint: ENDPOINT }],
     ["GET", "/push/devices"],
+    ["POST", "/push/test", {}],
+    ["POST", "/push/status", { endpoint: ENDPOINT }],
     ["DELETE", "/push/devices/abc"],
     ["GET", "/preferences"],
     ["PUT", "/preferences", { category: "FEES", push: false }],
@@ -278,3 +287,63 @@ describe("preferences", () => {
   });
 });
 
+
+describe("POST /push/test", () => {
+  const sub = (id: string, userId: string, endpoint: string) => ({
+    id, userId, institutionId: "inst-1", endpoint, p256dh: P256, auth: AUTH, deviceLabel: `dev-${id}`,
+    createdAt: new Date(2026, 0, 1), lastSuccessAt: null, failureCount: 2,
+  });
+  it("sends only to the caller's own devices and never leaks endpoints or keys", async () => {
+    store.subs = [sub("a", "u1", "https://fcm.googleapis.com/fcm/send/u1a"), sub("b", "u2", "https://fcm.googleapis.com/fcm/send/u2b")];
+    const sender = new InMemoryPushSender("PUBKEY");
+    setPushSender(sender);
+    const r = await call(app, "POST", "/push/test", "u1", {});
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ sent: 1, failed: 0, devices: [{ id: "a", deviceLabel: "dev-a", result: "sent" }] });
+    expect(sender.sent.map((s) => s.target.endpoint)).toEqual(["https://fcm.googleapis.com/fcm/send/u1a"]);
+    expect(JSON.stringify(r.json())).not.toMatch(/fcm\.googleapis|p256dh|auth/);
+    const wire = JSON.parse(sender.sent[0].message.body);
+    expect(wire).toMatchObject({ t: "CampusGate", b: "Test notification from CampusGate", c: "SYSTEM", p: "h" });
+    expect(sender.sent[0].message.urgency).toBe("high");
+    expect(store.subs.find((s) => s.id === "a")).toMatchObject({ failureCount: 0 });
+    expect(store.subs.find((s) => s.id === "b")?.failureCount).toBe(2);
+  });
+  it("reports no devices", async () => {
+    expect((await call(app, "POST", "/push/test", "u1", {})).json()).toEqual({ sent: 0, failed: 0, devices: [] });
+  });
+  it("reports failed and removes gone devices", async () => {
+    store.subs = [sub("a", "u1", "https://fcm.googleapis.com/fcm/send/1"), sub("b", "u1", "https://fcm.googleapis.com/fcm/send/2")];
+    const sender = new InMemoryPushSender("PUBKEY");
+    sender.respond = (t) =>
+      t.endpoint.endsWith("/1") ? { status: "rejected", reason: "x" } : { status: "gone" };
+    setPushSender(sender);
+    const j = (await call(app, "POST", "/push/test", "u1", {})).json();
+    expect(j.sent).toBe(0);
+    expect(j.failed).toBe(2);
+    expect(j.devices.map((d: any) => d.result)).toEqual(["failed", "removed"]);
+    expect(store.subs.map((s) => s.id)).toEqual(["a"]);
+  });
+  it("returns 503 when push is not configured", async () => {
+    setPushSender(new InMemoryPushSender(null));
+    expect((await call(app, "POST", "/push/test", "u1", {})).statusCode).toBe(503);
+  });
+  it("is rate limited per user", async () => {
+    for (let i = 0; i < 5; i++) expect((await call(app, "POST", "/push/test", "u1", {})).statusCode).toBe(200);
+    const r = await call(app, "POST", "/push/test", "u1", {});
+    expect(r.statusCode).toBe(429);
+    expect((await call(app, "POST", "/push/test", "u2", {})).statusCode).toBe(200);
+  });
+});
+
+describe("POST /push/status", () => {
+  it("knows only the caller's own endpoint", async () => {
+    store.subs = [{ id: "a", userId: "u1", endpoint: ENDPOINT, lastSuccessAt: new Date(5), failureCount: 0 }];
+    const mine = (await call(app, "POST", "/push/status", "u1", { endpoint: ENDPOINT })).json();
+    expect(mine).toMatchObject({ known: true, failing: false });
+    expect(mine.lastSuccessAt).toBeTruthy();
+    expect((await call(app, "POST", "/push/status", "u2", { endpoint: ENDPOINT })).json()).toEqual({
+      known: false, lastSuccessAt: null, failing: false,
+    });
+    expect((await call(app, "POST", "/push/status", "u1", {})).statusCode).toBe(400);
+  });
+});

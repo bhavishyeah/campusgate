@@ -94,7 +94,7 @@ describe("support grant revoke reason", () => {
     });
   });
 
-  it("omits the body when no reason is entered", async () => {
+  it("sends an empty JSON object when no reason is entered", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (String(url).endsWith("/api/platform/support-grants/g-1")) {
         return jsonResponse(200, { ...grant, status: "REVOKED" });
@@ -117,7 +117,8 @@ describe("support grant revoke reason", () => {
       expect(call).toBeTruthy();
       const init = call![1] as RequestInit;
       expect(init.method).toBe("DELETE");
-      expect(init.body).toBeUndefined();
+      // A body-less JSON request is rejected by Fastify, so api.ts sends "{}".
+      expect(init.body).toBe("{}");
     });
   });
 });

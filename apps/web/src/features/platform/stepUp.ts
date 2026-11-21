@@ -35,7 +35,7 @@ export async function postWithStepUp<T>(
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : "{}",
   });
   const data = await response.json().catch(() => ({}));
 

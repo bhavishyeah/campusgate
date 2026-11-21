@@ -62,13 +62,38 @@ export async function getPushState(config: PushConfig | null): Promise<PushState
   if (config && !config.enabled) return "not-configured";
   const permission = Notification.permission;
   if (permission === "denied") return "denied";
-  if (permission === "default") return "default";
+  // A browser subscription means this device is enabled, whatever the banner/permission
+  // bookkeeping says (so a refresh never brings the banner back on a subscribed device).
   try {
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = await reg?.pushManager.getSubscription();
-    return sub ? "subscribed" : "granted-not-subscribed";
+    if (sub) return "subscribed";
   } catch {
-    return "granted-not-subscribed";
+    // fall through to the permission-based answer
+  }
+  return permission === "granted" ? "granted-not-subscribed" : "default";
+}
+
+export interface ThisDeviceCheck {
+  supported: boolean;
+  standalone: boolean;
+  permission: NotificationPermission | "unsupported";
+  hasSubscription: boolean;
+  /** Never sent anywhere except the authenticated status call; never rendered. */
+  endpoint: string | null;
+}
+
+/** Read-only snapshot for the settings "This device" panel. Never prompts. */
+export async function getThisDeviceCheck(): Promise<ThisDeviceCheck> {
+  const supported = pushApisPresent();
+  const base = { supported, standalone: isStandalone() };
+  if (!supported) return { ...base, permission: "unsupported", hasSubscription: false, endpoint: null };
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    return { ...base, permission: Notification.permission, hasSubscription: !!sub, endpoint: sub?.endpoint ?? null };
+  } catch {
+    return { ...base, permission: Notification.permission, hasSubscription: false, endpoint: null };
   }
 }
 

@@ -79,8 +79,15 @@ async function request<T>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
+  // Every request carries a JSON content-type, and Fastify rejects that with an empty
+  // body (400 FST_ERR_CTP_EMPTY_JSON_BODY) before auth runs. Body-less writes therefore
+  // send "{}". Sending "{}" rather than dropping the header keeps the wire format
+  // identical for every endpoint; no route reads a body on those calls.
+  const method = (options.method ?? "GET").toUpperCase();
+  const body = options.body ?? (method === "GET" || method === "HEAD" ? undefined : "{}");
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
+    body,
     headers,
   });
 

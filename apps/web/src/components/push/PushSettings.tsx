@@ -6,10 +6,13 @@ import {
   enablePush,
   fetchPushConfig,
   getPushState,
+  getThisDeviceCheck,
   type PushConfig,
+  type ThisDeviceCheck,
   type PushState,
 } from "@/lib/push";
 import { IOS_INSTALL_TEXT } from "@/components/push/PushPrompt";
+import { PUSH_DENIED_TEXT, PUSH_DISMISSED_TEXT } from "@/lib/pushText";
 
 interface Device {
   id: string;
@@ -18,6 +21,18 @@ interface Device {
   lastSuccessAt: string | null;
   failing: boolean;
 }
+interface ServerStatus {
+  known: boolean;
+  lastSuccessAt: string | null;
+  failing: boolean;
+}
+
+interface TestResult {
+  sent: number;
+  failed: number;
+  devices: Array<{ id: string; deviceLabel: string | null; result: "sent" | "failed" | "removed" }>;
+}
+
 interface PrefCategory {
   category: string;
   label: string;
@@ -35,6 +50,12 @@ export function PushSettings() {
   const [prefs, setPrefs] = useState<PrefsResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [check, setCheck] = useState<ThisDeviceCheck | null>(null);
+  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [testError, setTestError] = useState("");
+  const [enableNote, setEnableNote] = useState("");
 
   const load = useCallback(async () => {
     setError("");
@@ -42,6 +63,17 @@ export function PushSettings() {
       const cfg = await fetchPushConfig();
       setConfig(cfg);
       setState(await getPushState(cfg));
+      const device = await getThisDeviceCheck();
+      setCheck(device);
+      if (device.endpoint) {
+        setServerStatus(
+          await api
+            .post<ServerStatus>("/api/notifications/push/status", { endpoint: device.endpoint })
+            .catch(() => null),
+        );
+      } else {
+        setServerStatus(null);
+      }
       const [d, p] = await Promise.all([
         api.get<{ devices: Device[] }>("/api/notifications/push/devices"),
         api.get<PrefsResponse>("/api/notifications/preferences"),
@@ -60,11 +92,26 @@ export function PushSettings() {
   const onEnable = async () => {
     setBusy(true);
     setError("");
+    setEnableNote("");
     const result = await enablePush(config?.publicKey ?? null);
     setBusy(false);
+    if (!result.ok && result.reason === "dismissed") setEnableNote(PUSH_DISMISSED_TEXT);
     if (!result.ok && result.reason === "failed") setError("Could not enable notifications on this device");
     if (!result.ok && result.reason === "not-configured") setError("Notifications are not set up yet");
     await load();
+  };
+
+  const sendTest = async () => {
+    setTestBusy(true);
+    setTestError("");
+    setTestResult(null);
+    try {
+      setTestResult(await api.post<TestResult>("/api/notifications/push/test"));
+    } catch (err: any) {
+      setTestError(err?.message || "Could not send the test notification");
+    } finally {
+      setTestBusy(false);
+    }
   };
 
   const removeDevice = async (id: string) => {
@@ -104,9 +151,7 @@ export function PushSettings() {
           <p className="text-sm text-gray-700">Notifications are not set up for this campus yet.</p>
         )}
         {state === "denied" && (
-          <p className="text-sm text-gray-700">
-            Notifications are blocked. Allow them in your browser or site settings, then reload this page.
-          </p>
+          <p className="text-sm text-gray-700">{PUSH_DENIED_TEXT}</p>
         )}
         {(state === "default" || state === "granted-not-subscribed") && (
           <button
@@ -117,7 +162,55 @@ export function PushSettings() {
             {busy ? "Enabling..." : "Enable notifications"}
           </button>
         )}
+        {enableNote && (
+          <p role="status" className="text-xs text-gray-700">
+            {enableNote}
+          </p>
+        )}
         {state === "subscribed" && <p className="text-sm text-success-700">Notifications are on for this device.</p>}
+        {check && (
+          <dl aria-label="Device check" className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 text-sm text-gray-800">
+            <dt className="text-gray-500">Push supported</dt>
+            <dd>{check.supported ? "Yes" : "No"}</dd>
+            <dt className="text-gray-500">Installed app</dt>
+            <dd>{check.standalone ? "Yes" : "No, running in a browser tab"}</dd>
+            <dt className="text-gray-500">Permission</dt>
+            <dd>{check.permission === "default" ? "Not asked yet" : check.permission}</dd>
+            <dt className="text-gray-500">Browser subscription</dt>
+            <dd>{check.hasSubscription ? "Yes" : "No"}</dd>
+            <dt className="text-gray-500">Known to server</dt>
+            <dd>{serverStatus ? (serverStatus.known ? (serverStatus.failing ? "Yes, not responding" : "Yes") : "No") : "Unknown"}</dd>
+            <dt className="text-gray-500">Last delivery</dt>
+            <dd>{serverStatus?.lastSuccessAt ? new Date(serverStatus.lastSuccessAt).toLocaleString() : "None yet"}</dd>
+          </dl>
+        )}
+      </section>
+
+      <section aria-labelledby="push-test-heading" className="space-y-2">
+        <h2 id="push-test-heading" className="font-semibold text-gray-900">
+          Test notification
+        </h2>
+        <p className="text-xs text-gray-500">Sends a test to all your registered devices.</p>
+        <button
+          onClick={sendTest}
+          disabled={testBusy}
+          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {testBusy ? "Sending..." : "Send a test notification"}
+        </button>
+        {testError && <p role="alert" className="text-sm text-danger-700">{testError}</p>}
+        {testResult && testResult.devices.length === 0 && (
+          <p role="status" className="text-sm text-gray-700">No devices registered. Enable notifications on this device first.</p>
+        )}
+        {testResult && testResult.devices.length > 0 && (
+          <ul role="status" className="text-sm text-gray-800">
+            {testResult.devices.map((d) => (
+              <li key={d.id}>
+                {d.deviceLabel || "Browser"}: {d.result === "sent" ? "sent" : d.result === "removed" ? "no longer valid, removed" : "failed"}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section aria-labelledby="push-devices-heading" className="space-y-2">
@@ -149,6 +242,25 @@ export function PushSettings() {
             ))}
           </ul>
         )}
+      </section>
+
+      <section aria-labelledby="push-help-heading" className="space-y-2">
+        <h2 id="push-help-heading" className="font-semibold text-gray-900">
+          Not receiving notifications?
+        </h2>
+        <ul className="list-disc space-y-1 pl-5 text-sm text-gray-700">
+          <li>
+            Android: install CampusGate (menu, then Install app) and open it from the icon. Set Chrome battery use to
+            No restrictions (Xiaomi, Redmi, POCO: Chrome &gt; Battery saver &gt; No restrictions, turn Autostart on and lock
+            Chrome in recent apps). Oppo, Realme, Vivo, Samsung and others have a similar battery or app-launch setting
+            for Chrome.
+          </li>
+          <li>
+            Windows: Settings &gt; System &gt; Notifications, turn Chrome on and Do not disturb off. In Chrome, Settings
+            &gt; System, keep Continue running background apps on.
+          </li>
+          <li>iPhone: tap Share, Add to Home Screen, then open CampusGate from the icon (iOS 16.4 or later).</li>
+        </ul>
       </section>
 
       <section aria-labelledby="push-categories-heading" className="space-y-2">

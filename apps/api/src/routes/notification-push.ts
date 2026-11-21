@@ -11,6 +11,8 @@ import { authenticate } from "../middleware/auth.js";
 import { enforce, limiters } from "../services/rate-limit.js";
 import { getPushSender } from "../services/push/index.js";
 import { isAllowedPushEndpoint } from "../services/push/endpoint.js";
+import { buildPushPayload } from "../services/push/payload.js";
+import { ttlSecondsFor, urgencyFor } from "../services/push/categories.js";
 
 const MAX_DEVICES_PER_USER = 10;
 const FAILING_AT = 3;
@@ -231,6 +233,89 @@ export async function notificationPushRoutes(app: FastifyInstance) {
     );
     if (result.count === 0) return reply.status(404).send({ error: "Device not found" });
     return reply.send({ removed: true });
+  });
+
+  // ─── THIS DEVICE STATUS ────────────────────────────────────────────────────
+  // POST (not GET) so the endpoint, a bearer secret, never lands in a URL or access log.
+  app.post("/push/status", { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    if (!enforce(limiters.pushManage, userId, reply)) return;
+    const parsed = pushUnsubscribeSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(INVALID);
+    const row = await withTenant(institutionId, (tx) =>
+      tx.pushSubscription.findFirst({
+        where: { endpoint: parsed.data.endpoint, userId },
+        select: { lastSuccessAt: true, failureCount: true },
+      }),
+    );
+    return reply.send({
+      known: !!row,
+      lastSuccessAt: row?.lastSuccessAt ?? null,
+      failing: row ? row.failureCount >= FAILING_AT : false,
+    });
+  });
+
+  // ─── TEST PUSH (caller's own devices only) ─────────────────────────────────
+  // No in-app notification row is created. Results never carry endpoints or keys.
+  app.post("/push/test", async (request, reply) => {
+    const { userId, institutionId } = request.user;
+    if (!enforce(limiters.pushTest, userId, reply)) return;
+    const sender = getPushSender();
+    if (!sender.isConfigured()) {
+      return reply.status(503).send({ error: "Push notifications are not configured" });
+    }
+    const subs = await withTenant(institutionId, (tx) =>
+      tx.pushSubscription.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, deviceLabel: true, endpoint: true, p256dh: true, auth: true },
+      }),
+    );
+    if (subs.length === 0) return reply.send({ sent: 0, failed: 0, devices: [] });
+    const now = Date.now();
+    const text = "Test notification from CampusGate";
+    const message = {
+      body: buildPushPayload({
+        notificationId: `test-${now}`,
+        title: "CampusGate",
+        body: text,
+        category: "SYSTEM",
+        priority: "HIGH",
+        ts: now,
+        push: { title: "CampusGate", body: text },
+      }),
+      ttlSeconds: ttlSecondsFor("HIGH"),
+      urgency: urgencyFor("HIGH"),
+    };
+    const devices: Array<{ id: string; deviceLabel: string | null; result: "sent" | "failed" | "removed" }> = [];
+    const okIds: string[] = [];
+    const goneIds: string[] = [];
+    for (const s of subs) {
+      let result: "sent" | "failed" | "removed" = "failed";
+      try {
+        const out = await sender.send({ endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }, message);
+        if (out.status === "sent") {
+          result = "sent";
+          okIds.push(s.id);
+        } else if (out.status === "gone") {
+          result = "removed";
+          goneIds.push(s.id);
+        }
+      } catch {
+        // a provider fault is reported as failed
+      }
+      devices.push({ id: s.id, deviceLabel: s.deviceLabel, result });
+    }
+    await withTenant(institutionId, async (tx) => {
+      if (okIds.length) {
+        await tx.pushSubscription.updateMany({
+          where: { id: { in: okIds }, userId },
+          data: { lastSuccessAt: new Date(), failureCount: 0, lastFailureAt: null },
+        });
+      }
+      if (goneIds.length) await tx.pushSubscription.deleteMany({ where: { id: { in: goneIds }, userId } });
+    }).catch(() => {});
+    return reply.send({ sent: okIds.length, failed: devices.length - okIds.length, devices });
   });
 
   // ─── PREFERENCES ───────────────────────────────────────────────────────────

@@ -183,7 +183,7 @@ async function apiPatch<T>(endpoint: string, body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "PATCH",
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : "{}",
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const failures = [];
+for (const f of ["notification-192.png", "badge-96.png"]) {
+  try {
+    readFileSync(join(publicDir, "icons", f));
+  } catch {
+    failures.push(`public/icons/${f} is missing (run scripts/generate-notification-icons.mjs)`);
+  }
+}
 const check = (ok, msg) => {
   if (!ok) failures.push(msg);
 };
@@ -44,6 +51,7 @@ if (workerFiles.length) {
   const worker = readFileSync(join(publicDir, workerFiles[workerFiles.length - 1]), "utf8");
   check(/addEventListener\(\s*["']push["']/.test(worker), "worker has no push handler");
   check(/addEventListener\(\s*["']notificationclick["']/.test(worker), "worker has no notificationclick handler");
+  check(/notification-192\.png/.test(worker) && /badge-96\.png/.test(worker), "worker does not use the PNG notification icon and badge");
 }
 
 if (failures.length) {

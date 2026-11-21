@@ -129,6 +129,7 @@ export const limiters = {
   // Web Push device registration (notification foundation), keyed by userId.
   pushSubscribe: createLimiter({ max: 20, windowMs: 10 * MIN }),
   pushManage: createLimiter({ max: 60, windowMs: 10 * MIN }),
+  pushTest: createLimiter({ max: 5, windowMs: 10 * MIN }),
 };
 
 /** Test helper: clear every shared limiter. */
